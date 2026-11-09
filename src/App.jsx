@@ -22791,6 +22791,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const [selId, setSelId] = useState("");
   const inputRef = useRef(null);
   const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
+  // Nº de presupuesto de cada pedido (en fábrica se busca por presupuesto)
+  const ctxAlb = React.useContext(IncidenciasCristalCtx) || {};
+  const pptoPed = (p) => { try { return datosObraPedido(p, p.proyectoId ? toArray(ctxAlb.proyectos).find((x) => x && x.id === p.proyectoId) || null : null, ctxAlb.uxExpedientes).ppto || ""; } catch (e) { return ""; } };
   const pendiente = (p) => p.estado !== "Recibido" && p.estado !== "Cancelado" && toArray(p.lineas).some((l) => (parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0) > 0);
   const leer = async (file) => {
     setLeyendo(true); setError(""); setLect(null); setSelId("");
@@ -22841,8 +22844,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold text-slate-700">Pedido:</span>
               <select value={elegido ? elegido.p.id : ""} onChange={(e) => setSelId(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm max-w-full">
-                {(buenos.length ? buenos : lista).map((c) => <option key={c.p.id} value={c.p.id}>#{c.p.numero} · {nombreProv(c.p) || "—"} · {motivo(c)}</option>)}
+                {(buenos.length ? buenos : lista).map((c) => <option key={c.p.id} value={c.p.id}>#{c.p.numero}{pptoPed(c.p) ? ` · Ppto ${pptoPed(c.p)}` : ""} · {nombreProv(c.p) || "—"} · {motivo(c)}</option>)}
               </select>
+              {elegido && pptoPed(elegido.p) && <span className="text-sm font-extrabold text-slate-900 bg-amber-100 border border-amber-300 rounded px-2 py-0.5">Ppto {pptoPed(elegido.p)}</span>}
               {!buenos.length && <span className="text-xs font-semibold text-amber-700">Ninguno cuadra claramente: elige a mano</span>}
               {buenos.length > 1 && <span className="text-xs text-slate-500">Hay {buenos.length} pedidos que podrían ser: revisa que sea el tuyo</span>}
             </div>
@@ -51190,7 +51194,7 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
   const sobran = quedan.filter((a) => a.ancho && a.alto).map((a) => {
     let mejor = null, dm = Infinity;
     pendTodas.forEach(({ p, l }) => { const d = Math.min(Math.abs(a.ancho - l.ancho) + Math.abs(a.alto - l.alto), Math.abs(a.ancho - l.alto) + Math.abs(a.alto - l.ancho)); if (d < dm) { dm = d; mejor = { p, l }; } });
-    return { ...a, parecida: mejor && dm <= 200 ? `${mejor.p.numero} (${mejor.p.proveedorNombre || ""}) pide ${mejor.l.ancho}×${mejor.l.alto}` : "" };
+    return { ...a, parecida: mejor && dm <= 200 ? mejor : null };
   });
   return { reparto: out, sobran, accesorios };
 }
@@ -51297,12 +51301,12 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
             {albRes.reparto.map((x) => (
               <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
-                <b>{x.p.numero}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))} · Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</span>
+                <b>{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))}</span>
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
-            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: {a.parecida}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
+            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: <b>{a.parecida.p.numero}</b>{uxDesglosaExp(a.parecida.p, expsUx).ppto.length ? <b className="text-slate-900"> · Ppto {uxDesglosaExp(a.parecida.p, expsUx).ppto.join(", ")}</b> : null} ({a.parecida.p.proveedorNombre || ""}) pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
               <button type="button" disabled={albLeyendo || !albRes.reparto.some((x) => albSel[x.p.id])} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
