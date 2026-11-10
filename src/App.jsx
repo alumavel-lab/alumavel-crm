@@ -38866,57 +38866,80 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
   const [errorEnvioEmail, setErrorEnvioEmail] = useState("");
 
   const enlaceEmailManual = () => {
-    if (!presupuesto.email) return null;
     const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
     const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${presupuesto.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${presupuesto.email || ""}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
-  // Genera el PDF al momento y lo manda por email directamente desde el CRM
-  // (cuenta alumavel@alumavel.es), con el PDF adjunto. Si el envío automático
-  // falla, se deja el enlace de "mailto" como alternativa manual.
+  // Envío por correo con ventana para ELEGIR qué se manda: el email del cliente (se puede
+  // escribir o cambiar aquí mismo y se guarda en el presupuesto) y uno o varios de los
+  // documentos guardados (por defecto el último PDF), o un PDF generado con los datos del CRM.
+  const [emailModal, setEmailModal] = useState(false);
+  const [emailDest, setEmailDest] = useState("");
+  const [emailDocs, setEmailDocs] = useState([]); // ids de documentos; "__crm__" = generar PDF con los datos del CRM
+  const [errorModalEmail, setErrorModalEmail] = useState("");
+  const docsParaEmail = () => toArray(presupuesto.documentos).slice().reverse();
+  const abrirModalEmail = () => {
+    const pdfDef = toArray(presupuesto.documentos).filter((d) => /\.pdf$/i.test(d.nombre || "") && !/firmado/i.test(d.nombre || "")).slice(-1)[0];
+    setEmailDest(presupuesto.email || "");
+    setEmailDocs(pdfDef ? [pdfDef.id] : ["__crm__"]);
+    setErrorModalEmail("");
+    setErrorEnvioEmail("");
+    setEmailEnviadoOk(false);
+    setEmailModal(true);
+  };
+  const alternarDocEmail = (id) => setEmailDocs((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
   const enviarPorEmail = async () => {
-    if (!presupuesto.email) return;
+    const dest = String(emailDest || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) { setErrorModalEmail("Escribe un correo válido para el cliente."); return; }
+    if (!emailDocs.length) { setErrorModalEmail("Elige al menos un documento para adjuntar."); return; }
     setEnviandoEmail(true);
+    setErrorModalEmail("");
     setErrorEnvioEmail("");
     setEmailEnviadoOk(false);
     try {
-      // Si el presupuesto tiene su PDF de verdad guardado (p.ej. el del programa de
-      // ventanas), se manda ESE; si no, se genera uno con los datos del CRM.
-      const pdfReal = toArray(presupuesto.documentos).filter((d) => /\.pdf$/i.test(d.nombre || "") && !/firmado/i.test(d.nombre || "")).slice(-1)[0];
-      let dataUrl, nombreArchivo;
-      if (pdfReal) {
-        dataUrl = await archivoGuardadoComoDataUrl(pdfReal.url, pdfReal.nombre);
-        nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
-      } else {
-        const bytes = await generarPdfBytesPresupuesto(presupuesto);
-        let binario = "";
-        for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
-        dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
-        nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      const adjuntos = [];
+      for (const id of emailDocs) {
+        if (id === "__crm__") {
+          const bytes = await generarPdfBytesPresupuesto(presupuesto);
+          let binario = "";
+          for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
+          adjuntos.push({ nombre: `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`, dataUrl: `data:application/pdf;base64,${btoa(binario)}` });
+        } else {
+          const doc = toArray(presupuesto.documentos).find((d) => d.id === id);
+          if (!doc) continue;
+          adjuntos.push({ nombre: doc.nombre || "adjunto", dataUrl: await archivoGuardadoComoDataUrl(doc.url, doc.nombre) });
+        }
       }
+      // La función de Netlify admite unos 6 MB por envío
+      const total = adjuntos.reduce((n, a) => n + String(a.dataUrl || "").length, 0);
+      if (total > 4500000) throw new Error("Los documentos elegidos pesan demasiado para un solo correo (máx. unos 3 MB en total). Quita alguno o mándalos en dos correos.");
       const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
       const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          destinatario: presupuesto.email,
-          cc: emailUsuarioActual,
-          asunto,
-          cuerpo,
-          adjuntos: [{ nombre: nombreArchivo, dataUrl }],
-        }),
+        body: JSON.stringify({ destinatario: dest, cc: emailUsuarioActual, asunto, cuerpo, adjuntos }),
       });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "No se pudo enviar el correo.");
       setEmailEnviadoOk(true);
-      onMarcarEnviado("email");
+      setEmailModal(false);
+      // Guardado en un solo paso: si el correo es nuevo o distinto se guarda junto con el estado "Enviado".
+      if (dest !== String(presupuesto.email || "").trim() && onGuardarTelefono) {
+        const hoy = new Date().toISOString().slice(0, 10);
+        const en7 = new Date(); en7.setDate(en7.getDate() + 7);
+        const extra = presupuestoSinEnviar(presupuesto) ? { estado: "Enviado", fechaEnvio: hoy, proximaLlamadaFecha: en7.toISOString().slice(0, 10) } : {};
+        onGuardarTelefono(String(presupuesto.telefono || ""), { email: dest, ...extra });
+      } else {
+        onMarcarEnviado("email");
+      }
       dejarEnPortal();
     } catch (err) {
       console.error("Error enviando el presupuesto por email:", err);
-      setErrorEnvioEmail(err.message + " Puedes usar el enlace de abajo para enviarlo desde tu propio correo mientras tanto.");
+      setErrorModalEmail(err.message || "No se pudo enviar el correo.");
     } finally {
       setEnviandoEmail(false);
     }
@@ -39070,23 +39093,48 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
               {portalEstado && <span className={`text-[11px] font-semibold ${portalEstado.startsWith("✓") ? "text-emerald-700" : portalEstado.startsWith("No se pudo") ? "text-rose-600" : "text-slate-500"}`}>{portalEstado}</span>}
             </div>
           )}
-          {presupuesto.email && (
-            <div className="flex flex-col items-end gap-1">
-              <button
-                onClick={enviarPorEmail}
-                disabled={enviandoEmail}
-                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-                className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60 px-3.5 py-2 rounded-md"
-              >
-                <Mail size={14} /> {enviandoEmail ? "Enviando..." : "Enviar por email"}
-              </button>
-              {emailEnviadoOk && <span className="text-xs text-emerald-600 font-semibold">✓ Correo enviado</span>}
-              {errorEnvioEmail && (
-                <div className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">
-                  ⚠ {errorEnvioEmail}
-                  <a href={enlaceEmailManual()} className="block underline mt-0.5">Abrir en mi correo</a>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={abrirModalEmail}
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-3.5 py-2 rounded-md"
+            >
+              <Mail size={14} /> Enviar por email
+            </button>
+            {emailEnviadoOk && <span className="text-xs text-emerald-600 font-semibold">✓ Correo enviado</span>}
+          </div>
+          {emailModal && (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => !enviandoEmail && setEmailModal(false)}>
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <h3 className="font-display text-lg font-extrabold text-slate-900 mb-1">Enviar por email</h3>
+                <p className="text-xs text-slate-500 mb-4">Presupuesto {presupuesto.numero} · {presupuesto.clienteNombre}</p>
+                <label className="text-xs font-semibold text-slate-600 block mb-1">Correo del cliente</label>
+                <input type="email" value={emailDest} onChange={(e) => setEmailDest(e.target.value)} placeholder="cliente@correo.com" className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm mb-4" />
+                <span className="text-xs font-semibold text-slate-600 block mb-1">¿Qué documento mandas? (puedes marcar más de uno)</span>
+                <div className="border border-slate-200 rounded-md divide-y divide-slate-100 mb-2 max-h-64 overflow-y-auto">
+                  {docsParaEmail().map((d) => (
+                    <label key={d.id} className="flex items-start gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                      <input type="checkbox" className="mt-1" checked={emailDocs.includes(d.id)} onChange={() => alternarDocEmail(d.id)} />
+                      <span className="flex-1 break-all">{d.nombre || "documento"}{d.subidoEn ? <span className="block text-[11px] text-slate-400">{new Date(d.subidoEn).toLocaleDateString("es-ES")}</span> : null}</span>
+                    </label>
+                  ))}
+                  <label className="flex items-start gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                    <input type="checkbox" className="mt-1" checked={emailDocs.includes("__crm__")} onChange={() => alternarDocEmail("__crm__")} />
+                    <span className="flex-1">Generar un PDF nuevo con los datos del CRM<span className="block text-[11px] text-slate-400">Resumen básico, no el presupuesto del programa</span></span>
+                  </label>
                 </div>
-              )}
+                {errorModalEmail && (
+                  <div className="text-xs text-rose-600 font-semibold mb-2">⚠ {errorModalEmail}
+                    <a href={enlaceEmailManual()} className="block underline mt-0.5">Abrir en mi correo</a>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2 mt-3">
+                  <button type="button" disabled={enviandoEmail} onClick={() => setEmailModal(false)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">Cancelar</button>
+                  <button type="button" disabled={enviandoEmail} onClick={enviarPorEmail} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60 px-3.5 py-2 rounded-md">
+                    <Mail size={14} /> {enviandoEmail ? "Enviando..." : "Enviar"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
           <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
@@ -49983,6 +50031,35 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
   const conAdicional = delDia.filter((x) => parseFloat(x.adicional) > 0);
   const sumaAd = (arr) => Math.round(arr.reduce((a, x) => a + (parseFloat(x.adicional) || 0), 0) * 100) / 100;
   const [verAdicional, setVerAdicional] = useState(true);
+  // Informe imprimible por trabajador: lo que apuntó en el cuadro «aparte» × la tarifa que se ponga aquí.
+  const [tarifa, setTarifa] = useState(() => { try { return localStorage.getItem("tarifaAdicionalInforme") || ""; } catch (e) { return ""; } });
+  const cambiarTarifa = (v) => { setTarifa(v); try { localStorage.setItem("tarifaAdicionalInforme", v); } catch (e) { /* sin almacenamiento */ } };
+  const tarifaNum = parseFloat(String(tarifa).replace(",", ".")) || 0;
+  const eur = (n) => (Math.round(n * 100) / 100).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+  const imprimirInformeTrabajadores = () => {
+    const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const porEmp = {};
+    conAdicional.forEach((x) => { const k = x.usuarioNombre || "—"; (porEmp[k] = porEmp[k] || []).push(x); });
+    const periodo = semana ? `Semana del ${fmtDate(lunes)} al ${fmtDate(finSemana)}` : `Día ${fmtDate(dia)}`;
+    const paginas = Object.entries(porEmp).sort((x, y) => x[0].localeCompare(y[0])).map(([emp, xs]) => {
+      const total = sumaAd(xs);
+      const filas = xs.map((x) => `<tr><td>${esc(fmtDia(x.fecha))}</td><td>${esc(x.puestoNombre)}</td><td>${esc(x.obraNombre)}</td><td class="n">${esc(x.adicional)}</td>${tarifaNum ? `<td class="n">${eur((parseFloat(x.adicional) || 0) * tarifaNum)}</td>` : ""}</tr>`).join("");
+      return `<section><h1>Informe de ${esc(etiqueta)}</h1><h2>${esc(emp)}</h2><p class="per">${esc(periodo)}</p>
+        <table><thead><tr><th>Día</th><th>Puesto</th><th>Obra / tarea</th><th class="n">${esc(etiqueta)}</th>${tarifaNum ? "<th class=\"n\">Importe</th>" : ""}</tr></thead><tbody>${filas}</tbody></table>
+        <div class="tot">Total ${esc(etiqueta)}: <b>${total}</b>${tarifaNum ? ` × ${esc(tarifa)} € = <b>${eur(total * tarifaNum)}</b>` : ""}</div>
+        <div class="firma">Firma del trabajador: ______________________</div></section>`;
+    }).join("");
+    const w = window.open("", "_blank");
+    if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para esta página."); return; }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Informe por trabajador</title><style>
+      body{font-family:Arial,sans-serif;margin:0;color:#111}section{padding:28px 34px;page-break-after:always}section:last-child{page-break-after:auto}
+      h1{font-size:18px;margin:0 0 4px}h2{font-size:22px;margin:0}.per{color:#555;margin:2px 0 14px}
+      table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f3f4f6}.n{text-align:right}
+      .tot{margin-top:14px;font-size:16px;text-align:right}.firma{margin-top:40px;font-size:13px}</style></head><body>${paginas}</body></html>`);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 400);
+  };
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-2">
@@ -50027,7 +50104,9 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
       {conAdicional.length > 0 && (
         <div className="bg-white border-2 border-slate-300 rounded-lg p-3 mb-3">
           <div className="flex items-center gap-2 mb-2">
-            <div className="text-xs font-bold text-slate-700 uppercase mr-auto">{etiqueta} (aparte) · total {sumaAd(conAdicional)}</div>
+            <div className="text-xs font-bold text-slate-700 uppercase mr-auto">{etiqueta} (aparte) · total {sumaAd(conAdicional)}{tarifaNum ? ` · ${eur(sumaAd(conAdicional) * tarifaNum)}` : ""}</div>
+            <label className="flex items-center gap-1 text-xs text-slate-600">× <input type="text" inputMode="decimal" value={tarifa} onChange={(e) => cambiarTarifa(e.target.value)} placeholder="tarifa" className="w-16 border border-slate-300 rounded px-1.5 py-1 text-xs text-right" /> €</label>
+            <button onClick={imprimirInformeTrabajadores} className="text-xs font-semibold text-white bg-[#2E8B57] hover:opacity-90 px-2.5 py-1 rounded">Imprimir informe por trabajador</button>
             <button onClick={() => setVerAdicional(!verAdicional)} className="text-xs text-slate-500 hover:underline">{verAdicional ? "Ocultar" : "Ver"}</button>
           </div>
           {verAdicional && (
