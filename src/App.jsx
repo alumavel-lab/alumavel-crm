@@ -46674,6 +46674,8 @@ const PUESTOS_LINEA = [
   { id: "controlDia", nombre: "Control del día", corto: "C. día" },
   { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
 ];
+// ORDEN DE LA LÍNEA para el CANDADO: una ventana que ya terminó un puesto de MÁS ADELANTE no la puede volver a coger un puesto de ATRÁS sin permiso
+const ORDEN_PUESTO_LINEA = { soldadora: 1, herraje: 2, pilastra: 2, colgado: 3, persianaA: 4, persianaB: 4, lineaPers: 5, puerta: 5, cristales: 6, solape: 7, especiales: 7, carga: 8 };
 const nombrePuestoLinea = (id) => (PUESTOS_LINEA.find((p) => p.id === id) || {}).nombre || id;
 const claveEscaneoLinea = (puestoId, ventanaId) => `${puestoId}__${String(ventanaId).replace(/[.#$\[\]\/|\s]/g, "_")}`;
 const useEscaneosLinea = () => {
@@ -49205,6 +49207,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const cristalVisto = useObjetoFb("cristalVistoLinea");
   const buscandoCris = useRef(new Map()); // Cristales: ventanas cuya 1ª lectura (buscar el cristal) ya se hizo; la 2ª las deja puestas
   const forzar = useRef(""); // Cristales: código de la ventana que se acristala como URGENTE saltándose el bloqueo
+  const desbloqueo = useRef(""); // CANDADO: pieza desbloqueada con permiso (PIN del encargado o administrador) para la siguiente lectura
+  const [candado, setCandado] = useState(null); // { cod, pos, puesto, por, hora }
+  const [pinCand, setPinCand] = useState("");
   const [bloqCris, setBloqCris] = useState(null);
   const [propInc, setPropInc] = useState(null); // incidencia propuesta (falta cristal / persiana): la acepta el chico
   mesaRef.current = mesa;
@@ -49299,6 +49304,21 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       avisarM(false, `⛔ YA LEÍDA: ${v.pos} ${h.pieza.t || "MARCO"} ya se leyó en ${nombrePuestoLinea(puestoId)}${hora ? ` a las ${hora}` : ""}${previa.por ? ` (${previa.por})` : ""}. No se puede leer otra vez. Si es una unidad más con la misma pegatina, avisa: no es una pieza nueva.`);
       return;
     }
+    // CANDADO: si un puesto de MÁS ADELANTE ya terminó esta ventana, un puesto de atrás no la puede volver a coger sin permiso
+    const miOrden = ORDEN_PUESTO_LINEA[puestoId];
+    if (miOrden && desbloqueo.current !== cod) {
+      // Hasta Matrimonio las piezas van SUELTAS (las hojas pasan por herraje antes de que el marco salga de soldadora): ahí el candado es de la MISMA pieza.
+      // Desde Matrimonio (la ventana ya está unida) cualquier lectura de esa ventana en un puesto de más adelante cuenta.
+      const sufPieza = claveLecturaLinea("", h); // «__<código de la pieza>»
+      const despues = escaneos.filter((x) => x && x.ventanaId === v.id && (ORDEN_PUESTO_LINEA[x.puestoId] || 0) > miOrden && ((ORDEN_PUESTO_LINEA[x.puestoId] || 0) >= 3 || String(x.id || "").endsWith(sufPieza))).sort((a, b) => (ORDEN_PUESTO_LINEA[b.puestoId] || 0) - (ORDEN_PUESTO_LINEA[a.puestoId] || 0) || (b.ts || 0) - (a.ts || 0));
+      if (despues.length) {
+        const x = despues[0]; const hora = x.ts ? new Date(x.ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+        setCandado({ cod, pos: v.pos, puesto: nombrePuestoLinea(x.puestoId), por: x.por || "", hora }); setPinCand("");
+        avisarM(false, `🔒 ${v.pos}: ya la TERMINÓ ${nombrePuestoLinea(x.puestoId)}${x.por ? ` (${x.por})` : ""}${hora ? ` el ${hora}` : ""}. Tiene CANDADO: para cogerla en ${nombrePuestoLinea(puestoId)} hay que pedir permiso (PIN del encargado).`);
+        return;
+      }
+    }
+    if (desbloqueo.current === cod) { desbloqueo.current = ""; setCandado(null); }
     let selCris = null;
     // Cristales en dos tiempos: 1ª lectura = «el cristal está ahí» (no se guarda nada); 2ª lectura = «puesto» (flujo normal)
     if (puestoId === "cristales" && v.modelo && forzar.current !== cod) {
@@ -49420,6 +49440,24 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
         <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
+        {candado && (
+          <div className="mb-3 rounded-lg border-2 border-rose-600 bg-rose-50 p-3 space-y-2">
+            <div className="text-base font-extrabold text-rose-900">🔒 {candado.pos} tiene CANDADO: ya la terminó {candado.puesto}{candado.por ? ` (${candado.por})` : ""}{candado.hora ? ` el ${candado.hora}` : ""}.</div>
+            <div className="text-sm text-rose-900">Para volver a cogerla aquí (quitársela a {candado.puesto}) hace falta permiso: el encargado pone su PIN{ctx.esAdmin ? " o, como administrador, desbloquéala directamente" : ""}.</div>
+            <div className="flex flex-wrap items-center gap-2">
+              {ctx.pinReorganizarHash ? <input type="password" inputMode="numeric" value={pinCand} onChange={(e) => setPinCand(e.target.value)} placeholder="PIN del encargado" className="w-40 border-2 border-rose-300 rounded-md px-2 py-1.5 text-sm" /> : <span className="text-xs font-semibold text-rose-800">No hay PIN de encargado creado (Administración → PIN). Solo un administrador puede desbloquear.</span>}
+              <button type="button" onClick={async () => {
+                let ok = !!ctx.esAdmin && !pinCand;
+                if (!ok && ctx.pinReorganizarHash && pinCand) ok = (await huellaPinReorganizar(pinCand)) === ctx.pinReorganizarHash;
+                if (!ok) { avisar(false, pinCand ? "PIN incorrecto." : "Pon el PIN del encargado."); return; }
+                desbloqueo.current = candado.cod;
+                fbSet(ref(fbDb, `desbloqueosLinea/${Date.now()}_${String(candado.cod)}`), { cod: candado.cod, pos: candado.pos, de: candado.puesto, para: nombrePuestoLinea(puestoId), por: quien || "", conPin: !!pinCand, ts: Date.now() }).catch(() => {});
+                setPinCand(""); avisar(true, `🔓 ${candado.pos} desbloqueada con permiso. Vuelve a pasar la pistola para cogerla en ${nombrePuestoLinea(puestoId)}.`); enfocar();
+              }} className="px-3 py-1.5 rounded-md bg-rose-700 text-white text-sm font-bold">🔓 Desbloquear con permiso</button>
+              <button type="button" onClick={() => { setCandado(null); setPinCand(""); enfocar(); }} className="text-sm text-slate-600 underline">Dejarla (no la cojo)</button>
+            </div>
+          </div>
+        )}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
