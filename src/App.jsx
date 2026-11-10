@@ -43827,6 +43827,22 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
   );
 }
 
+// Bloque plegable (cerrado por defecto; se acuerda lo que dejó cada ordenador): título arriba, pincha y se abre todo
+function DesplegableAlm({ titulo, clave, resumen = "", children }) {
+  const [abierto, setAbierto] = useEstadoLocal(`crm_desp_${clave}`, false);
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left">
+        <span className="text-slate-500">{abierto ? "▾" : "▸"}</span>
+        <span className="font-bold text-slate-800">{titulo}</span>
+        {resumen && <span className="text-xs text-slate-500">{resumen}</span>}
+        <span className="ml-auto text-xs font-semibold text-slate-500">{abierto ? "Cerrar" : "Abrir"}</span>
+      </button>
+      {abierto && <div className="px-3 pb-3">{children}</div>}
+    </div>
+  );
+}
+
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 // Almacenes de ventanas. Los marcados "de Uxcar" (Valencia, Palma de Mallorca…) salen con "Uxcar ·" delante en todos los selectores.
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }])
@@ -45907,7 +45923,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
         ) : null;
       })()}
-      <EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} />
+      <DesplegableAlm titulo="Estanterías de ventanas terminadas" clave="estTerminadas"><EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} /></DesplegableAlm>
       <IncompletasAlmacen caballetes={caballetes} indice={indicePiezas} />
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -45936,7 +45952,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           );
         })()}
       </div>
-      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} />}
+      {onGuardarEtiquetasObra && <DesplegableAlm titulo="Subir etiquetas de las ventanas" clave="subirEtiq"><SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} /></DesplegableAlm>}
+      <DesplegableAlm titulo="Planning de caballetes" clave="planningCab" resumen="· previsión por semanas y próximas cargas">
+      <div className="space-y-3">
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
         <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
@@ -45945,6 +45963,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         ? <PlanningCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig}
             pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} onGuardar={onGuardar} almacenPrincipal={almacenes[0].id} />
         : <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />}
+      </div>
+      </DesplegableAlm>
       <div className="grid grid-cols-3 gap-3">
         {[["libre", "Libres"], ["cargado", "Con ventanas"], ["fuera", "Fuera (a devolver)"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(filtro === k ? "" : k)} className={`text-left rounded-lg p-3 border ${filtro === k ? "border-[#2E8B57]" : "border-transparent"} ${k === "fuera" && cuenta("fuera") ? "bg-amber-50" : "bg-slate-50"}`}>
