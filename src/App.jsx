@@ -47875,6 +47875,19 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
   }, [reconocer, persianas]);
+  // Estado de cada ventana de la lista: a dónde se ha mandado (solape con su estantería / línea para paletizar) y si su cristal ya está puesto
+  const estadoVent = (wx) => {
+    if (!obra) return null;
+    const cl = `${obra.key}__${wx.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+    const hv = [...indice.values()].find((h) => h.ventana && String(h.ventana.id) === wx.id);
+    const bs = hv ? baseDe(hv.ventana) : "";
+    const us = bs && ubicLin[bs] && ubicLin[bs].zonaId === "solape" ? ubicLin[bs] : (solSin[cl] || null);
+    if (us) return { txt: `SOLAPE ${us.hueco}`, cls: "bg-amber-500 text-white" };
+    if (sinSolMan[cl]) return { txt: "PALETIZAR", cls: "bg-emerald-600 text-white" };
+    const rs = crisDeVentana(wx);
+    if ((rs.length > 0 && rs.every((r) => r.p.puesto)) || cpManual[cl]) return { txt: "cristal puesto · en LÍNEA", cls: "bg-sky-600 text-white" };
+    return null;
+  };
   const darBaja = (x, k = 1) => {
     const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
     const marc = marcasUd(x.p);
@@ -47902,7 +47915,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {texto.length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto ni en Control del día ni en las etiquetas. Mira que su hoja de corte esté subida en Control del día.</p>}
       {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
       {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
-      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}</button>)}</div>}
+      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
       {w && (
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
