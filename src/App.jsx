@@ -42278,7 +42278,10 @@ function analizarBloqueCorte(b, modelo, uds) {
   const numEs = (t) => parseFloat(String(t).replace(/\./g, "").replace(",", "."));
   const cristales = [];
   b.split("\n").forEach((l) => { const mc = l.match(/^\s*([\d.+]+\/[\d.]+\/[\d.+]+\S*)\s.*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?([\d.]+,\d\d)\s+([\d.]+,\d\d)\s*$/); if (mc && numEs(mc[4]) > 0 && numEs(mc[5]) > 0) cristales.push({ comp: mc[1], uds: parseInt(mc[2], 10), ancho: numEs(mc[4]), alto: numEs(mc[5]) }); });
-  return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo, cristales };
+  // Un dibujo con DOS ventanas pegadas (p.ej. 756 + 1513) trae un cajón de persiana por cada una: «CAJON Ac. derecha» y «CAJON Ac. izquierda». Nº de ventanas físicas por unidad del modelo.
+  const nCajones = (b.match(/CAJ[OÓ]N\s+Ac\.?\s*(?:derecha|izquierda|der\b|izq\b)/gi) || []).length;
+  const vent = nCajones >= 2 && nCajones <= 6 ? nCajones : 1;
+  return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo, cristales, vent };
 }
 function agruparHojaCorte(paginas) {
   const todo = paginas.map((it) => it.join("")).join("\n");
@@ -58298,7 +58301,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // El PLANING lista cada posición una sola vez aunque la hoja de corte diga «Uds: 2»: se cuentan tantas ventanas como unidades (si el planning ya repite la posición, se deja tal cual)
   const expandePlan = (o, arr) => {
     const hc = hojaDeObra(o); const cuenta = {}; arr.forEach((w) => { const k = String((w && w.pos) || "").trim().toUpperCase(); cuenta[k] = (cuenta[k] || 0) + 1; });
-    const udsDe = (pos) => { const k = String(pos || "").trim().toUpperCase(); if (!hc || cuenta[k] > 1) return 1; const pb = k.split(/\s+/)[0]; const m = toArray(hc.modelos).find((x) => String(x.pos || "").toUpperCase() === pb); return m ? Math.min(99, Math.max(1, parseInt(m.uds, 10) || 1)) : 1; };
+    const udsDe = (pos) => { const k = String(pos || "").trim().toUpperCase(); if (!hc || cuenta[k] > 1) return 1; const pb = k.split(/\s+/)[0]; const m = toArray(hc.modelos).find((x) => String(x.pos || "").toUpperCase() === pb); return m ? Math.min(99, Math.max(1, (parseInt(m.uds, 10) || 1) * (parseInt(m.vent, 10) || 1))) : 1; };
     const out = []; const vistos = {};
     arr.forEach((w, i) => { const n = udsDe(w.pos); for (let u = 1; u <= n; u++) { let id = limpia(n > 1 ? `${w.pos}_${u}` : (w.pos || `v${i}`)); if (vistos[id]) { vistos[id]++; id = `${id}_${vistos[id]}`; } else vistos[id] = 1; out.push({ id, pos: n > 1 ? `${w.pos} ${u}/${n}` : (w.pos || `V${i + 1}`), fab: "", tip: w.pos || "", medida: "", color: w.color || "" }); } });
     return out;
@@ -58328,7 +58331,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const hc = hojaDeObra(o);
       if (hc) {
         const lv = []; const vistosH = {};
-        toArray(hc.modelos).forEach((m) => { const n = Math.min(99, Math.max(1, parseInt(m.uds, 10) || 1)); for (let u = 1; u <= n; u++) { let id = limpia(n > 1 ? `${m.pos}_${u}` : m.pos); if (vistosH[id]) { vistosH[id]++; id = `${id}_${vistosH[id]}`; } else vistosH[id] = 1; lv.push({ id, pos: n > 1 ? `${m.pos} ${u}/${n}` : m.pos, fab: "", tip: m.pos, medida: m.ancho && m.alto ? `${m.ancho} x ${m.alto}` : "", color: m.color || "" }); } });
+        toArray(hc.modelos).forEach((m) => { const n = Math.min(99, Math.max(1, (parseInt(m.uds, 10) || 1) * (parseInt(m.vent, 10) || 1))); for (let u = 1; u <= n; u++) { let id = limpia(n > 1 ? `${m.pos}_${u}` : m.pos); if (vistosH[id]) { vistosH[id]++; id = `${id}_${vistosH[id]}`; } else vistosH[id] = 1; lv.push({ id, pos: n > 1 ? `${m.pos} ${u}/${n}` : m.pos, fab: "", tip: m.pos, medida: m.ancho && m.alto ? `${m.ancho} x ${m.alto}` : "", color: m.color || "" }); } });
         if (lv.length) { o.viv = new Map([["Ventanas de la hoja de corte", lv]]); o.fuente = "hoja"; return; }
       }
     }
