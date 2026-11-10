@@ -47757,6 +47757,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
 }
 // Sin etiqueta a mano: se busca la obra por su nº de presupuesto (en Control del día y en las etiquetas, sin importar el día),
 // se pincha la ventana y salen sus cristales (caballete y hueco) y su persiana (carro) para darlos de baja
+// Presupuesto completo con más ventanas que esto: en vez de ir directo a carga, va al almacén de ventanas
+const UMBRAL_DIRECTA_CARGA = 20;
 // Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
 const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
 function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
@@ -47816,25 +47818,33 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`);
   };
   // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
-  const reconocer = useMemo(() => {
-    if (!w || !obra) return null;
-    const exp = ((String(w.g).match(/^\s*(\d{2,})\b/) || [])[1]) || "";
-    const viv = normVivLinea(String(w.g || "").replace(/^\s*\d+\s*/, ""));
-    const pos = normVivLinea(w.pos);
+  const reconocerDe = (wx) => {
+    if (!wx || !obra) return null;
+    const exp = ((String(wx.g).match(/^\s*(\d{2,})\b/) || [])[1]) || "";
+    const viv = normVivLinea(String(wx.g || "").replace(/^\s*\d+\s*/, ""));
+    const pos = normVivLinea(wx.pos);
     const casa = (refTxt) => { const r = normVivLinea(refTxt); if (!r) return false; return [viv, pos].some((a) => a && (r === a || (a.length >= 2 && r.includes(a)) || (r.length >= 3 && a.includes(r)))); };
     const pptoDe = (...ts) => ts.some((t) => String(t || "").split(/[·,;\s]+/).some((tt) => { const b = basePresuDia(tt); return b.length >= 3 && obra.bases.includes(b); }));
     return { exp, casa, pptoDe };
-  }, [w, obra]);
-  const cris = useMemo(() => {
-    if (!reconocer) return [];
+  };
+  const crisDeVentana = (wx) => {
+    const rc = reconocerDe(wx); if (!rc) return [];
     const out = [];
     toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
-      const deObra = reconocer.pptoDe(c.presupuesto, p.presupuesto, p.ppto) || (reconocer.exp && numsExpediente(p.expediente || c.expediente).includes(reconocer.exp));
-      if (!deObra || !reconocer.casa(p.ref)) return;
+      const deObra = rc.pptoDe(c.presupuesto, p.presupuesto, p.ppto) || (rc.exp && numsExpediente(p.expediente || c.expediente).includes(rc.exp));
+      if (!deObra || !rc.casa(p.ref)) return;
       out.push({ c, p, i });
     }));
     return out;
-  }, [reconocer, cristales]);
+  };
+  const reconocer = useMemo(() => reconocerDe(w), [w, obra]); // eslint-disable-line
+  const cris = useMemo(() => crisDeVentana(w), [w, obra, cristales]); // eslint-disable-line
+  // Presupuesto completo: ¿cuántas ventanas de la obra ya están acristaladas (todos sus cristales dados de baja)?
+  const hechasObra = useMemo(() => { // eslint-disable-line
+    const ids = new Set();
+    if (obra) obra.ventanas.forEach((wx) => { const rs = crisDeVentana(wx); if (rs.length > 0 && rs.every((r) => r.p.puesto)) ids.add(wx.id); });
+    return ids;
+  }, [obra, cristales]); // eslint-disable-line
   const pers = useMemo(() => {
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
@@ -47914,7 +47924,22 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
           )}
         </div>
       )}
-      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900">{w.pos} NO lleva solape → al terminar de acristalar va a VENTANAS TERMINADAS (si es la única de su vivienda, directa a carga).</div>}
+      {w && !llevaSolape && (() => {
+        const total = obra ? obra.ventanas.length : 0;
+        const faltan = obra ? obra.ventanas.filter((x) => x.id !== w.id && !hechasObra.has(x.id)).length : 0;
+        const completo = total > 0 && faltan === 0;
+        const grande = total > UMBRAL_DIRECTA_CARGA;
+        return (
+          <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900 space-y-1">
+            <div>{w.pos} NO lleva solape.</div>
+            {completo
+              ? (grande
+                ? <div className="text-base">✅ Con esta se completa el presupuesto ({total} ventanas, más de {UMBRAL_DIRECTA_CARGA}) → llévala al ALMACÉN DE VENTANAS con todas las del presupuesto.</div>
+                : <div className="text-base">✅ Con esta se completa el presupuesto ({total} ventanas) → va DIRECTA A CARGA con todas las del presupuesto.</div>)
+              : <div className="text-base">⏳ Déjala en VENTANAS TERMINADAS: el presupuesto aún no está completo (acristaladas {total - faltan - 1 < 0 ? 0 : total - faltan} de {total}; faltan {faltan}).</div>}
+          </div>
+        );
+      })()}
     </div>
   );
 }
