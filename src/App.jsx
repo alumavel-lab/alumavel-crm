@@ -47013,8 +47013,11 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
-  const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
-  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
+  const solSinMapa = useObjetoFb("solapeSinEtiquetaLinea"); // ventanas mandadas a Solape desde el buscador por presupuesto (sin etiquetas)
+  const sinSolMapa = useObjetoFb("sinSolapeLinea"); // ventanas marcadas «sin solape»: en la Línea para paletizar
+  const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } });
+    Object.entries(solSinMapa || {}).forEach(([k, e]) => { if (!e || !e.hueco) return; const z = (m.solape = m.solape || {}); (z[e.hueco] = z[e.hueco] || []).push({ cod: `sin:${k}`, slot: 9, sin: { k, pos: e.pos || "?", obra: e.obra || "" } }); }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic, solSinMapa]);
+  const etiquetaDe = (cod) => { if (String(cod).startsWith("sin:")) { const e = (solSinMapa || {})[String(cod).slice(4)]; return e && e.pos ? e.pos : "?"; } const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
@@ -47037,6 +47040,12 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
               <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
               {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
             </div>
+            {z.id === "sinPersiana" && Object.keys(sinSolMapa || {}).filter((k) => sinSolMapa[k]).length > 0 && (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1.5">
+                <span className="text-[11px] font-bold uppercase text-emerald-800">En la Línea para paletizar (sin solape):</span>
+                {Object.entries(sinSolMapa).filter(([, e]) => e).map(([k, e]) => <span key={k} title={e.obra || ""} className="rounded bg-emerald-600 px-1.5 py-0.5 text-[11px] font-bold text-white">{e.pos || "?"}</span>)}
+              </div>
+            )}
             <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
               {Array.from({ length: z.huecos }, (_, i) => i + 1).map((hu) => {
                 const piezas = oc[hu] || [];
@@ -47045,7 +47054,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { const reales = piezas.filter((x) => !x.sin); if (reales.length) setAbierto({ z, hu, piezas: reales }); else if (piezas.length && (admin || control) && window.confirm(`¿Liberar la estantería ${hu} de "${z.nombre}" (${piezas.map((x) => x.sin.pos).join(", ")})? Solo quita la marca del CRM.`)) Promise.all(piezas.map((x) => fbSet(ref(fbDb, `solapeSinEtiquetaLinea/${x.sin.k}`), null))).catch(() => {}); }} title={piezas.length ? piezas.map((x) => (x.sin ? `${x.sin.pos}${x.sin.obra ? ` · ${x.sin.obra}` : ""} (apuntada desde el buscador)` : `${etiquetaDe(x.cod)} · ${x.cod}`)).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -59087,7 +59096,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const hojaVieja = (o) => { const h = hojasCD && hojasCD[limpia(o.d.key)]; return !!(h && toArray(h.modelos).length && !(h.v >= 3)); }; // leída antes de sacar medidas de cristales y nº de cajones: se vuelve a leer sola una vez
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && (!hojaDeObra(o) || hojaVieja(o)) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
