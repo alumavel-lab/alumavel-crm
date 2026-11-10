@@ -47767,7 +47767,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
  // ventanas que pueden esperar a la vez en la zona de carga; a partir de ahí, al almacén de ventanas
 // Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
 const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
-function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
+function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "", puesto = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
   const [obraKey, setObraKey] = useState("");
@@ -47876,10 +47876,11 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
   // MEDIDAS DE LOS CRISTALES según la hoja de corte (tabla SUPERFICIES). Se lee el PDF de ESTA obra solo cuando se elige una ventana; no escribe nada en el CRM.
+  const soloSolape = puesto === "solape"; // en el puesto de Solape no se enseñan cristales ni persianas: solo dónde va la ventana
   const [medHoja, setMedHoja] = useState({}); // { [obra.key]: { estado, modelos: { "V04.105": [{comp, uds, ancho, alto}] } } }
   const obraMedKey = obra ? obra.key : "";
   useEffect(() => {
-    if (!obraMedKey || !w || medHoja[obraMedKey]) return;
+    if (!obraMedKey || !w || soloSolape || medHoja[obraMedKey]) return;
     if (!/^cd:/.test(obraMedKey)) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
     setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "leyendo" } }));
     (async () => {
@@ -47965,7 +47966,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
       {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
       {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{estadoVent(x) ? "🔒 " : ""}{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
-      {w && (
+      {w && !soloSolape && (
         <div className="space-y-1.5">
           {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
@@ -48936,7 +48937,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
