@@ -24735,6 +24735,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
+  const [fTipo, setFTipo] = useEstadoLocal("crm_alb_tipo", "todos"); // reparto | recogida | instalacion
+  const [fOrigen, setFOrigen] = useEstadoLocal("crm_alb_origen", "todos"); // uxcar | mios
   const [firmando, setFirmando] = useState(null); // "carga" | "cliente" | "responsable"
   const [subiendoFotoCarga, setSubiendoFotoCarga] = useState(false);
   const [borrador, setBorrador] = useState(null);
@@ -24751,7 +24753,13 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const nq = String(qAlb || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
   const casaQ = (p) => { if (!nq) return true; const a = p.albaranEntrega || {}; const t = [p.numero, p.nombre, presupuestoDeObra(p), p.presupuestoNumero, p.expediente, p.referencia, (clienteDe(p) || {}).nombre, direccionDe(p), a.numero, a.chofer, a.matricula].filter(Boolean).join(" ").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); return t.includes(nq) || t.replace(/\./g, "").includes(nq.replace(/\./g, "")); };
   // Repartos en camión y recogidas en fábrica: los dos llevan albarán firmado por el cliente
-  const repartos = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p)) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p))
+  // TIPO de salida y ORIGEN (Uxcar o mías) de cada obra, para separarlas con los botones
+  const tipoSalida = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
+  const esDeUxcar = (p) => p.origen === "portalUxcar" || !!p.uxcarExpedienteId || /uxcar/i.test(`${(clienteDe(p) || {}).nombre || ""} ${p.nombre || ""}`);
+  const repartosBase = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p) || p.llevaInstalacion) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p));
+  const cuentaTipo = (t) => repartosBase.filter((p) => tipoSalida(p) === t && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p))).length;
+  const cuentaOrigen = (o) => repartosBase.filter((p) => (o === "uxcar") === esDeUxcar(p) && (fTipo === "todos" || tipoSalida(p) === fTipo)).length;
+  const repartos = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)))
     .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
   const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente) && casaQ(p))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
@@ -24902,11 +24910,29 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     <div className="p-4 sm:p-8 max-w-5xl">
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
-        {tabBtn("cargas", "Cargas de hoy", repartos.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length)}
-        {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length + proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado).length)}
+        {tabBtn("cargas", "Cargas de hoy", repartosBase.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length)}
+        {tabBtn("repartos", "Repartos, recogidas e instalaciones", repartosBase.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length + proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
       </div>
+      {tab === "repartos" && (() => {
+        const chip = (val, cur, set, txt, n) => <button key={val} type="button" onClick={() => set(cur === val ? "todos" : val)} className={`px-3 py-1.5 rounded-lg border-2 text-sm font-bold ${cur === val ? "bg-[#2E8B57] border-[#2E8B57] text-white" : "bg-white border-slate-300 text-slate-700"}`}>{txt} <span className={`ml-1 text-xs px-1.5 rounded ${cur === val ? "bg-white/25" : "bg-slate-100"}`}>{n}</span></button>;
+        return (
+          <div className="mb-2 rounded-lg border border-slate-200 bg-white p-2 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-1.5"><span className="text-xs font-bold text-slate-500 w-14">Tipo</span>
+              {chip("todos", fTipo, setFTipo, "Todos", cuentaTipo("reparto") + cuentaTipo("recogida") + cuentaTipo("instalacion"))}
+              {chip("reparto", fTipo, setFTipo, "🚚 Reparto", cuentaTipo("reparto"))}
+              {chip("recogida", fTipo, setFTipo, "🏭 Recogida en fábrica", cuentaTipo("recogida"))}
+              {chip("instalacion", fTipo, setFTipo, "🔧 Instalación", cuentaTipo("instalacion"))}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5"><span className="text-xs font-bold text-slate-500 w-14">De quién</span>
+              {chip("todos", fOrigen, setFOrigen, "Todas", cuentaOrigen("uxcar") + cuentaOrigen("mios"))}
+              {chip("mios", fOrigen, setFOrigen, "Mías", cuentaOrigen("mios"))}
+              {chip("uxcar", fOrigen, setFOrigen, "Uxcar", cuentaOrigen("uxcar"))}
+            </div>
+          </div>
+        );
+      })()}
       {(tab === "repartos" || tab === "firmados") && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <input value={qAlb} onChange={(e) => setQAlb(e.target.value)} placeholder="🔎 Buscar por presupuesto, cliente, obra, nº de albarán, dirección…" className="flex-1 min-w-[240px] border-2 border-slate-300 rounded-md px-3 py-2 text-sm" />
