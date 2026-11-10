@@ -43944,6 +43944,62 @@ function DesplegableAlm({ titulo, clave, resumen = "", children }) {
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }])
   .map((a) => (a.dueno === "uxcar" ? { ...a, nombreBase: a.nombre, nombre: `Uxcar · ${a.nombre}` } : a));
 
+// ALMACÉN DE PALETS POR FILAS Y HUECOS (como el de cristales): cada almacén tiene «filas» × «huecosFila»; cada palet guarda su sitio { f, h }.
+const huecosAlmacenPalets = (a) => ({ filas: Math.max(0, parseInt(a && a.filas, 10) || 0), huecos: Math.max(0, parseInt(a && a.huecosFila, 10) || 0) });
+const textoSitioPalet = (s) => (s && s.f && s.h ? `Fila ${s.f} · Hueco ${s.h}` : "");
+// Al llevar un palet a un almacén: el primer hueco libre (fila a fila). Devuelve lo que hay que guardar en el palet.
+function sitioParaPalet(cab, almacenId, almacenes, cabs) {
+  const a = toArray(almacenes).find((x) => x && x.id === almacenId); const { filas, huecos } = huecosAlmacenPalets(a);
+  if (!filas || !huecos) return { almacenId, sitioAlm: null };
+  if (cab.almacenId === almacenId && cab.sitioAlm && cab.sitioAlm.f) return { almacenId, sitioAlm: cab.sitioAlm, ubicacion: textoSitioPalet(cab.sitioAlm) };
+  const ocupado = new Set(toArray(cabs).filter((c) => c && c.id !== cab.id && c.almacenId === almacenId && c.sitioAlm && (c.estado || "libre") !== "fuera").map((c) => `${c.sitioAlm.f}_${c.sitioAlm.h}`));
+  for (let f = 1; f <= filas; f++) for (let h = 1; h <= huecos; h++) if (!ocupado.has(`${f}_${h}`)) { const sa = { f, h }; return { almacenId, sitioAlm: sa, ubicacion: textoSitioPalet(sa) }; }
+  return { almacenId, sitioAlm: null, lleno: true };
+}
+function MapaPaletsAlmacen({ almacenes, caballetes, onGuardar, quien = "" }) {
+  const conMapa = toArray(almacenes).filter((a) => { const x = huecosAlmacenPalets(a); return x.filas && x.huecos; });
+  const [almId, setAlmId] = useEstadoLocal("crm_mapaPalets_alm", "");
+  const [sel, setSel] = useState(""); // palet elegido para moverlo
+  const a = conMapa.find((x) => x.id === almId) || conMapa[0];
+  if (!a) return <p className="text-sm text-slate-500">Ningún almacén tiene filas y huecos. Ponlos en «Gestionar almacenes» (filas × huecos por fila) y aquí sale su mapa.</p>;
+  const { filas, huecos } = huecosAlmacenPalets(a);
+  const suyos = toArray(caballetes).filter((c) => c && c.almacenId === a.id && (c.estado || "libre") !== "fuera");
+  const en = new Map(); suyos.forEach((c) => { if (c.sitioAlm && c.sitioAlm.f) en.set(`${c.sitioAlm.f}_${c.sitioAlm.h}`, c); });
+  const sinHueco = suyos.filter((c) => !(c.sitioAlm && c.sitioAlm.f && c.sitioAlm.f <= filas && c.sitioAlm.h <= huecos)).sort((x, y) => String(x.numero).localeCompare(String(y.numero), "es", { numeric: true }));
+  const elegido = suyos.find((c) => c.id === sel);
+  const poner = (f, h) => { if (!elegido) return; const sa = { f, h }; onGuardar({ ...elegido, sitioAlm: sa, ubicacion: textoSitioPalet(sa), historial: [...toArray(elegido.historial), { fecha: new Date().toISOString(), texto: `Puesto en ${a.nombre} · ${textoSitioPalet(sa)}${quien ? ` por ${quien}` : ""}` }] }); setSel(""); };
+  const quitar = () => { if (!elegido) return; onGuardar({ ...elegido, sitioAlm: null, ubicacion: "" }); setSel(""); };
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {conMapa.length > 1 && <select value={a.id} onChange={(e) => { setAlmId(e.target.value); setSel(""); }} className="border border-slate-300 rounded-md px-2 py-1 text-sm">{conMapa.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select>}
+        <b className="text-sm text-slate-800">{a.nombre} · {filas} filas × {huecos} huecos · {en.size} ocupados</b>
+        {elegido && <span className="text-sm font-bold text-indigo-800">Moviendo el palet {elegido.numero}: toca un hueco vacío <button type="button" onClick={quitar} className="ml-2 text-xs underline text-rose-700">quitarlo del hueco</button> <button type="button" onClick={() => setSel("")} className="ml-1 text-xs underline text-slate-500">cancelar</button></span>}
+      </div>
+      {sinHueco.length > 0 && <div className="flex flex-wrap items-center gap-1.5 text-xs"><b className="text-amber-800">Sin hueco ({sinHueco.length}):</b>{sinHueco.map((c) => <button key={c.id} type="button" onClick={() => setSel(sel === c.id ? "" : c.id)} className={`px-2 py-1 rounded border-2 font-bold ${sel === c.id ? "bg-indigo-600 border-indigo-700 text-white" : "bg-amber-50 border-amber-400 text-amber-900"}`}>{c.numero}</button>)}</div>}
+      <div className="overflow-x-auto">
+        <table className="border-collapse text-xs">
+          <tbody>
+            {Array.from({ length: filas }, (_, fi) => (
+              <tr key={fi}>
+                <td className="pr-2 font-bold text-slate-500 whitespace-nowrap">Fila {fi + 1}</td>
+                {Array.from({ length: huecos }, (_, hi) => { const c = en.get(`${fi + 1}_${hi + 1}`); const nV = c ? toArray(c.ventanas).length : 0; return (
+                  <td key={hi} className="p-0.5">
+                    <button type="button" title={c ? `${c.numero} · ${(c.obra && c.obra.nombre) || "sin obra"} · ${nV} ventanas` : `Fila ${fi + 1} · Hueco ${hi + 1} (libre)`}
+                      onClick={() => { if (c) setSel(sel === c.id ? "" : c.id); else poner(fi + 1, hi + 1); }}
+                      className={`w-16 h-12 rounded border-2 leading-tight ${c ? (sel === c.id ? "bg-indigo-600 border-indigo-800 text-white" : c.estado === "cargado" ? "bg-emerald-500 border-emerald-700 text-white" : "bg-sky-100 border-sky-400 text-sky-900") : elegido ? "bg-white border-dashed border-indigo-400 text-slate-400 hover:bg-indigo-50" : "bg-white border-slate-200 text-slate-300"}`}>
+                      {c ? <><div className="font-extrabold">{c.numero}</div><div className="text-[9px] truncate px-0.5">{nV ? `${nV} v.` : "vacío"}</div></> : <div className="text-[10px]">{hi + 1}</div>}
+                    </button>
+                  </td>); })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-500">Verde = palet cargado · azul = con hueco · toca un palet y luego un hueco vacío para moverlo. Al mandar un palet a este almacén se le da solo el primer hueco libre.</p>
+    </div>
+  );
+}
 // Fija A MANO el estante (1..huecos) de una ventana en una zona (solape / terminadas). Usa los mismos datos que el mapa de estanterías:
 // la ventana queda grabada en ubicacionesLinea y el hueco reservado en ocupacionLinea (con transacción: dos ordenadores no pueden coger el mismo).
 // Una ventana está en una sola zona a la vez: si estaba en otra, se libera. Si el estante ya lo ocupa otra ventana, no cambia nada.
@@ -45089,7 +45145,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                 <button type="button" onClick={() => setTicPalet("")} className="ml-auto text-xs text-slate-500 hover:underline">Cerrar</button>
               </div>
               <div className="flex gap-1.5">
-                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, almacenId: e.target.value, historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-300 rounded px-1 py-1 bg-white">
+                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, ...sitioParaPalet(c, e.target.value, almacenes, cabsAhora()), historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-300 rounded px-1 py-1 bg-white">
                   {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
                 </select>
                 <input key={c.id + (c.ubicacion || "")} defaultValue={c.ubicacion || ""} onBlur={(e) => e.target.value !== (c.ubicacion || "") && onGuardar({ ...c, ubicacion: e.target.value })} placeholder="Sitio (ej. fila 3)" className="flex-1 min-w-0 text-xs border border-slate-300 rounded px-1.5 py-1 bg-white" />
@@ -45526,8 +45582,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         if (!dest) { avisar(false, "Ese número no existe"); return; }
       }
       if (!window.confirm(`Mover ${palets.map((c) => c.numero).join(", ")} a «${dest.nombre}»?`)) return;
-      palets.forEach((c) => { const cur = cabsAhora().find((z) => z.id === c.id) || c; guardarCab({ ...cur, almacenId: dest.id, historial: hist(cur, `Enviado a ${dest.nombre} desde Almacén del día${quien ? ` por ${quien}` : ""}`) }); });
-      avisar(true, `${palets.length} palet${palets.length === 1 ? "" : "s"} → ${dest.nombre}`);
+      let tomados = cabsAhora(); const huecosDados = [];
+      palets.forEach((c) => { const cur = tomados.find((z) => z.id === c.id) || c; const sp = sitioParaPalet(cur, dest.id, almacenes, tomados); tomados = tomados.map((z) => (z.id === cur.id ? { ...z, ...sp } : z)); if (sp.sitioAlm) huecosDados.push(`${cur.numero} → ${textoSitioPalet(sp.sitioAlm)}`); else if (sp.lleno) huecosDados.push(`${cur.numero} → ⚠ almacén LLENO, sin hueco`); guardarCab({ ...cur, ...sp, historial: hist(cur, `Enviado a ${dest.nombre}${sp.sitioAlm ? ` · ${textoSitioPalet(sp.sitioAlm)}` : ""} desde Almacén del día${quien ? ` por ${quien}` : ""}`) }); });
+      avisar(true, `${palets.length} palet${palets.length === 1 ? "" : "s"} → ${dest.nombre}${huecosDados.length ? ` · ${huecosDados.join(" · ")}` : ""}`);
     };
     // Obra que el cliente se lleva por sus propios medios: sale SIN paletizar. Se da de baja del planning (como una paletizada) y pasa a
     // «Listo para reparto/recogida» con «Recogida en fábrica»; al firmar el albarán de recogida sigue a facturación como todas.
@@ -45827,7 +45884,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </Field>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Almacén">
-              <Select value={almacenDe(c)} onChange={(e) => setC({ almacenId: e.target.value })}>
+              <Select value={almacenDe(c)} onChange={(e) => setC({ ...sitioParaPalet(c, e.target.value, almacenes, cabsAhora()) })}>
                 {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
               </Select>
             </Field>
@@ -45989,6 +46046,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {almacenes.map((a, i) => (
             <div key={a.id} className="flex flex-wrap items-center gap-2">
               <TextInput defaultValue={a.nombreBase !== undefined ? a.nombreBase : a.nombre} onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== (a.nombreBase !== undefined ? a.nombreBase : a.nombre)) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, nombre: v, ...(x.nombreBase !== undefined ? { nombreBase: v } : {}) } : x))); }} className="!w-56" placeholder="Nombre" />
+              <label className="flex items-center gap-1 text-xs text-slate-600" title="Mapa del almacén de palets: filas × huecos por fila"><input type="number" min="0" defaultValue={a.filas || ""} placeholder="filas" onBlur={(e) => { if (String(e.target.value) !== String(a.filas || "")) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, filas: parseInt(e.target.value, 10) || 0 } : x))); }} className="w-14 border border-slate-300 rounded px-1 py-1 text-xs" /> filas ×<input type="number" min="0" defaultValue={a.huecosFila || ""} placeholder="huecos" onBlur={(e) => { if (String(e.target.value) !== String(a.huecosFila || "")) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, huecosFila: parseInt(e.target.value, 10) || 0 } : x))); }} className="w-14 border border-slate-300 rounded px-1 py-1 text-xs" /> huecos</label>
               <TextInput defaultValue={a.ciudad || ""} onBlur={(e) => { if (e.target.value !== (a.ciudad || "")) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, ciudad: e.target.value.trim() } : x))); }} className="!w-40" placeholder="Ciudad" />
               <label className="flex items-center gap-1 text-xs font-semibold text-violet-700"><input type="checkbox" checked={a.dueno === "uxcar"} onChange={(e) => guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, dueno: e.target.checked ? "uxcar" : "" } : x)))} /> De Uxcar</label>
               {almacenes.length > 1 && <button onClick={() => { const n = lista.filter((c) => almacenDe(c) === a.id).length; if (n) { alert(`No se puede quitar: tiene ${n} caballete(s). Muévelos antes a otro almacén.`); return; } if (confirm(`¿Quitar el almacén "${a.nombre}"?`)) guardarAlmacenes(almacenes.filter((x) => x.id !== a.id)); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>}
@@ -46123,6 +46181,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
         ) : null;
       })()}
+      <DesplegableAlm titulo="🗺 Mapa de palets por almacén (filas y huecos)" clave="mapaPalets"><MapaPaletsAlmacen almacenes={almacenes} caballetes={lista} onGuardar={onGuardar} quien={quien} /></DesplegableAlm>
       <DesplegableAlm titulo="Estanterías de ventanas terminadas" clave="estTerminadas"><EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} /></DesplegableAlm>
       <IncompletasAlmacen caballetes={caballetes} indice={indicePiezas} />
       <LlegadasLineaAlmacen indice={indicePiezas} caballetes={caballetes} />
@@ -46218,7 +46277,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             </div>
             {c.estado !== "fuera" && (
               <div className="flex gap-1.5">
-                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, almacenId: e.target.value, historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-200 rounded px-1.5 py-1 bg-slate-50" title="Almacén">
+                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, ...sitioParaPalet(c, e.target.value, almacenes, cabsAhora()), historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-200 rounded px-1.5 py-1 bg-slate-50" title="Almacén">
                   {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
                 </select>
                 <input defaultValue={c.ubicacion || ""} onBlur={(e) => e.target.value !== (c.ubicacion || "") && onGuardar({ ...c, ubicacion: e.target.value })} placeholder="Sitio (ej. fila 3)" className="flex-1 min-w-0 text-xs border border-slate-200 rounded px-2 py-1" />
