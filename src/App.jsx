@@ -44136,6 +44136,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const guardarAlmacenes = (lista) => onSaveConfig && onSaveConfig({ ...(config || {}), almacenesCaballetes: lista.map(({ nombreBase, ...r }) => (nombreBase !== undefined ? { ...r, nombre: nombreBase } : r)) });
   const [editando, setEditando] = useState(null); // caballete que se está cargando
   const [filtro, setFiltro] = useState("");
+  const [busqCab, setBusqCab] = useState(""); // buscar un caballete / palet por su número (C-12): ignora los filtros de almacén y estado
   const [codigo, setCodigo] = useState("");
   const [escaneadoId, setEscaneadoId] = useState(null);
   const [camara, setCamara] = useState(false);
@@ -44902,7 +44903,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     onBorrarSinObra(fab);
     relinkarLote(fab, o);
   };
-  const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
+  const qCab = String(busqCab || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : qCab ? lista.filter((c) => String(c.numero || "").toUpperCase().replace(/[^A-Z0-9]/g, "").includes(qCab)) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
   // ---- CARGAR TICANDO: mismo dato que la pistola (las ventanas entran en el caballete con colocarVentana) ----
   const ventanasPorObraTic = (() => {
@@ -46001,6 +46003,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         : <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />}
       </div>
       </DesplegableAlm>
+      <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">🔎 Buscar caballete / palet:</span>
+        <input value={busqCab} onChange={(e) => setBusqCab(e.target.value)} placeholder="por ejemplo C-12" className="border border-slate-300 rounded-md px-2.5 py-1.5 text-sm w-40" />
+        {busqCab && <button type="button" onClick={() => setBusqCab("")} className="text-xs text-slate-500 hover:underline">Borrar</button>}
+        {busqCab && <span className={`text-xs font-semibold ${filtrados.length ? "text-emerald-700" : "text-rose-600"}`}>{filtrados.length ? `${filtrados.length} encontrado${filtrados.length === 1 ? "" : "s"} (se ignoran los filtros de almacén y estado)` : `No existe ningún caballete que se llame así. Si lo había, se ha borrado o se llama de otra forma.`}</span>}
+      </div>
       <div className="grid grid-cols-3 gap-3">
         {[["libre", "Libres"], ["cargado", "Con ventanas"], ["fuera", "Fuera (a devolver)"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(filtro === k ? "" : k)} className={`text-left rounded-lg p-3 border ${filtro === k ? "border-[#2E8B57]" : "border-transparent"} ${k === "fuera" && cuenta("fuera") ? "bg-amber-50" : "bg-slate-50"}`}>
