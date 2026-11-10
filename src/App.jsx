@@ -14440,14 +14440,14 @@ const tipoLineaRecepcion = (l, pedido) => {
   return "otro";
 };
 async function leerAlbaranRecepcion(file) {
-  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
+  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","presupuesto":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "presupuesto" es el nº de presupuesto de NUESTRA obra (el que va en la cabecera como "Ref. Cli.", "Ref. Cliente", "Su referencia" u "Obra"; p. ej. en "Ref. Cli.: 5163-5 PVC ROMAN-" es "5163-5"): solo el número, con su guion y sufijo si lo lleva (5163-5, 6.740-1), sin el texto que le sigue; si no aparece, "". No lo confundas con el nº de pedido del proveedor (PV-…) ni con el nº de albarán. "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 16000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
   const trozo = limpio.slice(oi, of + 1);
   let o;
   try { o = JSON.parse(trozo); } catch (e) { o = JSON.parse(repararJsonIA(trozo)); }
   return {
-    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(),
+    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
     lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), refObra: String(l.refObra || "").trim(), pedidoProv: String(l.pedidoProv || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
   };
 }
@@ -22844,6 +22844,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const [error, setError] = useState("");
   const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
   const [selId, setSelId] = useState("");
+  const [pptoAlb, setPptoAlb] = useState(""); // nº de presupuesto (Edmo) del albarán: OBLIGATORIO antes de recibir
   const inputRef = useRef(null);
   const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
   // Nº de presupuesto de cada pedido (en fábrica se busca por presupuesto)
@@ -22855,10 +22856,14 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     try {
       const r = await leerAlbaranRecepcion(file);
       if (!r.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
-      setLect({ ...r, archivo: file.name || "" });
+      setLect({ ...r, archivo: file.name || "" }); setPptoAlb(r.presupuesto || "");
     } catch (e) { setError("No se pudo leer el albarán: " + (e.message || "prueba con una foto más clara")); }
     finally { setLeyendo(false); }
   };
+  const normPpto = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
+  const basePpto = (t) => normPpto(t).split(/[-/]/)[0];
+  const pptoOk = normPpto(pptoAlb).replace(/\D/g, "").length >= 3;
+  const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
   const lista = !lect ? [] : toArray(pedidos).filter(pendiente).map((p) => {
     const num = normPedidoCristal(lect.numeroPedido);
     const prov = String(lect.proveedor || "").trim().toLowerCase();
@@ -22867,11 +22872,12 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     const casadas = r.filas.filter((f) => f.llega > 0).length;
     const porNumero = !!num && [p.numero, p.numeroPedidoProveedor].some((n) => normPedidoCristal(n) && normPedidoCristal(n) === num);
     const porProv = !!prov && !!nombre && (nombre.includes(prov) || prov.includes(nombre));
-    return { p, casadas, porNumero, porProv, score: (porNumero ? 1000 : 0) + (porProv ? 100 : 0) + casadas };
+    const pp = pptoPed(p); const porPpto = pptoOk && !!pp && (normPpto(pp) === normPpto(pptoAlb) || basePpto(pp) === basePpto(pptoAlb));
+    return { p, casadas, porNumero, porProv, porPpto, score: (porNumero ? 1000 : 0) + (porPpto ? 500 : 0) + (porProv ? 100 : 0) + casadas };
   }).sort((a, b) => b.score - a.score);
   const buenos = lista.filter((c) => c.score > 0);
   const elegido = lect ? (lista.find((c) => c.p.id === selId) || buenos[0] || null) : null;
-  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
+  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porPpto ? "coincide el presupuesto" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
   const cerrarTodo = () => {
     const n = toArray(elegido.p.lineas).filter((l) => !l.confirmadoFabrica).length;
     if (window.confirm(`¿Dar por COMPLETO el pedido #${elegido.p.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} y desaparece de Materiales pendientes.\n\nHazlo solo si ya no falta nada: lo que no haya venido se da por recibido.`)) { onCerrarPedido(elegido.p.id); setLect(null); }
@@ -22893,6 +22899,17 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
       {lect && (
         <div className="mt-4 space-y-3">
           <div className="text-xs text-slate-500">Albarán {lect.numeroAlbaran || lect.archivo}{lect.proveedor ? ` · ${lect.proveedor}` : ""}{lect.numeroPedido ? ` · pedido ${lect.numeroPedido}` : ""} · {lect.lineas.length} línea{lect.lineas.length === 1 ? "" : "s"} leída{lect.lineas.length === 1 ? "" : "s"}</div>
+          <div className={`rounded-md border-2 px-3 py-2 space-y-1 ${pptoOk ? "border-emerald-300 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-sm font-extrabold text-slate-800">Nº de presupuesto (Edmo) · obligatorio</label>
+              <input value={pptoAlb} onChange={(e) => setPptoAlb(e.target.value)} placeholder="ej. 5163-5" className="border-2 border-slate-300 rounded-md px-2 py-1 text-sm font-bold w-40" />
+              {pptoOk && lect.presupuesto && normPpto(lect.presupuesto) === normPpto(pptoAlb) && <span className="text-xs text-emerald-700">leído del albarán (Ref. Cli.)</span>}
+            </div>
+            {!pptoOk && <div className="text-xs font-semibold text-rose-700">⚠ No he encontrado el nº de presupuesto en el albarán. Escríbelo para poder recibir: sin él no sé a qué obra va este material.</div>}
+            {pptoOk && (obraDePpto
+              ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b></div>
+              : <div className="text-xs font-semibold text-amber-800">⚠ Ninguna obra del CRM tiene el presupuesto {pptoAlb}. Revisa el número; si es correcto, la obra aún no está dada de alta en Proyectos.</div>)}
+          </div>
           {lista.length === 0 ? (
             <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm">No hay ningún pedido pendiente de recibir con el que comparar este albarán.</div>
           ) : (
@@ -22906,7 +22923,8 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
               {buenos.length > 1 && <span className="text-xs text-slate-500">Hay {buenos.length} pedidos que podrían ser: revisa que sea el tuyo</span>}
             </div>
           )}
-          {elegido && (
+          {elegido && !pptoOk && <div className="px-3 py-2 rounded-md bg-rose-100 border border-rose-400 text-rose-800 text-sm font-bold">Pon arriba el nº de presupuesto para poder recibir este albarán.</div>}
+          {elegido && pptoOk && (
             <>
               <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
                 puedeRecibir={false} infoInicial={lect}
