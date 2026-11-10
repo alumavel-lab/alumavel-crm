@@ -47755,6 +47755,76 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     </div>
   );
 }
+// Sin etiqueta a mano: se busca la obra por su nº de presupuesto, se elige la ventana y salen sus cristales (caballete y hueco) para darlos de baja
+function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, quien = "" }) {
+  const [abierto, setAbierto] = useState(false);
+  const [q, setQ] = useState("");
+  const [obraKey, setObraKey] = useState("");
+  const [ventId, setVentId] = useState("");
+  const [msg, setMsg] = useState("");
+  const dq = digitosPresu(q);
+  const obras = useMemo(() => {
+    if (!abierto || String(q).trim().length < 2) return [];
+    const mapa = new Map(); const t = String(q).trim().toLowerCase();
+    indice.forEach((h) => {
+      const d = h.dueno; if (!d || mapa.has(d.key)) return;
+      const dp = digitosPresu(d.presupuesto);
+      if ((dq.length >= 3 && dp && (dp === dq || dp.includes(dq))) || String(d.nombre || "").toLowerCase().includes(t)) mapa.set(d.key, d);
+    });
+    return [...mapa.values()].slice(0, 12);
+  }, [abierto, q, indice, dq]);
+  const obra = obras.length === 1 ? obras[0] : obras.find((o) => o.key === obraKey) || null;
+  const ventanas = useMemo(() => {
+    if (!obra) return [];
+    const m = new Map();
+    indice.forEach((h) => { if (h.dueno && h.dueno.key === obra.key && h.ventana && !m.has(h.ventana.id)) m.set(h.ventana.id, h); });
+    return [...m.values()].sort((a, b) => String(a.ventana.grupo || "").localeCompare(String(b.ventana.grupo || ""), "es", { numeric: true }) || String(a.ventana.pos || "").localeCompare(String(b.ventana.pos || ""), "es", { numeric: true }));
+  }, [obra, indice]);
+  const h = ventanas.find((x) => x.ventana.id === ventId) || null;
+  const cris = useMemo(() => {
+    if (!h) return [];
+    const d = datosVentanaLinea(h); const out = [];
+    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
+      if (!d.exp || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) return;
+      out.push({ c, p, i });
+    }));
+    return out;
+  }, [h, cristales]);
+  const darBaja = (x) => {
+    if ((parseFloat(x.p.cantidad) || 1) > 1) { setMsg("Esa fila trae varias unidades de cristal: márcala a mano en Cristales."); return; }
+    if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
+    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? { ...q2, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q2)) });
+    setMsg(`✓ Cristal ${x.p.ref || ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
+  };
+  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 bg-white text-slate-700">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
+  return (
+    <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
+      <div className="flex items-center gap-2">
+        <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setObraKey(""); setVentId(""); setMsg(""); }} placeholder="Nº de presupuesto (o nombre de la obra)" className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm" />
+        <button type="button" onClick={() => { setAbierto(false); setQ(""); setObraKey(""); setVentId(""); setMsg(""); }} className="text-xs text-slate-500 hover:underline">Cerrar</button>
+      </div>
+      {String(q).trim().length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto que tenga etiquetas de fabricación subidas.</p>}
+      {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.presupuesto ? ` · ppto ${o.presupuesto}` : ""}</button>)}</div>}
+      {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.presupuesto ? ` · ppto ${obra.presupuesto}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
+      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.ventana.id} type="button" onClick={() => { setVentId(x.ventana.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${h && h.ventana.id === x.ventana.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.ventana.grupo ? `${x.ventana.grupo} · ` : ""}{x.ventana.pos}{x.ventana.medida ? ` · ${x.ventana.medida}` : ""}</button>)}</div>}
+      {h && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {h.ventana.pos}{h.ventana.grupo ? ` (${h.ventana.grupo})` : ""}</div>
+          {cris.length === 0 && <p className="text-sm text-slate-500">No encuentro cristales de esta ventana en el almacén (mira que el packing list esté subido y que la vivienda coincida).</p>}
+          {cris.map((x) => (
+            <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
+              <span className="font-semibold">{x.p.ref || "?"}</span>
+              <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm{(parseFloat(x.p.cantidad) || 1) > 1 ? ` · ${x.p.cantidad} uds` : ""}</span>
+              <span className="text-slate-600">📍 caballete {x.c.lote || x.c.numero || "—"} · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar en el mapa"}</span>
+              {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
+            </div>
+          ))}
+        </div>
+      )}
+      {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
+    </div>
+  );
+}
 function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
   if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
@@ -48662,6 +48732,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} />
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
