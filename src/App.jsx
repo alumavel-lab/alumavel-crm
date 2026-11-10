@@ -6477,7 +6477,7 @@ export default function App() {
           const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
-          if (!resp && !veFabrica && !soloUx) return null;
+          if (!resp && !soloUx) return null; // la ventana que insiste solo sale a administrador, responsable de pedidos y Uxcar: NO a quien trabaja en fábrica / puestos de línea
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
