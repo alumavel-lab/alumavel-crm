@@ -42274,7 +42274,11 @@ function analizarBloqueCorte(b, modelo, uds) {
     const travesanos = b.split("\n").reduce((acc, l) => { if (/REFUERZO/i.test(l)) return acc; const mt = l.match(/TRAVESA[ÑN]O(?:\s+\d+\s*MM)?\s+(\d{1,2})\b/i); return acc + (mt ? parseInt(mt[1], 10) : 0); }, 0);
     const fijosUnidos = (tipo === "puerta" || tipo === "ventana" || tipo === "corredera") && travesanos > 0 ? travesanos : ((tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null);
   const postigo = /HOJA\s+DE\s+CONTRA\b|LAMAS?\s+CONTRA\s+DE\s+VENTANA|CONTRAVENTANA|POSTIGO/i.test(b);
-  return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo };
+  // Medidas de cada cristal (sección SUPERFICIES: composición · Ud · ToT · [color] · Ancho · Alto), p.ej. "5+5/16/6+6be … 2 2 415,50 987,00"
+  const numEs = (t) => parseFloat(String(t).replace(/\./g, "").replace(",", "."));
+  const cristales = [];
+  b.split("\n").forEach((l) => { const mc = l.match(/^\s*([\d.+]+\/[\d.]+\/[\d.+]+\S*)\s.*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?([\d.]+,\d\d)\s+([\d.]+,\d\d)\s*$/); if (mc && numEs(mc[4]) > 0 && numEs(mc[5]) > 0) cristales.push({ comp: mc[1], uds: parseInt(mc[2], 10), ancho: numEs(mc[4]), alto: numEs(mc[5]) }); });
+  return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo, cristales };
 }
 function agruparHojaCorte(paginas) {
   const todo = paginas.map((it) => it.join("")).join("\n");
@@ -47786,7 +47790,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       const bases = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
       if (!(casaPpto(bases) || String(sn.nombre || "").toLowerCase().includes(texto))) return;
       bases.forEach((b) => basesVistas.add(b));
-      out.push({ key: `cd:${k}`, nombre: sn.nombre || k, bases, ventanas: toArray(sn.ventanas).map((w) => ({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ex: toArray(w.ex).map(String) })) });
+      out.push({ key: `cd:${k}`, nombre: sn.nombre || k, bases, ventanas: toArray(sn.ventanas).map((w) => ({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ex: toArray(w.ex).map(String), cr: toArray(w.cr) })) });
     });
     // 2) Etiquetas de fabricación (obras que ya las tienen subidas)
     const porDueno = new Map();
@@ -47895,6 +47899,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {w && (
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
+          {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
           {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
@@ -59287,7 +59292,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const color = (inf && inf.color) || (ih && ih.color) || v.color || "";
         const medida = v.medida || (ih && ih.ancho ? `${ih.ancho} x ${ih.alto}` : "");
         const ex = [...new Set([...(seguro(() => extrasVentana(o, v), [])), ...(ih ? toArray(ih.extras) : [])])];
-        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, hi: (ih || (inf && inf.desc)) ? 1 : 0 };
+        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
       }));
       if (!vs.length || vs.length > 400) return;
       const k = limpia(o.d.key);
