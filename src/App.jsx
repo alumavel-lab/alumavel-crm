@@ -45601,6 +45601,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             })}
           </div>
         </div>
+        {onGuardarEtiquetasObra && <DesplegableAlm titulo="⬆ Subir etiquetas" clave="subirEtiqDia" resumen="· solo si no vinieron ya subidas de atrás"><SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} /></DesplegableAlm>}
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
           {avisoSinEt}
