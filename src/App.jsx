@@ -47875,6 +47875,39 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     return { total, puestos, cab: toArray(cristales).length };
   }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
+  // MEDIDAS DE LOS CRISTALES según la hoja de corte (tabla SUPERFICIES). Se lee el PDF de ESTA obra solo cuando se elige una ventana; no escribe nada en el CRM.
+  const [medHoja, setMedHoja] = useState({}); // { [obra.key]: { estado, modelos: { "V04.105": [{comp, uds, ancho, alto}] } } }
+  const obraMedKey = obra ? obra.key : "";
+  useEffect(() => {
+    if (!obraMedKey || !w || medHoja[obraMedKey]) return;
+    if (!/^cd:/.test(obraMedKey)) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
+    setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "leyendo" } }));
+    (async () => {
+      try {
+        const sn = await fbGet(ref(fbDb, `controlDiaHojaCorte/${obraMedKey.replace(/^cd:/, "")}`)); const hh = sn.val();
+        if (!hh || !hh.url) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
+        const lib = await cargarPdfJs(); const pdf = await lib.getDocument({ data: new Uint8Array(await bajarArchivoGuardado(hh.url)) }).promise;
+        const mods = []; let cur = null;
+        for (let n = 1; n <= pdf.numPages; n++) {
+          const tc = await (await pdf.getPage(n)).getTextContent();
+          const t = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ");
+          const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+(\S.{0,39}?)\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})(?=\s|$)/);
+          if (m) { cur = { pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), texto: t }; mods.push(cur); } else if (cur) cur.texto += " " + t;
+        }
+        const modelos = {};
+        mods.forEach((md) => {
+          const crs = []; const re = /([\d.+]+\/[\d.]+\/[\d.+]+\S*)[^\n]*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?(\d[\d.]*,\d\d)\s+(\d[\d.]*,\d\d)/g; let mc;
+          while ((mc = re.exec(md.texto))) { const a = numEs(mc[4]); const h2 = numEs(mc[5]); if (a > 0 && h2 > 0) crs.push({ comp: mc[1], uds: parseInt(mc[2], 10) || 1, ancho: a, alto: h2 }); }
+          modelos[md.pos.split(/\s+/)[0]] = crs;
+        });
+        setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "ok", modelos } }));
+      } catch (e) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "error", motivo: (e && e.message) || String(e) } })); }
+    })();
+  // eslint-disable-next-line
+  }, [obraMedKey, !!w]);
+  const posMed = w ? String(w.pos || "").trim().split(/\s+/)[0].toUpperCase() : "";
+  const mh = obraMedKey ? medHoja[obraMedKey] : null;
+  const crHoja = w ? ((w.cr && w.cr.length > 0) ? w.cr : (mh && mh.modelos && mh.modelos[posMed]) || []) : [];
   const claveP = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
   const apuntadoMan = claveP ? cpManual[claveP] : null;
   const apuntarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), { ventanaId: w.id, pos: w.pos || "", medida: w.medida || "", obra: obra.nombre || "", ppto: (obra.bases && obra.bases[0]) || "", fecha: hoyISO(), ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ Cristal de ${w.pos} apuntado como PUESTO${quien ? ` (${quien})` : ""}.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
@@ -47936,7 +47969,9 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         <div className="space-y-1.5">
           {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
-          {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
+          {crHoja.length === 0 && mh && mh.estado === "leyendo" && <div className="text-xs text-sky-700">Leyendo las medidas de los cristales de la hoja de corte…</div>}
+          {crHoja.length === 0 && mh && (mh.estado === "sinhoja" || mh.estado === "error" || (mh.estado === "ok" && !(mh.modelos && mh.modelos[posMed]))) && <div className="text-xs text-slate-500">No he podido sacar la medida del cristal de {w.pos} de la hoja de corte{mh.estado === "sinhoja" ? " (esta obra no tiene hoja de corte subida en Control del día)" : mh.estado === "error" ? ` (${mh.motivo})` : " (no encuentro esa ventana en la hoja)"}.</div>}
+          {crHoja.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Medida del cristal según la hoja de corte:</span> {crHoja.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
           {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">{diagCris.total > 0 ? `En el almacén hay ${diagCris.total} cristal(es) de este presupuesto y los ${diagCris.puestos} ya están dados de baja.` : `En el almacén (${diagCris.cab} caballetes) no hay NINGÚN cristal que lleve este presupuesto. Si el packing list está subido, mira en Almacén de cristales con qué presupuesto o expediente ha quedado guardado.`} Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
