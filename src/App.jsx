@@ -22853,8 +22853,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const [error, setError] = useState("");
   const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
   const [selId, setSelId] = useState("");
-  const [pptoAlb, setPptoAlb] = useState(""); // nº de presupuesto (Edmo) del albarán: OBLIGATORIO antes de recibir
-  const [paraStock, setParaStock] = useState(false); // albarán de material para STOCK (perfiles, herrajes…): no es de ninguna obra, no pide presupuesto
+  const [pptoAlb, setPptoAlb] = useState(""); // nº de presupuesto (Edmo) del albarán: opcional, ayuda a encontrar el pedido
   const inputRef = useRef(null);
   const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
   // Nº de presupuesto de cada pedido (en fábrica se busca por presupuesto)
@@ -22866,7 +22865,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     try {
       const r = await leerAlbaranRecepcion(file);
       if (!r.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
-      setLect({ ...r, archivo: file.name || "" }); setPptoAlb(r.presupuesto || ""); setParaStock(false);
+      setLect({ ...r, archivo: file.name || "" }); setPptoAlb(r.presupuesto || "");
     } catch (e) { setError("No se pudo leer el albarán: " + (e.message || "prueba con una foto más clara")); }
     finally { setLeyendo(false); }
   };
@@ -22909,14 +22908,13 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
       {lect && (
         <div className="mt-4 space-y-3">
           <div className="text-xs text-slate-500">Albarán {lect.numeroAlbaran || lect.archivo}{lect.proveedor ? ` · ${lect.proveedor}` : ""}{lect.numeroPedido ? ` · pedido ${lect.numeroPedido}` : ""} · {lect.lineas.length} línea{lect.lineas.length === 1 ? "" : "s"} leída{lect.lineas.length === 1 ? "" : "s"}</div>
-          <div className={`rounded-md border-2 px-3 py-2 space-y-1 ${pptoOk ? "border-emerald-300 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
+          <div className={`rounded-md border px-3 py-2 space-y-1 ${pptoOk ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
             <div className="flex flex-wrap items-center gap-2">
-              <label className="text-sm font-extrabold text-slate-800">Nº de presupuesto (Edmo) · obligatorio</label>
+              <label className="text-sm font-bold text-slate-700">Nº de presupuesto (Edmo) · opcional</label>
               <input value={pptoAlb} onChange={(e) => setPptoAlb(e.target.value)} placeholder="ej. 5163-5" className="border-2 border-slate-300 rounded-md px-2 py-1 text-sm font-bold w-40" />
               {pptoOk && lect.presupuesto && normPpto(lect.presupuesto) === normPpto(pptoAlb) && <span className="text-xs text-emerald-700">leído del albarán (Ref. Cli.)</span>}
             </div>
-            {!pptoOk && !paraStock && <div className="text-xs font-semibold text-rose-700">⚠ No he encontrado el nº de presupuesto en el albarán. Escríbelo para poder recibir: sin él no sé a qué obra va este material.</div>}
-            {!pptoOk && <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={paraStock} onChange={(e) => setParaStock(e.target.checked)} className="w-4 h-4" /> Es material para STOCK (perfiles, herrajes, accesorios…): no es de ninguna obra</label>}
+            {!pptoOk && <div className="text-xs text-slate-500">Si lo escribes, ayuda a encontrar el pedido de esa obra. No es obligatorio para recibir.</div>}
             {pptoOk && (obraDePpto
               ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b></div>
               : <div className="text-xs font-semibold text-amber-800">⚠ Ninguna obra del CRM tiene el presupuesto {pptoAlb}. Revisa el número; si es correcto, la obra aún no está dada de alta en Proyectos.</div>)}
@@ -22934,8 +22932,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
               {buenos.length > 1 && <span className="text-xs text-slate-500">Hay {buenos.length} pedidos que podrían ser: revisa que sea el tuyo</span>}
             </div>
           )}
-          {elegido && !pptoOk && !paraStock && <div className="px-3 py-2 rounded-md bg-rose-100 border border-rose-400 text-rose-800 text-sm font-bold">Pon arriba el nº de presupuesto para poder recibir este albarán (o marca que es material para stock).</div>}
-          {elegido && (pptoOk || paraStock) && (
+          {elegido && (
             <>
               <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
                 puedeRecibir={false} infoInicial={lect}
