@@ -6503,18 +6503,20 @@ export default function App() {
         {(() => {
           // Obras ya completas en palet (almacén de ventanas listo): aviso a fábrica y a quien tenga albaranes para programar la salida / el reparto
           if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
-          const listas = proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida");
+          // terminadas = estado «Listo» o TODAS sus ventanas ya en palet (aunque nadie haya cambiado el estado)
+          const idxP = indicePaletVentanas(caballetesVentanas);
+          const listas = proyectos.filter((p) => !["Entregado", "Cancelado", "Albarán de carga firmado"].includes(p.estadoTrabajo) && obraTerminadaSalida(p, idxP) && !citaSalidaOk(p));
           if (!listas.length) return null;
-          const sinProg = listas.filter((p) => !p.fechaReparto);
+          const sinProg = listas.filter((p) => !p.fechaReparto && !p.fechaMontaje);
           const nomL = (p) => { const pp = presupuestoDeObra(p); return pp ? `Ppto ${pp}` : (p.nombre || "obra"); };
           const detalle = listas.slice(0, 3).map((p) => `${nomL(p)}${p.fechaReparto ? "" : " (sin fecha de salida)"}`).join(" · ");
           return (
             <button
-              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); } }}
+              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) { try { window.localStorage.setItem("crm_alb_fcita", JSON.stringify("llamar")); window.localStorage.setItem("crm_alb_tipo", JSON.stringify("todos")); window.localStorage.setItem("crm_alb_origen", JSON.stringify("todos")); } catch { /* nada */ } setModulo("albaranes"); } else { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-teal-50 text-teal-800 hover:bg-teal-100"
             >
               <Truck size={15} />
-              🚚 {listas.length} obra{listas.length === 1 ? "" : "s"} con todas las ventanas ya en palet, lista{listas.length === 1 ? "" : "s"} para repartir o programar la salida{sinProg.length ? ` · ${sinProg.length} sin fecha de salida` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
+              📞 ALBARANES: {listas.length} obra{listas.length === 1 ? "" : "s"} terminada{listas.length === 1 ? "" : "s"} (en palet o lista{listas.length === 1 ? "" : "s"}) SIN CITA CONFIRMADA: llama al cliente y pon el reparto / la recogida{sinProg.length ? ` · ${sinProg.length} sin fecha` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
             </button>
           );
         })()}
@@ -7343,6 +7345,7 @@ export default function App() {
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
+            onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />}
             proyectos={proyectos}
@@ -7510,6 +7513,7 @@ export default function App() {
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
+            onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
@@ -24730,8 +24734,24 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
 
 // Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
 const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
+// ¿OBRA TERMINADA? No se fía solo del estado: si TODAS las ventanas de sus etiquetas están ya en un palet (o salieron), está terminada → aviso a Albaranes
+const normPosPal = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+const indicePaletVentanas = (caballetes) => {
+  const ids = new Set(), pp = new Set();
+  toArray(caballetes).forEach((c) => toArray(c && c.ventanas).forEach((w) => { if (!w) return; if (w.id) ids.add(String(w.id)); const b = basePresuDia(w.num); if (b && w.pos) pp.add(`${b}|${normPosPal(w.pos)}`); }));
+  return { ids, pp };
+};
+const paletDeObra = (p, idx) => {
+  const vs = []; toArray(p && p.etiquetasFab).forEach((l) => toArray(l && l.ventanas).forEach((v) => { if (v) vs.push(v); }));
+  if (!vs.length || !idx) return null;
+  const n = vs.filter((v) => idx.ids.has(String(v.id)) || idx.pp.has(`${basePresuDia(v.num)}|${normPosPal(v.pos)}`)).length;
+  return { n, total: vs.length, completa: n === vs.length };
+};
+const obraTerminadaSalida = (p, idx) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo) || !!(paletDeObra(p, idx) || {}).completa;
+const tipoSalidaObra = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
+const citaSalidaOk = (p) => { const c = p.citaSalida || {}; const t = tipoSalidaObra(p); const f = t === "instalacion" ? p.fechaMontaje : p.fechaReparto; return !!(f && c.contactadoCliente && (t !== "reparto" || c.avisadoRepartidor)); };
 
-function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
+function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
@@ -24742,6 +24762,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const [borrador, setBorrador] = useState(null);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
   const [generando, setGenerando] = useState(false);
+  const [citaB, setCitaB] = useState(null); // borrador de la CITA (fecha, hora, llamado al cliente, avisado el repartidor)
   const nombreYo = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
   const clienteDe = (p) => (clientes || []).find((c) => c.id === p.clienteId);
   const direccionDe = (p) => {
@@ -24759,8 +24780,42 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const repartosBase = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p) || p.llevaInstalacion) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p));
   const cuentaTipo = (t) => repartosBase.filter((p) => tipoSalida(p) === t && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p))).length;
   const cuentaOrigen = (o) => repartosBase.filter((p) => (o === "uxcar") === esDeUxcar(p) && (fTipo === "todos" || tipoSalida(p) === fTipo)).length;
-  const repartos = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)))
-    .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
+  // CITA OBLIGATORIA: fecha de reparto / recogida / instalación + haber llamado al cliente (y avisado al repartidor si es reparto)
+  const fechaCitaDe = (p) => (tipoSalida(p) === "instalacion" ? p.fechaMontaje : p.fechaReparto) || "";
+  const citaOk = (p) => { const c = p.citaSalida || {}; return !!(fechaCitaDe(p) && c.contactadoCliente && (tipoSalida(p) !== "reparto" || c.avisadoRepartidor)); };
+  // ESTADO DE LA CITA de cada obra: sin fecha → fecha aproximada (sin llamar) → confirmada (llamado al cliente)
+  const idxPalet = useMemo(() => indicePaletVentanas(caballetes), [caballetes]);
+  const listoP = (p) => obraTerminadaSalida(p, idxPalet);
+  const estCita = (p) => (citaOk(p) ? "ok" : !fechaCitaDe(p) ? "sinfecha" : listoP(p) ? "llamar" : "aprox");
+  const [fCita, setFCita] = useEstadoLocal("crm_alb_fcita", "todas"); // todas | sinfecha | aprox | llamar | ok
+  const [selCita, setSelCita] = useState({}); const [fechaLote, setFechaLote] = useState("");
+  const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
+  const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
+  const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
+  const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
+    .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
+  // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
+  const fijarFechaObra = (p, fecha, hora, confirmar) => {
+    if (!onGuardarCita) return;
+    const t = tipoSalida(p); const ant = p.citaSalida || {}; const ahora = new Date().toISOString(); const yo = nombreYo || "—";
+    const fAnt = fechaCitaDe(p); const hNueva = hora == null ? ant.hora || "" : hora;
+    const cambia = (fAnt || "") !== (fecha || "") || (ant.hora || "") !== hNueva;
+    const conf = confirmar ? { por: yo, ts: ahora } : cambia ? false : ant.contactadoCliente || false;
+    const rep = confirmar && t === "reparto" ? { por: yo, ts: ahora } : cambia ? false : ant.avisadoRepartidor || false;
+    const cita = { ...ant, tipo: t, fecha: fecha || "", hora: hNueva, contactadoCliente: conf, avisadoRepartidor: rep, por: yo, ts: ahora,
+      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10) };
+    onGuardarCita(p.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: fecha || "", citaSalida: cita });
+  };
+  const confirmarDesdeLista = (p) => {
+    const t = tipoSalida(p); if (!fechaCitaDe(p)) { alert("Primero pon la fecha."); return; }
+    if (!window.confirm(`#${p.numero} ${p.nombre}\n\n¿Has LLAMADO AL CLIENTE${t === "reparto" ? " y AVISADO AL REPARTIDOR" : ""} y queda el ${fmtDate(fechaCitaDe(p))}${p.citaSalida && p.citaSalida.hora ? " a las " + p.citaSalida.hora : ""}?`)) return;
+    fijarFechaObra(p, fechaCitaDe(p), null, true);
+  };
+  const ponerFechaLote = () => {
+    const ps = repartos.filter((p) => selCita[p.id]); if (!fechaLote || !ps.length) { alert("Elige la fecha y marca las obras."); return; }
+    if (!window.confirm(`¿Poner el ${fmtDate(fechaLote)} a ${ps.length} obra(s)? Queda como fecha APROXIMADA hasta que llames al cliente.`)) return;
+    ps.forEach((p) => fijarFechaObra(p, fechaLote, null, false)); setSelCita({});
+  };
   const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente) && casaQ(p))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
   const siguienteNumero = () => {
@@ -24771,7 +24826,21 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const abrir = (p) => {
     const a = p.albaranEntrega || {};
     setBorrador({ numero: a.numero || siguienteNumero(), chofer: a.chofer || nombreYo, matricula: a.matricula || "", contenido: a.contenido || [p.nombre, p.especificaciones].filter(Boolean).join("\n"), bultos: a.bultos || "", notas: a.notas || "" });
+    const c = p.citaSalida || {};
+    setCitaB({ fecha: fechaCitaDe(p), hora: c.hora || "", cliente: !!c.contactadoCliente, repartidor: !!c.avisadoRepartidor, nota: c.nota || "" });
     setAbiertoId(p.id);
+  };
+  const guardarCita = () => {
+    if (!abierto || !citaB) return;
+    const t = tipoSalida(abierto);
+    if (!citaB.fecha) { alert(`Pon la FECHA de ${t === "instalacion" ? "instalación" : t}: es obligatoria.`); return; }
+    if (!citaB.cliente) { alert("Marca que has LLAMADO AL CLIENTE y quedado con él: es obligatorio."); return; }
+    if (t === "reparto" && !citaB.repartidor) { alert("Marca que has AVISADO AL REPARTIDOR: es obligatorio en los repartos."); return; }
+    const ant = abierto.citaSalida || {}; const ahora = new Date().toISOString();
+    const marca = (si, prev) => (si ? (prev && prev.por ? prev : { por: nombreYo || "—", ts: ahora }) : false);
+    const cita = { tipo: t, fecha: citaB.fecha, hora: citaB.hora || "", nota: citaB.nota || "", contactadoCliente: marca(citaB.cliente, ant.contactadoCliente), avisadoRepartidor: marca(citaB.repartidor, ant.avisadoRepartidor), por: nombreYo || "—", ts: ahora,
+      historial: [...toArray(ant.historial), ...(ant.fecha && (ant.fecha !== citaB.fecha || (ant.hora || "") !== (citaB.hora || "")) ? [{ fecha: ant.fecha, hora: ant.hora || "", cambiadaPor: nombreYo || "—", ts: ahora }] : [])].slice(-10) };
+    onGuardarCita && onGuardarCita(abierto.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: citaB.fecha, citaSalida: cita });
   };
   const guardar = (extra = {}, entregar = false, cargado = false) => onGuardarAlbaranEntrega(abierto.id, { ...(abierto.albaranEntrega || {}), ...borrador, ...extra }, entregar, cargado);
   const tabBtn = (id, label, n) => (
@@ -24794,6 +24863,22 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
           <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · Reparto {fmtDate(abierto.fechaReparto) || "sin fecha"}</div>
         </div>
+        {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
+          <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
+            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
+            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."} Sin esto no se puede firmar la carga.</div>}
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs text-slate-600">Fecha<br /><input type="date" value={citaB.fecha} onChange={(e) => setCitaB({ ...citaB, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+              <label className="text-xs text-slate-600">Hora<br /><input type="time" value={citaB.hora} onChange={(e) => setCitaB({ ...citaB, hora: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+              {tel && <a href={`tel:${tel}`} className="text-sm font-semibold text-[#2E8B57] underline pb-1.5">📞 Llamar {tel}</a>}
+            </div>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.cliente} onChange={(e) => setCitaB({ ...citaB, cliente: e.target.checked })} /> He llamado al cliente y está de acuerdo con la fecha{c.contactadoCliente && c.contactadoCliente.por ? <span className="text-xs text-slate-500">({c.contactadoCliente.por}, {new Date(c.contactadoCliente.ts).toLocaleString("es-ES")})</span> : null}</label>
+            {t === "reparto" && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.repartidor} onChange={(e) => setCitaB({ ...citaB, repartidor: e.target.checked })} /> He avisado al repartidor{c.avisadoRepartidor && c.avisadoRepartidor.por ? <span className="text-xs text-slate-500">({c.avisadoRepartidor.por})</span> : null}</label>}
+            <input value={citaB.nota} onChange={(e) => setCitaB({ ...citaB, nota: e.target.value })} placeholder="Nota (quién recoge, furgoneta, llamar antes…)" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
+            <button type="button" onClick={guardarCita} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">Guardar cita (sale en el calendario)</button>
+            {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
+          </div>
+        ); })()}
         {abierto.documentoEntrega ? (
           <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
             <FileText size={15} className="text-[#2E8B57]" />
@@ -24857,7 +24942,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               </label>
             </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => { if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (!citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
@@ -24949,16 +25034,35 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               {porRevisar.map((p) => <button key={p.id} type="button" onClick={() => abrir(p)} className="w-full text-left bg-white border border-amber-300 rounded px-3 py-2 text-sm"><b>#{p.numero} — {p.nombre}</b>{!toArray(p.albaranEntrega.fotosCarga).length && <span className="ml-2 text-rose-700 font-bold">⚠ sin foto de la carga</span>}{p.albaranEntrega.firmaCliente.responsableCarga && <span className="ml-2 text-amber-800 font-semibold">· firmó el responsable</span>}</button>)}
             </div>
           ); })()}
+          <div className="flex items-center gap-2 text-sm">
+            {[["todas", "Todas", repartosTipo.length, "slate"], ["llamar", "📞 Carga terminada: llamar", nCita("llamar"), "rose"], ["sinfecha", "Sin fecha", nCita("sinfecha"), "rose"], ["aprox", "Fecha aproximada", nCita("aprox"), "amber"], ["ok", "✓ Confirmadas", nCita("ok"), "emerald"]].map(([k, l, n, c]) => (
+              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCita === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <span className="text-xs text-slate-600">Marca obras y ponles fecha de golpe:</span>
+            <input type="date" value={fechaLote} onChange={(e) => setFechaLote(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
+            <button type="button" onClick={ponerFechaLote} className="px-3 py-1 rounded bg-[#2E8B57] text-white font-semibold">Poner fecha a {Object.values(selCita).filter(Boolean).length} marcada(s)</button>
+            <button type="button" onClick={() => setSelCita(Object.fromEntries(repartos.filter((p) => !fechaCitaDe(p)).map((p) => [p.id, true])))} className="text-xs underline text-slate-600">marcar las sin fecha</button>
+            {Object.values(selCita).some(Boolean) && <button type="button" onClick={() => setSelCita({})} className="text-xs underline text-slate-500">desmarcar</button>}
+          </div>
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
             const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+            const ec = estCita(p);
             return (
-              <button key={p.id} onClick={() => abrir(p)} className="w-full text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-[#2E8B57]">
+              <div key={p.id} className={`bg-white border rounded-lg ${ec === "llamar" ? "border-rose-400" : "border-slate-200"} hover:border-[#2E8B57]`}>
+              <button onClick={() => abrir(p)} className="w-full text-left p-4 pb-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
+                  {(() => { const r = paletDeObra(p, idxPalet); return r && r.n > 0 ? <Badge className={r.completa ? "bg-emerald-600 text-white ring-emerald-600" : "bg-slate-50 text-slate-600 ring-slate-200"}>{r.completa ? `🟢 Todas en palet (${r.total})` : `${r.n}/${r.total} en palet`}</Badge> : null; })()}
+                  {ec === "ok" ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Cita confirmada {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge>
+                    : ec === "llamar" ? <Badge className="bg-rose-600 text-white ring-rose-600">📞 Carga terminada: LLAMA AL CLIENTE</Badge>
+                    : ec === "sinfecha" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-300">Sin fecha</Badge>
+                    : <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Fecha aproximada {fmtDate(fechaCitaDe(p))} · sin llamar</Badge>}
                 </div>
                 <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {esRecogidaFabrica(p) ? `Recogida ${fmtDate(p.fechaReparto) || "sin fecha"}` : `${direccionDe(p) || "Sin dirección"} · Reparto ${fmtDate(p.fechaReparto) || "sin fecha"}`}</div>
                 <div className="text-xs mt-1 flex gap-3">
@@ -24967,6 +25071,17 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
                 </div>
               </button>
+              {/* FECHA DESDE LA LISTA: se pone o se cambia sin entrar; al cambiarla hay que volver a llamar */}
+              <div className="flex flex-wrap items-center gap-2 px-4 pb-3 text-xs">
+                <input type="checkbox" checked={!!selCita[p.id]} onChange={(e) => setSelCita({ ...selCita, [p.id]: e.target.checked })} title="Marcar para poner fecha de golpe" />
+                <span className="text-slate-500">{tipoSalida(p) === "instalacion" ? "Instalación" : tipoSalida(p) === "recogida" ? "Recogida" : "Reparto"}:</span>
+                <input type="date" value={fechaCitaDe(p)} onChange={(e) => { const v = e.target.value; if (citaOk(p) && !window.confirm("Esta cita ya estaba CONFIRMADA con el cliente. Si la cambias, hay que volver a llamarle. ¿Cambiar?")) return; fijarFechaObra(p, v, null, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                <input type="time" value={(p.citaSalida && p.citaSalida.hora) || ""} onChange={(e) => { if (!fechaCitaDe(p)) { alert("Primero la fecha."); return; } fijarFechaObra(p, fechaCitaDe(p), e.target.value, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                {ec !== "ok" && fechaCitaDe(p) && <button type="button" onClick={() => confirmarDesdeLista(p)} className={`px-2.5 py-1 rounded font-semibold ${ec === "llamar" ? "bg-rose-600 text-white" : "bg-white border border-slate-300 text-slate-700"}`}>📞 Llamado: confirmar</button>}
+                {(() => { const c = clienteDe(p); const tel = c && (c.movil || c.telefono); return tel ? <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">{tel}</a> : null; })()}
+                {toArray(p.citaSalida && p.citaSalida.historial).length > 0 && <span className="text-slate-400">cambiada {toArray(p.citaSalida.historial).length}×</span>}
+              </div>
+              </div>
             );
           })}
         </div>
@@ -31046,6 +31161,7 @@ const EVENT_DOT = {
   proyecto_fabricacion: () => "bg-orange-50 text-orange-700 ring-orange-200",
   proyecto_montaje: () => "bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200",
   proyecto_reparto: () => "bg-teal-50 text-teal-700 ring-teal-200",
+  proyecto_recogida: () => "bg-sky-50 text-sky-800 ring-sky-300",
   pedido: () => "bg-sky-50 text-sky-700 ring-sky-200",
   incidencia: () => "bg-violet-50 text-violet-700 ring-violet-200",
 };
@@ -31055,6 +31171,7 @@ const CALENDARIO_TABS = [
   { id: "proyecto_fabricacion", label: "Fabricación" },
   { id: "proyecto_montaje", label: "Montaje" },
   { id: "proyecto_reparto", label: "Reparto" },
+  { id: "proyecto_recogida", label: "Recogidas" },
   { id: "proyecto_entrega", label: "Entregas" },
   { id: "pedido", label: "Pedidos" },
   { id: "incidencia", label: "Incidencias" },
@@ -31117,11 +31234,19 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
           badge: EVENT_DOT.proyecto_entrega(p.estadoTrabajo),
         });
       }
+      const horaCita = p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : "";
+      if (p.fechaReparto && esRecogidaFabrica(p)) {
+        push(p.fechaReparto, {
+          type: "proyecto_recogida", id: p.id, campo: "fechaReparto",
+          label: `Recogida en fábrica${horaCita}${p.citaSalida && p.citaSalida.contactadoCliente ? " ✓" : " (sin llamar)"} — #${p.numero} ${p.nombre}`,
+          badge: EVENT_DOT.proyecto_recogida(),
+        });
+      }
       if (p.fechaReparto && p.estadoLogistica === "Reparto (camión)") {
         const zona = p.provinciaReparto === "Otra ciudad..." ? (p.ciudadRepartoManual || "") : p.provinciaReparto;
         push(p.fechaReparto, {
           type: "proyecto_reparto", id: p.id, campo: "fechaReparto",
-          label: `Reparto${zona ? ` (${zona})` : ""} — #${p.numero} ${p.nombre}`,
+          label: `Reparto${horaCita}${zona ? ` (${zona})` : ""} — #${p.numero} ${p.nombre}`,
           badge: EVENT_DOT.proyecto_reparto(),
         });
       }
