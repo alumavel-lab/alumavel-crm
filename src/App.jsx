@@ -6483,6 +6483,24 @@ export default function App() {
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
+          // Obras ya completas en palet (almacén de ventanas listo): aviso a fábrica y a quien tenga albaranes para programar la salida / el reparto
+          if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
+          const listas = proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida");
+          if (!listas.length) return null;
+          const sinProg = listas.filter((p) => !p.fechaReparto);
+          const nomL = (p) => { const pp = presupuestoDeObra(p); return pp ? `Ppto ${pp}` : (p.nombre || "obra"); };
+          const detalle = listas.slice(0, 3).map((p) => `${nomL(p)}${p.fechaReparto ? "" : " (sin fecha de salida)"}`).join(" · ");
+          return (
+            <button
+              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialFabrica.actual = "almacen"; setModulo("fabrica"); } }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-teal-50 text-teal-800 hover:bg-teal-100"
+            >
+              <Truck size={15} />
+              🚚 {listas.length} obra{listas.length === 1 ? "" : "s"} con todas las ventanas ya en palet, lista{listas.length === 1 ? "" : "s"} para repartir o programar la salida{sinProg.length ? ` · ${sinProg.length} sin fecha de salida` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
+            </button>
+          );
+        })()}
+        {(() => {
           // Fábrica ha dado material por llegado: se avisa a quien lleva los pedidos (administrador y responsable de pedidos)
           if (!currentUser || !(isAdmin || currentUser.responsablePedidos)) return null;
           const nuevos = pedidos.filter((p) => p.avisoRecepcion && !(p.avisoRecepcion.vistoPor && p.avisoRecepcion.vistoPor[currentUser.id]) && String(p.avisoRecepcion.porId || "") !== String(currentUser.id) && (Date.now() - new Date(p.avisoRecepcion.fecha).getTime()) < 14 * 86400000);
