@@ -7343,6 +7343,7 @@ export default function App() {
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
+            onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />}
             proyectos={proyectos}
@@ -7510,6 +7511,7 @@ export default function App() {
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
+            onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
@@ -24731,7 +24733,7 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
 // Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
 const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
 
-function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
+function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
@@ -24742,6 +24744,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const [borrador, setBorrador] = useState(null);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
   const [generando, setGenerando] = useState(false);
+  const [citaB, setCitaB] = useState(null); // borrador de la CITA (fecha, hora, llamado al cliente, avisado el repartidor)
   const nombreYo = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
   const clienteDe = (p) => (clientes || []).find((c) => c.id === p.clienteId);
   const direccionDe = (p) => {
@@ -24759,8 +24762,14 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const repartosBase = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p) || p.llevaInstalacion) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p));
   const cuentaTipo = (t) => repartosBase.filter((p) => tipoSalida(p) === t && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p))).length;
   const cuentaOrigen = (o) => repartosBase.filter((p) => (o === "uxcar") === esDeUxcar(p) && (fTipo === "todos" || tipoSalida(p) === fTipo)).length;
-  const repartos = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)))
-    .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
+  // CITA OBLIGATORIA: fecha de reparto / recogida / instalación + haber llamado al cliente (y avisado al repartidor si es reparto)
+  const fechaCitaDe = (p) => (tipoSalida(p) === "instalacion" ? p.fechaMontaje : p.fechaReparto) || "";
+  const citaOk = (p) => { const c = p.citaSalida || {}; return !!(fechaCitaDe(p) && c.contactadoCliente && (tipoSalida(p) !== "reparto" || c.avisadoRepartidor)); };
+  const [soloSinCita, setSoloSinCita] = useEstadoLocal("crm_alb_sincita", false);
+  const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
+  const nSinCita = repartosTipo.filter((p) => !citaOk(p)).length;
+  const repartos = repartosTipo.filter((p) => !soloSinCita || !citaOk(p))
+    .sort((a, b) => (citaOk(a) ? 1 : 0) - (citaOk(b) ? 1 : 0) || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
   const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente) && casaQ(p))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
   const siguienteNumero = () => {
@@ -24771,7 +24780,21 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const abrir = (p) => {
     const a = p.albaranEntrega || {};
     setBorrador({ numero: a.numero || siguienteNumero(), chofer: a.chofer || nombreYo, matricula: a.matricula || "", contenido: a.contenido || [p.nombre, p.especificaciones].filter(Boolean).join("\n"), bultos: a.bultos || "", notas: a.notas || "" });
+    const c = p.citaSalida || {};
+    setCitaB({ fecha: fechaCitaDe(p), hora: c.hora || "", cliente: !!c.contactadoCliente, repartidor: !!c.avisadoRepartidor, nota: c.nota || "" });
     setAbiertoId(p.id);
+  };
+  const guardarCita = () => {
+    if (!abierto || !citaB) return;
+    const t = tipoSalida(abierto);
+    if (!citaB.fecha) { alert(`Pon la FECHA de ${t === "instalacion" ? "instalación" : t}: es obligatoria.`); return; }
+    if (!citaB.cliente) { alert("Marca que has LLAMADO AL CLIENTE y quedado con él: es obligatorio."); return; }
+    if (t === "reparto" && !citaB.repartidor) { alert("Marca que has AVISADO AL REPARTIDOR: es obligatorio en los repartos."); return; }
+    const ant = abierto.citaSalida || {}; const ahora = new Date().toISOString();
+    const marca = (si, prev) => (si ? (prev && prev.por ? prev : { por: nombreYo || "—", ts: ahora }) : false);
+    const cita = { tipo: t, fecha: citaB.fecha, hora: citaB.hora || "", nota: citaB.nota || "", contactadoCliente: marca(citaB.cliente, ant.contactadoCliente), avisadoRepartidor: marca(citaB.repartidor, ant.avisadoRepartidor), por: nombreYo || "—", ts: ahora,
+      historial: [...toArray(ant.historial), ...(ant.fecha && (ant.fecha !== citaB.fecha || (ant.hora || "") !== (citaB.hora || "")) ? [{ fecha: ant.fecha, hora: ant.hora || "", cambiadaPor: nombreYo || "—", ts: ahora }] : [])].slice(-10) };
+    onGuardarCita && onGuardarCita(abierto.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: citaB.fecha, citaSalida: cita });
   };
   const guardar = (extra = {}, entregar = false, cargado = false) => onGuardarAlbaranEntrega(abierto.id, { ...(abierto.albaranEntrega || {}), ...borrador, ...extra }, entregar, cargado);
   const tabBtn = (id, label, n) => (
@@ -24794,6 +24817,22 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
           <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · Reparto {fmtDate(abierto.fechaReparto) || "sin fecha"}</div>
         </div>
+        {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
+          <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
+            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
+            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."} Sin esto no se puede firmar la carga.</div>}
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs text-slate-600">Fecha<br /><input type="date" value={citaB.fecha} onChange={(e) => setCitaB({ ...citaB, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+              <label className="text-xs text-slate-600">Hora<br /><input type="time" value={citaB.hora} onChange={(e) => setCitaB({ ...citaB, hora: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+              {tel && <a href={`tel:${tel}`} className="text-sm font-semibold text-[#2E8B57] underline pb-1.5">📞 Llamar {tel}</a>}
+            </div>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.cliente} onChange={(e) => setCitaB({ ...citaB, cliente: e.target.checked })} /> He llamado al cliente y está de acuerdo con la fecha{c.contactadoCliente && c.contactadoCliente.por ? <span className="text-xs text-slate-500">({c.contactadoCliente.por}, {new Date(c.contactadoCliente.ts).toLocaleString("es-ES")})</span> : null}</label>
+            {t === "reparto" && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.repartidor} onChange={(e) => setCitaB({ ...citaB, repartidor: e.target.checked })} /> He avisado al repartidor{c.avisadoRepartidor && c.avisadoRepartidor.por ? <span className="text-xs text-slate-500">({c.avisadoRepartidor.por})</span> : null}</label>}
+            <input value={citaB.nota} onChange={(e) => setCitaB({ ...citaB, nota: e.target.value })} placeholder="Nota (quién recoge, furgoneta, llamar antes…)" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
+            <button type="button" onClick={guardarCita} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">Guardar cita (sale en el calendario)</button>
+            {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
+          </div>
+        ); })()}
         {abierto.documentoEntrega ? (
           <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
             <FileText size={15} className="text-[#2E8B57]" />
@@ -24857,7 +24896,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               </label>
             </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => { if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (!citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
@@ -24949,6 +24988,10 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               {porRevisar.map((p) => <button key={p.id} type="button" onClick={() => abrir(p)} className="w-full text-left bg-white border border-amber-300 rounded px-3 py-2 text-sm"><b>#{p.numero} — {p.nombre}</b>{!toArray(p.albaranEntrega.fotosCarga).length && <span className="ml-2 text-rose-700 font-bold">⚠ sin foto de la carga</span>}{p.albaranEntrega.firmaCliente.responsableCarga && <span className="ml-2 text-amber-800 font-semibold">· firmó el responsable</span>}</button>)}
             </div>
           ); })()}
+          <div className="flex items-center gap-2 text-sm">
+            <button type="button" onClick={() => setSoloSinCita(!soloSinCita)} className={`px-3 py-1.5 rounded-lg border font-semibold ${soloSinCita ? "bg-rose-600 text-white border-rose-600" : nSinCita ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-white text-slate-500 border-slate-200"}`}>⚠ Sin cita {nSinCita}</button>
+            <span className="text-xs text-slate-500">Las que no tienen cita salen primero. Entra, llama y pon la fecha.</span>
+          </div>
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
@@ -24959,6 +25002,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
+                  {citaOk(p) ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">📅 Cita {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge> : <Badge className="bg-rose-600 text-white ring-rose-600">⚠ SIN CITA · entra y llama</Badge>}
                 </div>
                 <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {esRecogidaFabrica(p) ? `Recogida ${fmtDate(p.fechaReparto) || "sin fecha"}` : `${direccionDe(p) || "Sin dirección"} · Reparto ${fmtDate(p.fechaReparto) || "sin fecha"}`}</div>
                 <div className="text-xs mt-1 flex gap-3">
@@ -31046,6 +31090,7 @@ const EVENT_DOT = {
   proyecto_fabricacion: () => "bg-orange-50 text-orange-700 ring-orange-200",
   proyecto_montaje: () => "bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200",
   proyecto_reparto: () => "bg-teal-50 text-teal-700 ring-teal-200",
+  proyecto_recogida: () => "bg-sky-50 text-sky-800 ring-sky-300",
   pedido: () => "bg-sky-50 text-sky-700 ring-sky-200",
   incidencia: () => "bg-violet-50 text-violet-700 ring-violet-200",
 };
@@ -31055,6 +31100,7 @@ const CALENDARIO_TABS = [
   { id: "proyecto_fabricacion", label: "Fabricación" },
   { id: "proyecto_montaje", label: "Montaje" },
   { id: "proyecto_reparto", label: "Reparto" },
+  { id: "proyecto_recogida", label: "Recogidas" },
   { id: "proyecto_entrega", label: "Entregas" },
   { id: "pedido", label: "Pedidos" },
   { id: "incidencia", label: "Incidencias" },
@@ -31117,11 +31163,19 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
           badge: EVENT_DOT.proyecto_entrega(p.estadoTrabajo),
         });
       }
+      const horaCita = p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : "";
+      if (p.fechaReparto && esRecogidaFabrica(p)) {
+        push(p.fechaReparto, {
+          type: "proyecto_recogida", id: p.id, campo: "fechaReparto",
+          label: `Recogida en fábrica${horaCita}${p.citaSalida && p.citaSalida.contactadoCliente ? " ✓" : " (sin llamar)"} — #${p.numero} ${p.nombre}`,
+          badge: EVENT_DOT.proyecto_recogida(),
+        });
+      }
       if (p.fechaReparto && p.estadoLogistica === "Reparto (camión)") {
         const zona = p.provinciaReparto === "Otra ciudad..." ? (p.ciudadRepartoManual || "") : p.provinciaReparto;
         push(p.fechaReparto, {
           type: "proyecto_reparto", id: p.id, campo: "fechaReparto",
-          label: `Reparto${zona ? ` (${zona})` : ""} — #${p.numero} ${p.nombre}`,
+          label: `Reparto${horaCita}${zona ? ` (${zona})` : ""} — #${p.numero} ${p.nombre}`,
           badge: EVENT_DOT.proyecto_reparto(),
         });
       }
