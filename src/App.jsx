@@ -24765,11 +24765,38 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   // CITA OBLIGATORIA: fecha de reparto / recogida / instalación + haber llamado al cliente (y avisado al repartidor si es reparto)
   const fechaCitaDe = (p) => (tipoSalida(p) === "instalacion" ? p.fechaMontaje : p.fechaReparto) || "";
   const citaOk = (p) => { const c = p.citaSalida || {}; return !!(fechaCitaDe(p) && c.contactadoCliente && (tipoSalida(p) !== "reparto" || c.avisadoRepartidor)); };
-  const [soloSinCita, setSoloSinCita] = useEstadoLocal("crm_alb_sincita", false);
+  // ESTADO DE LA CITA de cada obra: sin fecha → fecha aproximada (sin llamar) → confirmada (llamado al cliente)
+  const listoP = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+  const estCita = (p) => (citaOk(p) ? "ok" : !fechaCitaDe(p) ? "sinfecha" : listoP(p) ? "llamar" : "aprox");
+  const [fCita, setFCita] = useEstadoLocal("crm_alb_fcita", "todas"); // todas | sinfecha | aprox | llamar | ok
+  const [selCita, setSelCita] = useState({}); const [fechaLote, setFechaLote] = useState("");
   const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
-  const nSinCita = repartosTipo.filter((p) => !citaOk(p)).length;
-  const repartos = repartosTipo.filter((p) => !soloSinCita || !citaOk(p))
-    .sort((a, b) => (citaOk(a) ? 1 : 0) - (citaOk(b) ? 1 : 0) || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
+  const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
+  const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
+  const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
+    .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
+  // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
+  const fijarFechaObra = (p, fecha, hora, confirmar) => {
+    if (!onGuardarCita) return;
+    const t = tipoSalida(p); const ant = p.citaSalida || {}; const ahora = new Date().toISOString(); const yo = nombreYo || "—";
+    const fAnt = fechaCitaDe(p); const hNueva = hora == null ? ant.hora || "" : hora;
+    const cambia = (fAnt || "") !== (fecha || "") || (ant.hora || "") !== hNueva;
+    const conf = confirmar ? { por: yo, ts: ahora } : cambia ? false : ant.contactadoCliente || false;
+    const rep = confirmar && t === "reparto" ? { por: yo, ts: ahora } : cambia ? false : ant.avisadoRepartidor || false;
+    const cita = { ...ant, tipo: t, fecha: fecha || "", hora: hNueva, contactadoCliente: conf, avisadoRepartidor: rep, por: yo, ts: ahora,
+      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10) };
+    onGuardarCita(p.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: fecha || "", citaSalida: cita });
+  };
+  const confirmarDesdeLista = (p) => {
+    const t = tipoSalida(p); if (!fechaCitaDe(p)) { alert("Primero pon la fecha."); return; }
+    if (!window.confirm(`#${p.numero} ${p.nombre}\n\n¿Has LLAMADO AL CLIENTE${t === "reparto" ? " y AVISADO AL REPARTIDOR" : ""} y queda el ${fmtDate(fechaCitaDe(p))}${p.citaSalida && p.citaSalida.hora ? " a las " + p.citaSalida.hora : ""}?`)) return;
+    fijarFechaObra(p, fechaCitaDe(p), null, true);
+  };
+  const ponerFechaLote = () => {
+    const ps = repartos.filter((p) => selCita[p.id]); if (!fechaLote || !ps.length) { alert("Elige la fecha y marca las obras."); return; }
+    if (!window.confirm(`¿Poner el ${fmtDate(fechaLote)} a ${ps.length} obra(s)? Queda como fecha APROXIMADA hasta que llames al cliente.`)) return;
+    ps.forEach((p) => fijarFechaObra(p, fechaLote, null, false)); setSelCita({});
+  };
   const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente) && casaQ(p))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
   const siguienteNumero = () => {
@@ -24989,20 +25016,33 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             </div>
           ); })()}
           <div className="flex items-center gap-2 text-sm">
-            <button type="button" onClick={() => setSoloSinCita(!soloSinCita)} className={`px-3 py-1.5 rounded-lg border font-semibold ${soloSinCita ? "bg-rose-600 text-white border-rose-600" : nSinCita ? "bg-rose-50 text-rose-700 border-rose-300" : "bg-white text-slate-500 border-slate-200"}`}>⚠ Sin cita {nSinCita}</button>
-            <span className="text-xs text-slate-500">Las que no tienen cita salen primero. Entra, llama y pon la fecha.</span>
+            {[["todas", "Todas", repartosTipo.length, "slate"], ["llamar", "📞 Carga terminada: llamar", nCita("llamar"), "rose"], ["sinfecha", "Sin fecha", nCita("sinfecha"), "rose"], ["aprox", "Fecha aproximada", nCita("aprox"), "amber"], ["ok", "✓ Confirmadas", nCita("ok"), "emerald"]].map(([k, l, n, c]) => (
+              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCita === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <span className="text-xs text-slate-600">Marca obras y ponles fecha de golpe:</span>
+            <input type="date" value={fechaLote} onChange={(e) => setFechaLote(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
+            <button type="button" onClick={ponerFechaLote} className="px-3 py-1 rounded bg-[#2E8B57] text-white font-semibold">Poner fecha a {Object.values(selCita).filter(Boolean).length} marcada(s)</button>
+            <button type="button" onClick={() => setSelCita(Object.fromEntries(repartos.filter((p) => !fechaCitaDe(p)).map((p) => [p.id, true])))} className="text-xs underline text-slate-600">marcar las sin fecha</button>
+            {Object.values(selCita).some(Boolean) && <button type="button" onClick={() => setSelCita({})} className="text-xs underline text-slate-500">desmarcar</button>}
           </div>
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
             const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+            const ec = estCita(p);
             return (
-              <button key={p.id} onClick={() => abrir(p)} className="w-full text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-[#2E8B57]">
+              <div key={p.id} className={`bg-white border rounded-lg ${ec === "llamar" ? "border-rose-400" : "border-slate-200"} hover:border-[#2E8B57]`}>
+              <button onClick={() => abrir(p)} className="w-full text-left p-4 pb-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
-                  {citaOk(p) ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">📅 Cita {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge> : <Badge className="bg-rose-600 text-white ring-rose-600">⚠ SIN CITA · entra y llama</Badge>}
+                  {ec === "ok" ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Cita confirmada {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge>
+                    : ec === "llamar" ? <Badge className="bg-rose-600 text-white ring-rose-600">📞 Carga terminada: LLAMA AL CLIENTE</Badge>
+                    : ec === "sinfecha" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-300">Sin fecha</Badge>
+                    : <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Fecha aproximada {fmtDate(fechaCitaDe(p))} · sin llamar</Badge>}
                 </div>
                 <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {esRecogidaFabrica(p) ? `Recogida ${fmtDate(p.fechaReparto) || "sin fecha"}` : `${direccionDe(p) || "Sin dirección"} · Reparto ${fmtDate(p.fechaReparto) || "sin fecha"}`}</div>
                 <div className="text-xs mt-1 flex gap-3">
@@ -25011,6 +25051,17 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
                 </div>
               </button>
+              {/* FECHA DESDE LA LISTA: se pone o se cambia sin entrar; al cambiarla hay que volver a llamar */}
+              <div className="flex flex-wrap items-center gap-2 px-4 pb-3 text-xs">
+                <input type="checkbox" checked={!!selCita[p.id]} onChange={(e) => setSelCita({ ...selCita, [p.id]: e.target.checked })} title="Marcar para poner fecha de golpe" />
+                <span className="text-slate-500">{tipoSalida(p) === "instalacion" ? "Instalación" : tipoSalida(p) === "recogida" ? "Recogida" : "Reparto"}:</span>
+                <input type="date" value={fechaCitaDe(p)} onChange={(e) => { const v = e.target.value; if (citaOk(p) && !window.confirm("Esta cita ya estaba CONFIRMADA con el cliente. Si la cambias, hay que volver a llamarle. ¿Cambiar?")) return; fijarFechaObra(p, v, null, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                <input type="time" value={(p.citaSalida && p.citaSalida.hora) || ""} onChange={(e) => { if (!fechaCitaDe(p)) { alert("Primero la fecha."); return; } fijarFechaObra(p, fechaCitaDe(p), e.target.value, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                {ec !== "ok" && fechaCitaDe(p) && <button type="button" onClick={() => confirmarDesdeLista(p)} className={`px-2.5 py-1 rounded font-semibold ${ec === "llamar" ? "bg-rose-600 text-white" : "bg-white border border-slate-300 text-slate-700"}`}>📞 Llamado: confirmar</button>}
+                {(() => { const c = clienteDe(p); const tel = c && (c.movil || c.telefono); return tel ? <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">{tel}</a> : null; })()}
+                {toArray(p.citaSalida && p.citaSalida.historial).length > 0 && <span className="text-slate-400">cambiada {toArray(p.citaSalida.historial).length}×</span>}
+              </div>
+              </div>
             );
           })}
         </div>
