@@ -58295,6 +58295,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return Object.values(hojasCD || {}).find((h) => h && toArray(h.modelos).length && h.pres && mios.some((m) => mismoPresCD(m, String(h.pres).replace(/\./g, "")))) || null;
   };
   const infoHoja = (o, v) => { const h = hojaDeObra(o); if (!h) return null; const pb = String((v && v.pos) || "").trim().split(/\s+/)[0].toUpperCase(); return toArray(h.modelos).find((m) => String(m.pos || "").toUpperCase() === pb) || null; };
+  // El PLANING lista cada posición una sola vez aunque la hoja de corte diga «Uds: 2»: se cuentan tantas ventanas como unidades (si el planning ya repite la posición, se deja tal cual)
+  const expandePlan = (o, arr) => {
+    const hc = hojaDeObra(o); const cuenta = {}; arr.forEach((w) => { const k = String((w && w.pos) || "").trim().toUpperCase(); cuenta[k] = (cuenta[k] || 0) + 1; });
+    const udsDe = (pos) => { const k = String(pos || "").trim().toUpperCase(); if (!hc || cuenta[k] > 1) return 1; const pb = k.split(/\s+/)[0]; const m = toArray(hc.modelos).find((x) => String(x.pos || "").toUpperCase() === pb); return m ? Math.min(99, Math.max(1, parseInt(m.uds, 10) || 1)) : 1; };
+    const out = []; const vistos = {};
+    arr.forEach((w, i) => { const n = udsDe(w.pos); for (let u = 1; u <= n; u++) { let id = limpia(n > 1 ? `${w.pos}_${u}` : (w.pos || `v${i}`)); if (vistos[id]) { vistos[id]++; id = `${id}_${vistos[id]}`; } else vistos[id] = 1; out.push({ id, pos: n > 1 ? `${w.pos} ${u}/${n}` : (w.pos || `V${i + 1}`), fab: "", tip: w.pos || "", medida: "", color: w.color || "" }); } });
+    return out;
+  };
   const planDeObra = (o) => {
     const k = limpia(o.d.key); const mios = [...presCrmDe(o)];
     return Object.values(planPres || {}).filter((pr) => pr && (pr.obraKey === k || (mios.length && mios.some((m) => mismoPresCD(m, String(pr.pres || "").replace(/\./g, "").trim())))));
@@ -58329,8 +58337,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     if (o.d.tipo !== "pl") {
       const delPlan0 = planDeObra(o).flatMap((pr) => toArray(pr.ventanas));
       if (delPlan0.length) {
-        const vistos0 = {};
-        o.viv.set("Ventanas del planning", delPlan0.map((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistos0[id]) { vistos0[id]++; id = `${id}_${vistos0[id]}`; } else vistos0[id] = 1; return { id, pos: w.pos || `V${i + 1}`, fab: "", tip: w.pos || "", medida: "", color: w.color || "" }; }));
+        o.viv.set("Ventanas del planning", expandePlan(o, delPlan0));
         o.fuente = "planning"; return;
       }
     }
@@ -58352,8 +58359,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const kObra = limpia(o.d.key);
     const delPlan = Object.values(planPres || {}).filter((pr) => pr && pr.obraKey === kObra).flatMap((pr) => toArray(pr.ventanas));
     if (delPlan.length) {
-      const vistosP = {};
-      o.viv.set("Ventanas del planning", delPlan.map((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistosP[id]) { vistosP[id]++; id = `${id}_${vistosP[id]}`; } else vistosP[id] = 1; return { id, pos: w.pos || `V${i + 1}`, fab: "", tip: w.pos || "", medida: "", color: w.color || "" }; }));
+      o.viv.set("Ventanas del planning", expandePlan(o, delPlan));
       o.fuente = "planning"; return;
     }
     const nV = o.d.tipo === "u" && ent ? uxNum(ent.ventanas) + uxNum(ent.puertas) + uxNum(ent.osciloParalelas) : o.d.tipo === "p" && ent ? ventanasDeObra(ent, uxExpedientes).total : 0;
