@@ -47772,6 +47772,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
+  const solSin = useObjetoFb("solapeSinEtiquetaLinea"); // estanterías de solape apuntadas para ventanas que no tienen etiquetas
   const cpManual = useObjetoFb("cristalPuestoManualLinea"); // cristal apuntado como puesto a mano (cuando no hay packing list en el almacén)
   const qd = String(q).replace(/\D/g, "");
   const texto = String(q).trim().toLowerCase();
@@ -47810,12 +47811,16 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const llevaSolape = !!w && ((w.ex || []).includes("SOLAPE") || (w.ex || []).includes("POSTIGO") || (!!baseW && !!solOv[baseW]));
   const zSol = zonasLin.find((z) => z.id === "solape");
   const ocSol = (ocupLin && ocupLin.solape) || {};
-  const libreSol = zSol ? (() => { for (let n = 1; n <= zSol.huecos; n++) if (!ocSol[`${n}_1`]) return n; return 0; })() : 0;
-  const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : null;
+  const usadosSol = new Set([...Object.keys(ocSol).map((k) => parseInt(k, 10)), ...Object.values(solSin || {}).filter(Boolean).map((e) => Number(e.hueco))]);
+  const libreSol = zSol ? (() => { for (let n = 1; n <= zSol.huecos; n++) if (!usadosSol.has(n)) return n; return 0; })() : 0;
+  const claveSol = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
+  const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : (claveSol && solSin[claveSol] ? solSin[claveSol] : null);
   const mandarSolape = async () => {
     const n = parseInt(huecoSol, 10) || libreSol;
-    const r = await fijarHuecoLinea(zSol, baseW, n, quien);
-    setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`);
+    if (!zSol || !n || n < 1 || n > zSol.huecos) { setMsg(`⚠ El estante va del 1 al ${zSol ? zSol.huecos : 36}`); return; }
+    if (baseW) { const r = await fijarHuecoLinea(zSol, baseW, n, quien); setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`); return; }
+    if (usadosSol.has(n)) { setMsg(`⚠ El estante ${n} de Solape ya está ocupado`); return; }
+    fbSet(ref(fbDb, `solapeSinEtiquetaLinea/${claveSol}`), { hueco: n, ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
   };
   // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
   const reconocerDe = (wx) => {
@@ -47926,19 +47931,23 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
       {w && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
-          <div className="text-lg font-extrabold text-amber-900">⚠ {w.pos} LLEVA SOLAPE / POSTIGO → después de acristalar, mándala a SOLAPE</div>
-          {ubSol ? <div className="text-base font-bold text-emerald-800">Ya apuntada en Solape · estantería {ubSol.hueco}</div> : (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <label className="font-semibold text-amber-900">Estantería (1–{zSol ? zSol.huecos : 36}):
-                <input type="number" min="1" max={zSol ? zSol.huecos : 36} value={huecoSol} onChange={(e) => setHuecoSol(e.target.value)} placeholder={libreSol ? String(libreSol) : "—"} className="ml-2 w-20 border border-amber-400 rounded-md px-2 py-1.5 text-base font-bold" />
-              </label>
-              <span className="text-xs text-amber-800">{libreSol ? `Primera libre: ${libreSol}` : "Solape llena"}</span>
-              {baseW ? <button type="button" onClick={mandarSolape} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Apuntar en Solape</button> : <span className="text-xs text-amber-800">Sin etiquetas de esta ventana no se puede apuntar en el mapa: déjala en la estantería indicada.</span>}
-            </div>
-          )}
+          {ubSol
+            ? <div className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</div>
+            : <>
+              <div className="text-lg font-extrabold text-amber-900">📍 {w.pos} está en LÍNEA · lleva solape / postigo: va a SOLAPE</div>
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <label className="font-semibold text-amber-900">Estantería (1–{zSol ? zSol.huecos : 36}):
+                  <input type="number" min="1" max={zSol ? zSol.huecos : 36} value={huecoSol} onChange={(e) => setHuecoSol(e.target.value)} placeholder={libreSol ? String(libreSol) : "—"} className="ml-2 w-20 border border-amber-400 rounded-md px-2 py-1.5 text-base font-bold" />
+                </label>
+                <span className="text-xs text-amber-800">{libreSol ? `Primera libre: ${libreSol}` : "Solape llena"}</span>
+                <button type="button" onClick={mandarSolape} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Apuntar en Solape</button>
+              </div>
+            </>}
         </div>
       )}
-      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900">{w.pos} NO lleva solape → ventana TERMINADA. Déjala para paletización o almacén de carga: lo decide quien hace los palés.</div>}
+        </div>
+      )}
+      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900">📍 {w.pos} está en LÍNEA (no lleva solape). Paletización o almacén de carga lo decide quien hace los palés.</div>}
     </div>
   );
 }
