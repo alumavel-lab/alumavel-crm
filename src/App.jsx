@@ -44121,6 +44121,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
 
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false, onMoverDiaFabrica = null }) {
   const [verTodo, setVerTodo] = useState(false);
+  const [ticBusca, setTicBusca] = useState(""); // buscador de palés en «Cargar en el palet»
   const [ticFuera, setTicFuera] = useState(false); // en «Cargar en el palet»: ver también los palés que están fuera
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
@@ -44945,8 +44946,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <div className="text-sm font-bold text-slate-700">1. El palet: lee su código de barras o tócalo</div>
             <input value={ticCod} onChange={(e) => setTicCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); elegirPaletCod(e.currentTarget.value); } }} placeholder="Código del palet (pistola) y Enter" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
             <div className="flex flex-wrap items-center gap-2 mb-1"><label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600"><input type="checkbox" checked={ticFuera} onChange={(e) => setTicFuera(e.target.checked)} /> Ver también los palés que están fuera (al tocarlos se abre todo el almacén)</label></div>
+            <input value={ticBusca} onChange={(e) => setTicBusca(e.target.value)} placeholder="🔎 Buscar palet u obra (ej. C-12, 6.740, Uxcar…)" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
             <div className="flex flex-wrap gap-1.5 max-h-72 overflow-y-auto">
-              {(ticFuera ? cabsAhora() : cabs).sort(natNum).map((c) => { const fuera = (c.estado || "libre") === "fuera"; const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
+              {(ticFuera ? cabsAhora() : cabs).filter((c) => { const q = normBuscaLista(ticBusca); if (!q) return true; const txt = normBuscaLista([c.numero, c.codigo, c.obra && c.obra.nombre, c.obra && c.obra.cliente, c.reserva && c.reserva.nombre, ...toArray(c.ventanas).map((w) => w.pos)].filter(Boolean).join(" ")); return q.split(" ").every((t) => txt.includes(t)); }).sort(natNum).map((c) => { const fuera = (c.estado || "libre") === "fuera"; const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
                 <button key={c.id} type="button" onClick={() => { if (fuera) { setVerTodo(true); return; } setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); }} className={`px-2.5 py-1.5 rounded-lg border-2 text-xs font-bold ${sel ? "bg-emerald-600 border-emerald-800 text-white" : fuera ? "bg-slate-200 border-slate-400 text-slate-500" : libre ? "bg-white border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-900"}`}>{c.numero}{c.obra && c.obra.nombre ? ` · ${String(c.obra.nombre).slice(0, 18)}` : fuera ? " · fuera" : libre ? " · libre" : ""} · {toArray(c.ventanas).length}</button>
               ); })}
             </div>
