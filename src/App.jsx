@@ -47772,6 +47772,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
+  const cpManual = useObjetoFb("cristalPuestoManualLinea"); // cristal apuntado como puesto a mano (cuando no hay packing list en el almacén)
   const qd = String(q).replace(/\D/g, "");
   const texto = String(q).trim().toLowerCase();
   const obras = useMemo(() => {
@@ -47848,6 +47849,10 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     return out;
   }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
+  const claveP = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
+  const apuntadoMan = claveP ? cpManual[claveP] : null;
+  const apuntarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), { ventanaId: w.id, pos: w.pos || "", medida: w.medida || "", obra: obra.nombre || "", ppto: (obra.bases && obra.bases[0]) || "", fecha: hoyISO(), ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ Cristal de ${w.pos} apuntado como PUESTO${quien ? ` (${quien})` : ""}.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
+  const quitarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), null).then(() => setMsg(`${w.pos}: apunte de cristal puesto quitado.`)).catch(() => {});
   const filasCris = sinCrisVentana ? crisObra : cris;
   const cris = useMemo(() => crisDeVentana(w), [w, obra, cristales]); // eslint-disable-line
   const pers = useMemo(() => {
@@ -47886,6 +47891,9 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         <div className="space-y-1.5">
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
           {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
+          {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
+            ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
+            : <button type="button" onClick={apuntarPuesto} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
           {sinCrisVentana && crisObra.length > 0 && <p className="text-sm font-semibold text-amber-800">No sé cuál es el cristal de {w.pos} (medida de la ventana {w.medida || "—"}). Estos son los cristales pendientes del presupuesto: elige por la medida.</p>}
           {filasCris.map((x) => (
             <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
