@@ -50156,6 +50156,8 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
   const incidencias = delDia.filter((x) => x.incidencia);
   const conAdicional = delDia.filter((x) => parseFloat(x.adicional) > 0);
   const sumaAd = (arr) => Math.round(arr.reduce((a, x) => a + (parseFloat(x.adicional) || 0), 0) * 100) / 100;
+  const semanaAd = partes.filter((x) => x.fecha >= lunes && x.fecha <= finSemana && parseFloat(x.adicional) > 0);
+  const diasSemana = Array.from({ length: 7 }, (_, i) => addDiasISO(lunes, i));
   const [verAdicional, setVerAdicional] = useState(true);
   // Informe imprimible por trabajador: lo que apuntó en el cuadro «aparte» × la tarifa que se ponga aquí.
   const [tarifa, setTarifa] = useState(() => { try { return localStorage.getItem("tarifaAdicionalInforme") || ""; } catch (e) { return ""; } });
@@ -50227,7 +50229,7 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
           </div>
         </div>
       )}
-      {conAdicional.length > 0 && (
+      {(conAdicional.length > 0 || semanaAd.length > 0) && (
         <div className="bg-white border-2 border-slate-300 rounded-lg p-3 mb-3">
           <div className="flex items-center gap-2 mb-2">
             <div className="text-xs font-bold text-slate-700 uppercase mr-auto">{etiqueta} (aparte) · total {sumaAd(conAdicional)}{tarifaNum ? ` · ${eur(sumaAd(conAdicional) * tarifaNum)}` : ""}</div>
@@ -50236,6 +50238,20 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
             <button onClick={() => setVerAdicional(!verAdicional)} className="text-xs text-slate-500 hover:underline">{verAdicional ? "Ocultar" : "Ver"}</button>
           </div>
           {verAdicional && (
+            <div className="mb-3 overflow-x-auto">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase mb-1">Resumen de la semana ({fmtDate(lunes)} – {fmtDate(finSemana)})</div>
+              <table className="w-full text-sm">
+                <thead className="text-xs text-slate-400 uppercase"><tr><th className="text-left py-1">Día</th><th className="text-right py-1">{etiqueta}</th>{tarifaNum ? <th className="text-right py-1">× {tarifa} €</th> : null}</tr></thead>
+                <tbody>
+                  {diasSemana.map((f) => { const xs = semanaAd.filter((x) => x.fecha === f); return (
+                    <tr key={f} className={`border-t border-slate-100 ${f === dia && !semana ? "bg-emerald-50" : ""}`}><td className="py-1">{fmtDia(f)}</td><td className="py-1 text-right font-semibold">{xs.length ? sumaAd(xs) : "—"}</td>{tarifaNum ? <td className="py-1 text-right">{xs.length ? eur(sumaAd(xs) * tarifaNum) : "—"}</td> : null}</tr>
+                  ); })}
+                  <tr className="border-t-2 border-slate-300 font-extrabold"><td className="py-1">Total semana</td><td className="py-1 text-right">{sumaAd(semanaAd)}</td>{tarifaNum ? <td className="py-1 text-right">{eur(sumaAd(semanaAd) * tarifaNum)}</td> : null}</tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {verAdicional && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {[["usuarioNombre", "Por empleado"], ["fecha", "Por día"], ["obraNombre", "Por obra / proyecto"]].map(([k, t]) => {
                 const m = {}; conAdicional.forEach((x) => { const kk = x[k] || "—"; (m[kk] = m[kk] || []).push(x); });
@@ -50243,7 +50259,7 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
                   <div key={k}>
                     <div className="text-[11px] font-semibold text-slate-500 uppercase mb-1">{t}</div>
                     {Object.entries(m).sort((a, b) => (k === "fecha" ? a[0].localeCompare(b[0]) : sumaAd(b[1]) - sumaAd(a[1]))).map(([n, xs]) => (
-                      <div key={n} className="flex text-sm py-0.5"><span className="text-slate-700 truncate">{k === "fecha" ? fmtDia(n) : n}</span><span className="ml-auto font-semibold">{sumaAd(xs)}</span></div>
+                      <div key={n} className="flex text-sm py-0.5"><span className="text-slate-700 truncate">{k === "fecha" ? fmtDia(n) : n}</span><span className="ml-auto font-semibold">{sumaAd(xs)}{tarifaNum ? <span className="ml-2 text-slate-500 font-normal">{eur(sumaAd(xs) * tarifaNum)}</span> : null}</span></div>
                     ))}
                   </div>
                 );
