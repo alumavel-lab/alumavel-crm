@@ -44951,6 +44951,39 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               ); })}
             </div>
           </div>
+          {palet && (() => { const c = cabsAhora().find((z) => z.id === palet.id) || palet; const vs = toArray(c.ventanas); return (
+            <div className="rounded-lg border-2 border-emerald-300 bg-emerald-50/40 p-2 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-extrabold text-slate-900">📦 Palet {c.numero}</span>
+                <span className="text-xs text-slate-600">{c.obra && c.obra.nombre ? c.obra.nombre : "sin obra"} · {vs.length} ventana{vs.length === 1 ? "" : "s"}</span>
+                <button type="button" onClick={() => setTicPalet("")} className="ml-auto text-xs text-slate-500 hover:underline">Cerrar</button>
+              </div>
+              <div className="flex gap-1.5">
+                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, almacenId: e.target.value, historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-300 rounded px-1 py-1 bg-white">
+                  {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
+                </select>
+                <input key={c.id + (c.ubicacion || "")} defaultValue={c.ubicacion || ""} onBlur={(e) => e.target.value !== (c.ubicacion || "") && onGuardar({ ...c, ubicacion: e.target.value })} placeholder="Sitio (ej. fila 3)" className="flex-1 min-w-0 text-xs border border-slate-300 rounded px-1.5 py-1 bg-white" />
+              </div>
+              {vs.length === 0 && <div className="text-xs text-slate-500 italic">Vacío.</div>}
+              {vs.map((w) => (
+                <div key={`${w.obraKey || w.proyectoId}-${w.id}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs bg-white rounded border border-slate-200 px-2 py-1">
+                  <span className="font-bold text-slate-900">{posDib(w)}</span>
+                  <select value="" onChange={(e) => { if (e.target.value) cambiarCaballete(w, c.obra, e.target.value); }} className="ml-auto text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white">
+                    <option value="">Mover a…</option>
+                    {opcionesDestino(c.obra, c.id).map((x) => <option key={x.id} value={x.id}>{textoOpcion(x, w, c.obra)}</option>)}
+                  </select>
+                  <button type="button" onClick={() => { if (window.confirm(`¿Sacar la ventana ${w.pos} del palet ${c.numero}?`)) quitarVentana(w); }} className="text-slate-400 hover:text-rose-500"><Trash2 size={12} /></button>
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-2 text-xs">
+                {vs.length > 0 && <select value="" onChange={(e) => { if (e.target.value) juntarCaballete(c, e.target.value); }} className="text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white text-slate-600">
+                  <option value="">Juntar en…</option>
+                  {cabsAhora().filter((x) => x.id !== c.id && (x.estado || "libre") !== "fuera").sort(natNum).map((x) => <option key={x.id} value={x.id}>{x.numero} · {toArray(x.ventanas).length} ventanas</option>)}
+                </select>}
+                {c.estado === "cargado" && <button type="button" onClick={() => { if (window.confirm(`¿Vaciar el palet ${c.numero}?`)) onGuardar({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-500 hover:underline">Vaciar</button>}
+              </div>
+            </div>
+          ); })()}
           <div className="space-y-1">
             <div className="text-sm font-bold text-slate-700">2. La obra</div>
             <BuscadorLista
