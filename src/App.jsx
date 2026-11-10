@@ -47757,6 +47757,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
 }
 // Sin etiqueta a mano: se busca la obra por su nº de presupuesto (en Control del día y en las etiquetas, sin importar el día),
 // se pincha la ventana y salen sus cristales (caballete y hueco) y su persiana (carro) para darlos de baja
+// Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
+const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
 function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
@@ -47764,6 +47766,11 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const [ventId, setVentId] = useState("");
   const [msg, setMsg] = useState("");
   const snapCD = useObjetoFb("controlDiaVentanasObra");
+  const solOv = useObjetoFb("solapeLinea");
+  const ocupLin = useObjetoFb("ocupacionLinea");
+  const ubicLin = useObjetoFb("ubicacionesLinea");
+  const zonasLin = useZonasLinea();
+  const [huecoSol, setHuecoSol] = useState("");
   const qd = String(q).replace(/\D/g, "");
   const texto = String(q).trim().toLowerCase();
   const obras = useMemo(() => {
@@ -47776,7 +47783,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       const bases = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
       if (!(casaPpto(bases) || String(sn.nombre || "").toLowerCase().includes(texto))) return;
       bases.forEach((b) => basesVistas.add(b));
-      out.push({ key: `cd:${k}`, nombre: sn.nombre || k, bases, ventanas: toArray(sn.ventanas).map((w) => ({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" })) });
+      out.push({ key: `cd:${k}`, nombre: sn.nombre || k, bases, ventanas: toArray(sn.ventanas).map((w) => ({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ex: toArray(w.ex).map(String) })) });
     });
     // 2) Etiquetas de fabricación (obras que ya las tienen subidas)
     const porDueno = new Map();
@@ -47795,6 +47802,19 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const obra = obras.length === 1 ? obras[0] : obras.find((o) => o.key === obraKey) || null;
   const ventanas = useMemo(() => (obra ? obra.ventanas.slice().sort((a, b) => String(a.g).localeCompare(String(b.g), "es", { numeric: true }) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true })) : []), [obra]);
   const w = ventanas.find((x) => x.id === ventId) || null;
+  // SOLAPE: ¿lleva solape / postigo? (lo dice la hoja de corte en Control del día o el interruptor de la ventana). Si tiene etiquetas se puede apuntar su estantería.
+  const hEt = w ? [...indice.values()].find((h) => h.ventana && String(h.ventana.id) === w.id) : null;
+  const baseW = hEt ? baseDe(hEt.ventana) : "";
+  const llevaSolape = !!w && ((w.ex || []).includes("SOLAPE") || (w.ex || []).includes("POSTIGO") || (!!baseW && !!solOv[baseW]));
+  const zSol = zonasLin.find((z) => z.id === "solape");
+  const ocSol = (ocupLin && ocupLin.solape) || {};
+  const libreSol = zSol ? (() => { for (let n = 1; n <= zSol.huecos; n++) if (!ocSol[`${n}_1`]) return n; return 0; })() : 0;
+  const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : null;
+  const mandarSolape = async () => {
+    const n = parseInt(huecoSol, 10) || libreSol;
+    const r = await fijarHuecoLinea(zSol, baseW, n, quien);
+    setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`);
+  };
   // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
   const reconocer = useMemo(() => {
     if (!w || !obra) return null;
@@ -47819,11 +47839,16 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
   }, [reconocer, persianas]);
-  const darBaja = (x) => {
-    if ((parseFloat(x.p.cantidad) || 1) > 1) { setMsg("Esa fila trae varias unidades de cristal: márcala a mano en Cristales."); return; }
+  const darBaja = (x, k = 1) => {
+    const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
+    const marc = marcasUd(x.p);
+    if (uds > 1 && marc.includes(k)) { setMsg(`La unidad ${k} ya estaba dada de baja.`); return; }
+    const mn = uds > 1 ? [...marc, k] : [1];
+    const nuevas = Math.min(uds, mn.length);
+    const completa = nuevas >= uds;
     if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
-    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? { ...q2, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: w.id, ventanaPos: w.pos } : q2)) });
-    setMsg(`✓ Cristal ${x.p.ref || ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
+    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (completa ? { ...q2, uPuestas: uds, uMarc: mn, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: w.id, ventanaPos: w.pos } : { ...q2, uPuestas: nuevas, uMarc: mn }) : q2)) });
+    setMsg(`✓ Cristal ${x.p.ref || ""}${uds > 1 ? ` (${nuevas} de ${uds})` : ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
   };
   const darBajaPersiana = (x) => {
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
@@ -47850,8 +47875,13 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
             <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
               <span className="font-semibold">{x.p.ref || "?"}</span>
               <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm{(parseFloat(x.p.cantidad) || 1) > 1 ? ` · ${x.p.cantidad} uds` : ""}</span>
+              {(parseFloat(x.p.cantidad) || 1) > 1 && <span className="font-bold text-amber-700">{x.p.puesto ? parseFloat(x.p.cantidad) : marcasUd(x.p).length} de {x.p.cantidad} dadas de baja</span>}
               <span className="text-slate-600">📍 caballete {x.c.lote || x.c.numero || "—"} · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar en el mapa"}</span>
-              {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
+              {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : ((parseFloat(x.p.cantidad) || 1) > 1
+                ? <span className="ml-auto flex flex-wrap gap-1.5">{Array.from({ length: Math.round(parseFloat(x.p.cantidad)) }, (_, n) => n + 1).map((k) => marcasUd(x.p).includes(k)
+                    ? <span key={k} className="px-3 py-1.5 rounded-md bg-slate-200 text-slate-500 text-xs font-bold">✓ Unidad {k}</span>
+                    : <button key={k} type="button" onClick={() => darBaja(x, k)} className="px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja unidad {k}</button>)}</span>
+                : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>)}
             </div>
           ))}
           <div className="text-xs font-bold text-slate-600 uppercase pt-1">Persiana de {w.pos}</div>
@@ -47870,6 +47900,21 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
+      {w && llevaSolape && (
+        <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
+          <div className="text-lg font-extrabold text-amber-900">⚠ {w.pos} LLEVA SOLAPE / POSTIGO → después de acristalar, mándala a SOLAPE</div>
+          {ubSol ? <div className="text-base font-bold text-emerald-800">Ya apuntada en Solape · estantería {ubSol.hueco}</div> : (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label className="font-semibold text-amber-900">Estantería (1–{zSol ? zSol.huecos : 36}):
+                <input type="number" min="1" max={zSol ? zSol.huecos : 36} value={huecoSol} onChange={(e) => setHuecoSol(e.target.value)} placeholder={libreSol ? String(libreSol) : "—"} className="ml-2 w-20 border border-amber-400 rounded-md px-2 py-1.5 text-base font-bold" />
+              </label>
+              <span className="text-xs text-amber-800">{libreSol ? `Primera libre: ${libreSol}` : "Solape llena"}</span>
+              {baseW ? <button type="button" onClick={mandarSolape} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Apuntar en Solape</button> : <span className="text-xs text-amber-800">Sin etiquetas de esta ventana no se puede apuntar en el mapa: déjala en la estantería indicada.</span>}
+            </div>
+          )}
+        </div>
+      )}
+      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900">{w.pos} NO lleva solape → al terminar de acristalar va a VENTANAS TERMINADAS (si es la única de su vivienda, directa a carga).</div>}
     </div>
   );
 }
@@ -47883,11 +47928,14 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
       const p = ps[i];
       if (sel && sel.cId != null) { if (c.id !== sel.cId || i !== sel.idx || p.puesto) continue; }
       else if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) continue;
-      if ((parseFloat(p.cantidad) || 1) > 1) { variasUnidades = true; continue; }
       if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
-      onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
+      const uds = Math.max(1, Math.round(parseFloat(p.cantidad) || 1)); // cada lectura da de baja UNA unidad
+      const marc = marcasUd(p); let kU = 1; while (marc.includes(kU)) kU++;
+      const mn = uds > 1 ? [...marc, kU] : [1];
+      const nuevas = Math.min(uds, mn.length);
+      onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? (nuevas >= uds ? { ...q, uPuestas: uds, uMarc: mn, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : { ...q, uPuestas: nuevas, uMarc: mn }) : q)) });
       const donde = c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto} (sin hueco en el mapa)` : "sin ubicar en el mapa";
-      return { ok: true, foco: { tipo: "cristal", puesto: true, exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
+      return { ok: true, foco: { tipo: "cristal", puesto: true, exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""}${uds > 1 ? ` (unidad ${nuevas} de ${uds})` : ""} del caballete ${c.lote || c.numero || ""} (${donde}) · ${nuevas >= uds ? "marcado como puesto" : "faltan " + (uds - nuevas) + " por dar de baja"}` };
     }
   }
   return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
