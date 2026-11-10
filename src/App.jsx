@@ -47756,7 +47756,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
   );
 }
 // Sin etiqueta a mano: se busca la obra por su nº de presupuesto, se elige la ventana y salen sus cristales (caballete y hueco) para darlos de baja
-function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, quien = "" }) {
+function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
   const [obraKey, setObraKey] = useState("");
@@ -47790,6 +47790,17 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, quien =
     }));
     return out;
   }, [h, cristales]);
+  const pers = useMemo(() => {
+    if (!h) return [];
+    const d = datosVentanaLinea(h);
+    return toArray(persianas).filter((y) => y && d.exp && numsExpediente(y.expediente).includes(d.exp) && d.casa(y.ref));
+  }, [h, persianas]);
+  const darBajaPersiana = (x) => {
+    if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
+    const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
+    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
+    setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
+  };
   const darBaja = (x) => {
     if ((parseFloat(x.p.cantidad) || 1) > 1) { setMsg("Esa fila trae varias unidades de cristal: márcala a mano en Cristales."); return; }
     if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
@@ -47819,6 +47830,23 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, quien =
               {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
             </div>
           ))}
+        </div>
+      )}
+      {h && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-bold text-slate-600 uppercase">Persiana de {h.ventana.pos}</div>
+          {pers.length === 0 && <p className="text-sm text-slate-500">No encuentro persiana de esta ventana en el almacén (o no lleva).</p>}
+          {pers.map((x) => {
+            const hecha = x.entregada || x.colocadaVentana;
+            return (
+              <div key={x.id} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${hecha ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
+                <span className="font-semibold">{x.ref || "?"}</span>
+                <span>{x.largo || "?"} × {x.alto || "?"}</span>
+                <span className="text-slate-600">📍 {x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? `en ${x.enPuesto}` : "sin sitio asignado"}</span>
+                {hecha ? <span className="ml-auto text-xs font-semibold">✓ ya dada de baja</span> : <button type="button" onClick={() => darBajaPersiana(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
+              </div>
+            );
+          })}
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
@@ -48732,7 +48760,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} />
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
