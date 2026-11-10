@@ -4181,6 +4181,7 @@ export default function App() {
       id: (opciones.recrear && presupuesto.proyectoCreadoId) || uid(),
       numero: nextNumeroProyecto(),
       nombre: presupuesto.descripcion || presupuesto.numero,
+      presupuestoNumero: String(presupuesto.numero || ""), // el nº del presupuesto pasa a la obra (es obligatorio en la ficha de la obra)
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
       fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
@@ -4796,7 +4797,7 @@ export default function App() {
               ampliaciones: [...toArray(x.ampliaciones), { presupuestoId: pre.id, numero: pre.numero, importe: pre.importe || 0, fecha: hoy }],
             }));
           } else listaProyectos = [{
-            id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
+            id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, presupuestoNumero: String(pre.numero || ""), clienteId,
             importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación", fechaAceptado: hoy,
             presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
             techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
