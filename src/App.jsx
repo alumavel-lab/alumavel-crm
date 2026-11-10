@@ -47847,6 +47847,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     return out;
   };
   const reconocer = useMemo(() => reconocerDe(w), [w, obra]); // eslint-disable-line
+  const cris = useMemo(() => crisDeVentana(w), [w, obra, cristales]); // eslint-disable-line
   // Si no se reconoce el cristal de la ventana por su nombre, se enseñan los cristales del presupuesto con su medida para elegir a mano
   const crisObra = useMemo(() => { // eslint-disable-line
     if (!reconocer) return [];
@@ -47863,7 +47864,6 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const apuntarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), { ventanaId: w.id, pos: w.pos || "", medida: w.medida || "", obra: obra.nombre || "", ppto: (obra.bases && obra.bases[0]) || "", fecha: hoyISO(), ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ Cristal de ${w.pos} apuntado como PUESTO${quien ? ` (${quien})` : ""}.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
   const quitarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), null).then(() => setMsg(`${w.pos}: apunte de cristal puesto quitado.`)).catch(() => {});
   const filasCris = sinCrisVentana ? crisObra : cris;
-  const cris = useMemo(() => crisDeVentana(w), [w, obra, cristales]); // eslint-disable-line
   const pers = useMemo(() => {
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
