@@ -44165,6 +44165,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
 
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false, onMoverDiaFabrica = null }) {
   const [verTodo, setVerTodo] = useState(false);
+  const [consulta, setConsulta] = useState(null); const [consCod, setConsCod] = useState(""); // lector de CONSULTA (no mueve nada): caballete o ventana
   const [ticBusca, setTicBusca] = useState(""); // buscador de palés en «Cargar en el palet»
   const [ticFuera, setTicFuera] = useState(false); // en «Cargar en el palet»: ver también los palés que están fuera
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
@@ -44962,6 +44963,50 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     });
     return m;
   })();
+  const consultarLectura = (txt) => {
+    const t = String(txt || "").trim(); setConsCod("");
+    if (!t) return;
+    const cp = piezaDeTexto(t);
+    if (cp) { const h = indicePiezas.get(cp); setConsulta(h ? { tipo: "ventana", h, cod: cp } : { tipo: "error", txt: textoLoteDesconocido(cp) }); return; }
+    const q = t.toUpperCase().replace(/^CAB[:\s-]*/, ""); const qd = q.replace(/\D/g, "");
+    const c = cabsAhora().find((x) => codigoCaballete(x) === q || (!!qd && codigoCaballete(x).replace(/\D/g, "") === qd));
+    if (c) { setConsulta({ tipo: "palet", id: c.id }); if ((c.estado || "libre") !== "fuera") { setTicPalet(c.id); setTicAbierto(true); } return; }
+    setConsulta({ tipo: "error", txt: `No he encontrado nada con "${t}": ni caballete ni etiqueta de ventana.` });
+  };
+  const consultaUI = (titulo) => {
+    let res = null;
+    if (consulta && consulta.tipo === "error") res = <div className="text-sm font-semibold text-rose-700">⚠ {consulta.txt}</div>;
+    if (consulta && consulta.tipo === "palet") { const c = cabsAhora().find((x) => x.id === consulta.id); if (c) { const vs = toArray(c.ventanas); res = (
+      <div className="text-sm text-slate-800 space-y-0.5">
+        <div className="font-extrabold">📦 Palet {c.numero} · {(c.estado || "libre") === "fuera" ? "FUERA" : (c.estado || "libre")} · {nombreAlmacen(almacenDe(c))}{c.ubicacion ? ` · ${c.ubicacion}` : ""}</div>
+        <div className="text-xs text-slate-600">{c.obra && c.obra.nombre ? c.obra.nombre : "sin obra"} · {vs.length} ventana{vs.length === 1 ? "" : "s"}</div>
+        {vs.map((w) => <div key={`${w.obraKey || w.proyectoId}-${w.id}`} className="text-xs">• <b>{posDib(w)}</b> · nº {w.num} · lote {w.fab}{w.color ? ` · ${w.color}` : ""}{w.persiana === true ? " · con persiana" : w.persiana === false ? " · sin persiana" : ""}</div>)}
+      </div>); } }
+    if (consulta && consulta.tipo === "ventana") {
+      const { dueno, lote, ventana: v, pieza } = consulta.h; const ob = obraDeDueno(dueno);
+      const w = { id: v.id, obraKey: dueno.key, proyectoId: dueno.proyectoId || "" };
+      const cab = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
+      const pers = persianaDeDueno(dueno.key);
+      res = (
+        <div className="text-sm text-slate-800 space-y-0.5">
+          <div className="font-extrabold">🪟 {posDib(v)}{v.medida ? ` · ${v.medida}` : ""} · nº {v.num} · lote {lote.fab}</div>
+          <div className="text-xs text-slate-600">{ob.nombre}{v.cliente ? ` · ${v.cliente}` : ""}{v.color ? ` · ${v.color}` : ""}</div>
+          {v.desc && <div className="text-xs text-slate-700">{v.desc}</div>}
+          <div className="text-xs">Pieza leída: <b>{(pieza && pieza.t) || "—"}</b> · piezas de la ventana: {totalVentana(v)} · {pers === true ? "LLEVA persiana" : pers === false ? "sin persiana" : "persiana: no definida en la obra"}</div>
+          <div className={`text-sm font-bold ${cab ? "text-emerald-700" : "text-amber-700"}`}>{cab ? `Está en el palet ${cab.numero} · ${nombreAlmacen(almacenDe(cab))}${cab.ubicacion ? ` · ${cab.ubicacion}` : ""}` : "No está en ningún palet todavía"}</div>
+        </div>);
+    }
+    return (
+      <div className="rounded-lg border-2 border-sky-300 bg-sky-50/60 p-2 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-slate-700">{titulo}</span>
+          <input value={consCod} onChange={(e) => setConsCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); consultarLectura(e.currentTarget.value); } }} placeholder="Pasa la pistola (caballete o etiqueta de ventana) y Enter" className="flex-1 min-w-[220px] border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+          {consulta && <button type="button" onClick={() => setConsulta(null)} className="text-xs text-slate-500 hover:underline">Limpiar</button>}
+        </div>
+        {res}
+      </div>
+    );
+  };
   const panelTicar = () => {
     const cabs = cabsAhora().filter((c) => (c.estado || "libre") !== "fuera");
     const palet = cabs.find((c) => c.id === ticPalet) || null;
@@ -44986,6 +45031,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className="bg-white border-2 border-emerald-500 rounded-xl p-3 space-y-3">
         <button type="button" onClick={() => setTicAbierto(!ticAbierto)} className="w-full text-left text-base font-extrabold text-emerald-900">{ticAbierto ? "▼" : "▶"} ✋ Cargar en el palet ticando las ventanas</button>
         {ticAbierto && (<>
+          {consultaUI("🔎 Leer caballete o ventana (solo consulta)")}
           <div className="space-y-1">
             <div className="text-sm font-bold text-slate-700">1. El palet: lee su código de barras o tócalo</div>
             <input value={ticCod} onChange={(e) => setTicCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); elegirPaletCod(e.currentTarget.value); } }} placeholder="Código del palet (pistola) y Enter" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
