@@ -6503,18 +6503,20 @@ export default function App() {
         {(() => {
           // Obras ya completas en palet (almacén de ventanas listo): aviso a fábrica y a quien tenga albaranes para programar la salida / el reparto
           if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
-          const listas = proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida");
+          // terminadas = estado «Listo» o TODAS sus ventanas ya en palet (aunque nadie haya cambiado el estado)
+          const idxP = indicePaletVentanas(caballetesVentanas);
+          const listas = proyectos.filter((p) => !["Entregado", "Cancelado", "Albarán de carga firmado"].includes(p.estadoTrabajo) && obraTerminadaSalida(p, idxP) && !citaSalidaOk(p));
           if (!listas.length) return null;
-          const sinProg = listas.filter((p) => !p.fechaReparto);
+          const sinProg = listas.filter((p) => !p.fechaReparto && !p.fechaMontaje);
           const nomL = (p) => { const pp = presupuestoDeObra(p); return pp ? `Ppto ${pp}` : (p.nombre || "obra"); };
           const detalle = listas.slice(0, 3).map((p) => `${nomL(p)}${p.fechaReparto ? "" : " (sin fecha de salida)"}`).join(" · ");
           return (
             <button
-              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); } }}
+              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) { try { window.localStorage.setItem("crm_alb_fcita", JSON.stringify("llamar")); window.localStorage.setItem("crm_alb_tipo", JSON.stringify("todos")); window.localStorage.setItem("crm_alb_origen", JSON.stringify("todos")); } catch { /* nada */ } setModulo("albaranes"); } else { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-teal-50 text-teal-800 hover:bg-teal-100"
             >
               <Truck size={15} />
-              🚚 {listas.length} obra{listas.length === 1 ? "" : "s"} con todas las ventanas ya en palet, lista{listas.length === 1 ? "" : "s"} para repartir o programar la salida{sinProg.length ? ` · ${sinProg.length} sin fecha de salida` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
+              📞 ALBARANES: {listas.length} obra{listas.length === 1 ? "" : "s"} terminada{listas.length === 1 ? "" : "s"} (en palet o lista{listas.length === 1 ? "" : "s"}) SIN CITA CONFIRMADA: llama al cliente y pon el reparto / la recogida{sinProg.length ? ` · ${sinProg.length} sin fecha` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
             </button>
           );
         })()}
@@ -24732,6 +24734,22 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
 
 // Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
 const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
+// ¿OBRA TERMINADA? No se fía solo del estado: si TODAS las ventanas de sus etiquetas están ya en un palet (o salieron), está terminada → aviso a Albaranes
+const normPosPal = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+const indicePaletVentanas = (caballetes) => {
+  const ids = new Set(), pp = new Set();
+  toArray(caballetes).forEach((c) => toArray(c && c.ventanas).forEach((w) => { if (!w) return; if (w.id) ids.add(String(w.id)); const b = basePresuDia(w.num); if (b && w.pos) pp.add(`${b}|${normPosPal(w.pos)}`); }));
+  return { ids, pp };
+};
+const paletDeObra = (p, idx) => {
+  const vs = []; toArray(p && p.etiquetasFab).forEach((l) => toArray(l && l.ventanas).forEach((v) => { if (v) vs.push(v); }));
+  if (!vs.length || !idx) return null;
+  const n = vs.filter((v) => idx.ids.has(String(v.id)) || idx.pp.has(`${basePresuDia(v.num)}|${normPosPal(v.pos)}`)).length;
+  return { n, total: vs.length, completa: n === vs.length };
+};
+const obraTerminadaSalida = (p, idx) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo) || !!(paletDeObra(p, idx) || {}).completa;
+const tipoSalidaObra = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
+const citaSalidaOk = (p) => { const c = p.citaSalida || {}; const t = tipoSalidaObra(p); const f = t === "instalacion" ? p.fechaMontaje : p.fechaReparto; return !!(f && c.contactadoCliente && (t !== "reparto" || c.avisadoRepartidor)); };
 
 function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
@@ -24766,7 +24784,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const fechaCitaDe = (p) => (tipoSalida(p) === "instalacion" ? p.fechaMontaje : p.fechaReparto) || "";
   const citaOk = (p) => { const c = p.citaSalida || {}; return !!(fechaCitaDe(p) && c.contactadoCliente && (tipoSalida(p) !== "reparto" || c.avisadoRepartidor)); };
   // ESTADO DE LA CITA de cada obra: sin fecha → fecha aproximada (sin llamar) → confirmada (llamado al cliente)
-  const listoP = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+  const idxPalet = useMemo(() => indicePaletVentanas(caballetes), [caballetes]);
+  const listoP = (p) => obraTerminadaSalida(p, idxPalet);
   const estCita = (p) => (citaOk(p) ? "ok" : !fechaCitaDe(p) ? "sinfecha" : listoP(p) ? "llamar" : "aprox");
   const [fCita, setFCita] = useEstadoLocal("crm_alb_fcita", "todas"); // todas | sinfecha | aprox | llamar | ok
   const [selCita, setSelCita] = useState({}); const [fechaLote, setFechaLote] = useState("");
@@ -25039,6 +25058,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
+                  {(() => { const r = paletDeObra(p, idxPalet); return r && r.n > 0 ? <Badge className={r.completa ? "bg-emerald-600 text-white ring-emerald-600" : "bg-slate-50 text-slate-600 ring-slate-200"}>{r.completa ? `🟢 Todas en palet (${r.total})` : `${r.n}/${r.total} en palet`}</Badge> : null; })()}
                   {ec === "ok" ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Cita confirmada {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge>
                     : ec === "llamar" ? <Badge className="bg-rose-600 text-white ring-rose-600">📞 Carga terminada: LLAMA AL CLIENTE</Badge>
                     : ec === "sinfecha" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-300">Sin fecha</Badge>
