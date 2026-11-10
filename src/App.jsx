@@ -47848,12 +47848,13 @@ function datosVentanaLinea(h) {
 // una COLUMNA por presupuesto con sus ventanas. Se ponen en VERDE las que ya se han leído en ESTE puesto: así se ve qué ventana falta.
 // «📺 Pantalla grande»: lo mismo a toda pantalla para la tele, con la última lectura y su HUECO en grande (la pistola sigue leyendo igual).
 const basePresuDia = (t) => String(t || "").trim().replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").split("-")[0].replace(/\D/g, "");
-function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
+function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = null }) {
   const [abierto, setAbierto] = useEstadoLocal(`crm_panelDia_${puestoId}`, true);
   const [tv, setTv] = useEstadoLocal(`crm_panelDiaTv_${puestoId}`, false);
   const [grande, setGrande] = useState(null);
   const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
   const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra");
+  const extras = useObjetoFb(`panelDiaExtra/${puestoId}/${dia}`); // presupuestos buscados en este puesto (se añaden solos)
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
   const leidas = useMemo(() => {
@@ -47871,6 +47872,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
     // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
     Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
+    Object.values(extras || {}).forEach((x) => { const b = basePresuDia(x && x.base); if (!b || b.length < 3) return; if (pedidas.some((pd) => pd.bases.has(b))) return; pedidas.push({ nombre: String(x.nombre || `Ppto ${b}`), bases: new Set([b]), keys: new Set() }); });
     const cajas = pedidas.map((pd) => ({ ...pd, vs: [], grupos: new Set(), num: "", obra: "", fabs: new Set(), fuente: "" }));
     // 1) Las ventanas de CONTROL DEL DÍA (las mismas del Almacén del día, con su dibujo, medida y lo que lleva)
     Object.entries(snapCD || {}).forEach(([k, sn]) => {
@@ -47890,7 +47892,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     });
     return cajas.map((c, i) => { const vs = c.vs.sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => c.vs.length || c.nombre);
-  }, [abierto, tv, planFab, manual, snapCD, dia, indice, leidas]);
+  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
   const columnas = (enTv) => {
     const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
     return (
@@ -47906,7 +47908,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
               </button>
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
                     <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
@@ -47996,7 +47998,7 @@ function ListaSolapeLinea({ indice }) {
     </div>
   );
 }
-function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "", puesto = "" }) {
+function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "", puesto = "", solicitud = null }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
   const [obraKey, setObraKey] = useState("");
@@ -48042,6 +48044,19 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     return out.slice(0, 12);
   }, [abierto, texto, qd, snapCD, indice]);
   const obra = obras.length === 1 ? obras[0] : obras.find((o) => o.key === obraKey) || null;
+  // Desde «Obras del día»: tocar una ventana abre aquí su presupuesto y su ficha
+  const [pendSol, setPendSol] = useState(0);
+  useEffect(() => { if (!solicitud) return; setAbierto(true); setQ(String(solicitud.q || "")); setVentId(String(solicitud.id || "")); setObraKey(""); setPendSol(solicitud.t || 1); try { setTimeout(() => { const el = document.getElementById("buscador-ppto-linea"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 200); } catch (e) { /* nada */ } }, [solicitud]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (pendSol && obras.length && !obras.some((o) => o.key === obraKey)) { setObraKey(obras[0].key); setPendSol(0); } }, [pendSol, obras, obraKey]);
+  // Al buscar un presupuesto, la obra se añade sola a «Obras del día» de este puesto (solo de hoy; no toca el planning)
+  const anotadasDia = useRef(new Set());
+  useEffect(() => {
+    if (!obra || !puesto || puesto === "almacen" || qd.length < 3) return;
+    const base = (obra.bases && obra.bases[0]) || ""; if (!base) return;
+    const hoyP = new Date().toLocaleDateString("sv-SE"); const kk = `${puesto}|${hoyP}|${base}`;
+    if (anotadasDia.current.has(kk)) return; anotadasDia.current.add(kk);
+    fbSet(ref(fbDb, `panelDiaExtra/${puesto}/${hoyP}/${base}`), { nombre: obra.nombre || "", base, ts: Date.now(), por: quien || "" }).catch(() => {});
+  }, [obra, puesto, qd, quien]);
   const ventanas = useMemo(() => (obra ? obra.ventanas.slice().sort((a, b) => String(a.g).localeCompare(String(b.g), "es", { numeric: true }) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true })) : []), [obra]);
   const w = ventanas.find((x) => x.id === ventId) || null;
   // SOLAPE: ¿lleva solape / postigo? (lo dice la hoja de corte en Control del día o el interruptor de la ventana). Si tiene etiquetas se puede apuntar su estantería.
@@ -48209,7 +48224,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   };
   if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">{soloDonde ? "🔎 ¿Dónde está cada ventana? (buscar por presupuesto)" : "🔎 Buscar por presupuesto (sin etiqueta)"}</button></div>;
   return (
-    <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
+    <div id="buscador-ppto-linea" className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
       <div className="flex items-center gap-2">
         <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setObraKey(""); setVentId(""); setMsg(""); }} placeholder="Nº de presupuesto (o nombre de la obra)" className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm" />
         <button type="button" onClick={() => { setAbierto(false); setQ(""); setObraKey(""); setVentId(""); setMsg(""); }} className="text-xs text-slate-500 hover:underline">Cerrar</button>
@@ -48976,6 +48991,7 @@ function PendientesConfirmarCristales({ quien }) {
   );
 }
 function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
+  const [abrirReq, setAbrirReq] = useState(null); // tocar una ventana en «Obras del día» → abre su ficha en el buscador por presupuesto
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   // Puestos que el administrador le deja usar a este usuario (vacío = todos)
   const permitidos = toArray(puestosPermitidos).filter((x) => x && PUESTOS_LINEA.some((q) => q.id === x)); // solo puestos (las pantallas «tab:…» van aparte)
@@ -49202,7 +49218,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} />
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
@@ -49245,7 +49261,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
+        <PanelDiaPuesto puestoId={puestoId} onAbrir={setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
