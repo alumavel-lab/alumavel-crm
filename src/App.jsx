@@ -24733,6 +24733,8 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
 }
 
 // Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
+// De momento NO se bloquea firmar la carga sin cita confirmada (que salga el material). Poner a true para exigirla.
+const BLOQUEAR_FIRMA_SIN_CITA = false;
 const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
 // ¿OBRA TERMINADA? No se fía solo del estado: si TODAS las ventanas de sus etiquetas están ya en un palet (o salieron), está terminada → aviso a Albaranes
 const normPosPal = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
@@ -24883,7 +24885,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
           <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
             <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : fechaCitaDe(abierto) ? `Fecha aproximada ${fmtDate(fechaCitaDe(abierto))} · sin confirmar` : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
-            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."} Sin esto no se puede firmar la carga.</div>}
+            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."}{BLOQUEAR_FIRMA_SIN_CITA ? " Sin esto no se puede firmar la carga." : ""}</div>}
             <div className="flex flex-wrap items-end gap-2">
               <label className="text-xs text-slate-600">Fecha<br /><input type="date" value={citaB.fecha} onChange={(e) => setCitaB({ ...citaB, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
               <label className="text-xs text-slate-600">Hora<br /><input type="time" value={citaB.hora} onChange={(e) => setCitaB({ ...citaB, hora: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
@@ -24903,7 +24905,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               <button type="button" onClick={() => guardarCita(false)} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">✓ Guardar cita confirmada</button>
               <button type="button" onClick={() => guardarCita(true)} className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-bold">Guardar fecha aproximada (no he podido contactar)</button>
             </div>
-            <div className="text-[11px] text-slate-500">Las dos salen en el calendario. La aproximada queda en ámbar «sin llamar» y no deja firmar la carga hasta confirmarla.{toArray(c.intentos).length ? ` Intentos sin contactar: ${toArray(c.intentos).length} (último ${new Date(toArray(c.intentos).slice(-1)[0].ts).toLocaleString("es-ES")}, ${toArray(c.intentos).slice(-1)[0].por}).` : ""}</div>
+            <div className="text-[11px] text-slate-500">Las dos salen en el calendario. La aproximada queda en ámbar «sin llamar».{BLOQUEAR_FIRMA_SIN_CITA ? " No deja firmar la carga hasta confirmarla." : ""}{toArray(c.intentos).length ? ` Intentos sin contactar: ${toArray(c.intentos).length} (último ${new Date(toArray(c.intentos).slice(-1)[0].ts).toLocaleString("es-ES")}, ${toArray(c.intentos).slice(-1)[0].por}).` : ""}</div>
             {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
           </div>
         ); })()}
@@ -24970,7 +24972,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               </label>
             </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => { if (!citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (BLOQUEAR_FIRMA_SIN_CITA && !citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
