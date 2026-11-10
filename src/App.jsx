@@ -47779,6 +47779,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
+  const sinSolMan = useObjetoFb("sinSolapeLinea"); // ventanas marcadas a mano como SIN solape: se quedan en la Línea para paletizar
   const solSin = useObjetoFb("solapeSinEtiquetaLinea"); // estanterías de solape apuntadas para ventanas que no tienen etiquetas
   const cpManual = useObjetoFb("cristalPuestoManualLinea"); // cristal apuntado como puesto a mano (cuando no hay packing list en el almacén)
   const qd = String(q).replace(/\D/g, "");
@@ -47815,13 +47816,16 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   // SOLAPE: ¿lleva solape / postigo? (lo dice la hoja de corte en Control del día o el interruptor de la ventana). Si tiene etiquetas se puede apuntar su estantería.
   const hEt = w ? [...indice.values()].find((h) => h.ventana && String(h.ventana.id) === w.id) : null;
   const baseW = hEt ? baseDe(hEt.ventana) : "";
-  const llevaSolape = !!w && ((w.ex || []).includes("SOLAPE") || (w.ex || []).includes("POSTIGO") || (!!baseW && !!solOv[baseW]));
+  const claveSol = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
+  const sinSolape = claveSol ? sinSolMan[claveSol] : null;
+  const llevaSolape = !!w && !sinSolape && ((w.ex || []).includes("SOLAPE") || (w.ex || []).includes("POSTIGO") || (!!baseW && !!solOv[baseW]));
   const zSol = zonasLin.find((z) => z.id === "solape");
   const ocSol = (ocupLin && ocupLin.solape) || {};
   const usadosSol = new Set([...Object.keys(ocSol).map((k) => parseInt(k, 10)), ...Object.values(solSin || {}).filter(Boolean).map((e) => Number(e.hueco))]);
   const libreSol = zSol ? (() => { for (let n = 1; n <= zSol.huecos; n++) if (!usadosSol.has(n)) return n; return 0; })() : 0;
-  const claveSol = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
   const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : (claveSol && solSin[claveSol] ? solSin[claveSol] : null);
+  const marcarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), { ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} marcada SIN solape: se queda en la Línea para paletizar.`)).catch((e) => setMsg(`⚠ ${(e && e.message) || e}`));
+  const quitarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), null).then(() => setMsg(`${w.pos}: vuelve a llevar solape.`)).catch(() => {});
   const mandarSolape = async () => {
     const n = parseInt(huecoSol, 10) || libreSol;
     if (!zSol || !n || n < 1 || n > zSol.huecos) { setMsg(`⚠ El estante va del 1 al ${zSol ? zSol.huecos : 36}`); return; }
@@ -47949,11 +47953,12 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
                 </label>
                 <span className="text-xs text-amber-800">{libreSol ? `Primera libre: ${libreSol}` : "Solape llena"}</span>
                 <button type="button" onClick={mandarSolape} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Apuntar en Solape</button>
+                <button type="button" onClick={marcarSinSolape} className="px-3 py-1.5 rounded-md bg-emerald-700 text-white text-sm font-bold">Sin solape → LÍNEA para paletizar</button>
               </div>
             </>}
         </div>
       )}
-      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900">📍 {w.pos} está en LÍNEA (no lleva solape). Paletización o almacén de carga lo decide quien hace los palés.</div>}
+      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900 flex flex-wrap items-center gap-2"><span>📍 {w.pos} está en LÍNEA para PALETIZAR (no lleva solape{sinSolape && sinSolape.por ? ` · marcado por ${sinSolape.por}` : ""}). Paletización o almacén de carga lo decide quien hace los palés.</span>{sinSolape && <button type="button" onClick={quitarSinSolape} className="ml-auto px-3 py-1 rounded-md bg-white border border-emerald-700 text-emerald-800 text-xs font-bold">Sí lleva solape (deshacer)</button>}</div>}
     </div>
   );
 }
