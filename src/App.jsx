@@ -47948,6 +47948,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
   const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra");
   const extras = useObjetoFb(`panelDiaExtra/${puestoId}/${dia}`); // presupuestos buscados en este puesto (se añaden solos)
+  // VENTANAS YA EN EL ALMACÉN (en un palet, o en Ventanas terminadas / Solape): se iluminan en AZUL en todos los puestos
+  const ubicAlmP = useObjetoFb("ubicacionesLinea"); const cabsAlmP = useObjetoFb("caballetesVentanas");
+  const enAlmacen = useMemo(() => {
+    const ids = new Map(), pp = new Map();
+    const apunta = (id, num, pos, donde) => { if (id) ids.set(String(id), donde); const b = basePresuDia(num); if (b && pos) pp.set(`${b}|${String(pos).toUpperCase().replace(/\s+/g, "")}`, donde); };
+    Object.values(cabsAlmP || {}).forEach((c) => { if (!c || (c.estado || "libre") === "fuera") return; toArray(c.ventanas).forEach((w) => { if (w) apunta(w.id, w.num, w.pos, `palet ${c.numero || ""}`.trim()); }); });
+    Object.entries(ubicAlmP || {}).forEach(([cod, u]) => { if (!u || !["espera", "solape"].includes(u.zonaId)) return; const hh = indice && indice.get(cod); if (!hh || !hh.ventana) return; apunta(hh.ventana.id, hh.ventana.num, hh.ventana.pos, `${u.zonaId === "solape" ? "Solape" : "Terminadas"} ${u.hueco}`); });
+    return { ids, pp };
+  }, [ubicAlmP, cabsAlmP, indice]);
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
   const leidas = useMemo(() => {
@@ -48000,11 +48009,12 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                 <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin ventanas (falta la hoja de corte o las etiquetas)" : `${c.hechas} de ${c.vs.length} leídas aquí${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
               </button>
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
-                {c.vs.map((v) => { const ok = esLeida(c, v); const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                {c.vs.map((v) => { const ok = esLeida(c, v); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
+                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
                     <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
+                    {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
                     {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
                   </div>
