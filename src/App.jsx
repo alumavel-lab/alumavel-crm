@@ -47936,7 +47936,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
               ? (grande
                 ? <div className="text-base">✅ Con esta se completa el presupuesto ({total} ventanas, más de {UMBRAL_DIRECTA_CARGA}) → llévala al ALMACÉN DE VENTANAS con todas las del presupuesto.</div>
                 : <div className="text-base">✅ Con esta se completa el presupuesto ({total} ventanas) → va DIRECTA A CARGA con todas las del presupuesto.</div>)
-              : <div className="text-base">⏳ Déjala en VENTANAS TERMINADAS: el presupuesto aún no está completo (acristaladas {total - faltan - 1 < 0 ? 0 : total - faltan} de {total}; faltan {faltan}).</div>}
+              : <div className="text-base">⏳ Déjala en VENTANAS TERMINADAS: el presupuesto aún no está completo (sin contar esta, faltan {faltan} de {total} por acristalar).</div>}
           </div>
         );
       })()}
