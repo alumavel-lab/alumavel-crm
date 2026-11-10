@@ -47767,6 +47767,45 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
  // ventanas que pueden esperar a la vez en la zona de carga; a partir de ahí, al almacén de ventanas
 // Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
 const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
+// PUESTO SOLAPE: qué hay ya en el almacén de solape (con su estantería) y qué ventanas de las obras de HOY llevan solape / postigo y todavía no se han puesto
+function ListaSolapeLinea({ indice }) {
+  const ubic = useObjetoFb("ubicacionesLinea"); const solSin = useObjetoFb("solapeSinEtiquetaLinea"); const sinSol = useObjetoFb("sinSolapeLinea");
+  const snapCD = useObjetoFb("controlDiaVentanasObra"); const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras");
+  const hoy = new Date().toLocaleDateString("sv-SE");
+  const { dentro, pendientes } = useMemo(() => {
+    const vistos = new Set(); const dentro = [];
+    Object.entries(ubic || {}).forEach(([cod, u]) => { if (!u || u.zonaId !== "solape") return; const h = indice && indice.get(cod); if (!h || !h.ventana) return; const id = String(h.ventana.id); if (vistos.has(id)) return; vistos.add(id); dentro.push({ id, pos: posDib(h.ventana), obra: (h.dueno && h.dueno.nombre) || "", hueco: u.hueco }); });
+    Object.entries(solSin || {}).forEach(([k, e]) => { if (!e) return; vistos.add(String(e.ventanaId)); dentro.push({ id: k, pos: e.pos || "?", obra: e.obra || "", hueco: e.hueco }); });
+    dentro.sort((a, b) => (Number(a.hueco) || 0) - (Number(b.hueco) || 0));
+    const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[hoy] || {};
+    const basesDia = new Set(); Object.keys(delDia).forEach((k) => toArray((planObras[k] || {}).pres).map(basePresuDia).filter((b) => b.length >= 3).forEach((b) => basesDia.add(b)));
+    const manualHoy = (manual && manual[hoy]) || {};
+    const pendientes = [];
+    Object.entries(snapCD || {}).forEach(([k, sn]) => {
+      if (!sn) return; const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
+      if (!(manualHoy[k] || bs.some((b) => basesDia.has(b)))) return;
+      toArray(sn.ventanas).forEach((w) => {
+        const ex = toArray(w.ex).map(String); if (!(ex.includes("SOLAPE") || ex.includes("POSTIGO"))) return;
+        const clave = `cd:${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+        if ((sinSol || {})[clave] || (solSin || {})[clave] || vistos.has(String(w.id))) return;
+        pendientes.push({ id: `${k}_${w.id}`, pos: w.pos || "?", obra: sn.nombre || k, medida: w.medida || "", ex: ex.filter((x) => x === "SOLAPE" || x === "POSTIGO").join(" + ") });
+      });
+    });
+    return { dentro, pendientes };
+  }, [ubic, solSin, sinSol, snapCD, planFab, manual, indice, hoy]);
+  return (
+    <div className="mb-3 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-lg border-2 border-amber-500 bg-amber-50 p-3">
+        <div className="text-sm font-extrabold text-amber-900 mb-1">Por poner solape / postigo (obras de hoy): {pendientes.length}</div>
+        {pendientes.length === 0 ? <p className="text-xs text-amber-800">Ninguna pendiente. Si falta alguna, busca su presupuesto abajo.</p> : <div className="max-h-52 overflow-y-auto space-y-1">{pendientes.map((x) => <div key={x.id} className="text-xs text-slate-800"><b>{x.pos}</b>{x.medida ? ` · ${x.medida}` : ""} <span className="text-amber-800 font-semibold">({x.ex})</span> <span className="text-slate-500">· {x.obra}</span></div>)}</div>}
+      </div>
+      <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 p-3">
+        <div className="text-sm font-extrabold text-emerald-900 mb-1">Ya en el almacén de solape: {dentro.length}</div>
+        {dentro.length === 0 ? <p className="text-xs text-emerald-800">Vacío.</p> : <div className="max-h-52 overflow-y-auto space-y-1">{dentro.map((x) => <div key={x.id} className="text-xs text-slate-800"><b className="text-emerald-800">Estantería {x.hueco}</b> · <b>{x.pos}</b> <span className="text-slate-500">· {x.obra}</span></div>)}</div>}
+      </div>
+    </div>
+  );
+}
 function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "", puesto = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
@@ -48937,6 +48976,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
+        {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
         <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
