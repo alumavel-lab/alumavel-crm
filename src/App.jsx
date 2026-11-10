@@ -24789,6 +24789,16 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const estCita = (p) => (citaOk(p) ? "ok" : !fechaCitaDe(p) ? "sinfecha" : listoP(p) ? "llamar" : "aprox");
   const [fCita, setFCita] = useEstadoLocal("crm_alb_fcita", "todas"); // todas | sinfecha | aprox | llamar | ok
   const [selCita, setSelCita] = useState({}); const [fechaLote, setFechaLote] = useState("");
+  // FECHA DEL PLANNING de Fábrica: día en que termina de fabricarse → la salida propuesta es el siguiente día laborable
+  const planFA = useObjetoFb("planFabrica");
+  const planDe = (p) => {
+    const obras = (planFA && planFA.obras) || {}; const dias = (planFA && planFA.dias) || {};
+    const ks = [`proyecto-${p.id}`, p.uxcarExpedienteId ? `uxcar-${p.uxcarExpedienteId}` : ""].filter(Boolean).map((k) => k.replace(/[.#$/[\]]/g, "_"));
+    let fin = ""; ks.forEach((k) => { const o = obras[k]; if (o && o.fin && o.fin > fin) fin = o.fin; Object.keys(dias).forEach((d) => { if (dias[d] && dias[d][k] && d > fin) fin = d; }); });
+    if (!fin) return null;
+    let salida = ""; try { salida = sigLaborable(fin); } catch (e) { salida = fin; }
+    return { fin, salida };
+  };
   const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
   const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
   const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
@@ -24879,6 +24889,13 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               <label className="text-xs text-slate-600">Hora<br /><input type="time" value={citaB.hora} onChange={(e) => setCitaB({ ...citaB, hora: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
               {tel && <a href={`tel:${tel}`} className="text-sm font-semibold text-[#2E8B57] underline pb-1.5">📞 Llamar {tel}</a>}
             </div>
+            {(() => { const pl = planDe(abierto); if (!pl) return <div className="text-[11px] text-slate-500">Esta obra no está en el planning de Fábrica.</div>; return (
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-white border border-slate-200 rounded px-2 py-1.5">
+                <span>📅 Planning: termina en fábrica el <b>{fmtDate(pl.fin)}</b> → salida propuesta <b>{fmtDate(pl.salida)}</b></span>
+                <button type="button" onClick={() => { if (!window.confirm(`¿Guardar el ${fmtDate(pl.salida)} como fecha APROXIMADA (sin llamar)?`)) return; fijarFechaObra(abierto, pl.salida, citaB.hora || "", false); setCitaB({ ...citaB, fecha: pl.salida, cliente: false, repartidor: false }); }} className="px-2 py-1 rounded bg-amber-500 text-white font-semibold">Usar como aproximada</button>
+                <button type="button" onClick={() => { const t = tipoSalida(abierto); if (!window.confirm(`¿Has LLAMADO AL CLIENTE${t === "reparto" ? " y AVISADO AL REPARTIDOR" : ""} y queda el ${fmtDate(pl.salida)}${citaB.hora ? " a las " + citaB.hora : ""}?`)) return; fijarFechaObra(abierto, pl.salida, citaB.hora || "", true, { nota: citaB.nota || "" }); setCitaB({ ...citaB, fecha: pl.salida, cliente: true, repartidor: t === "reparto" }); }} className="px-2 py-1 rounded bg-[#2E8B57] text-white font-semibold">✓ Confirmar esta fecha</button>
+              </div>
+            ); })()}
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.cliente} onChange={(e) => setCitaB({ ...citaB, cliente: e.target.checked })} /> He llamado al cliente y está de acuerdo con la fecha{c.contactadoCliente && c.contactadoCliente.por ? <span className="text-xs text-slate-500">({c.contactadoCliente.por}, {new Date(c.contactadoCliente.ts).toLocaleString("es-ES")})</span> : null}</label>
             {t === "reparto" && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.repartidor} onChange={(e) => setCitaB({ ...citaB, repartidor: e.target.checked })} /> He avisado al repartidor{c.avisadoRepartidor && c.avisadoRepartidor.por ? <span className="text-xs text-slate-500">({c.avisadoRepartidor.por})</span> : null}</label>}
             <input value={citaB.nota} onChange={(e) => setCitaB({ ...citaB, nota: e.target.value })} placeholder="Nota (quién recoge, furgoneta, llamar antes…)" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
@@ -25056,6 +25073,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button type="button" onClick={ponerFechaLote} className="px-3 py-1 rounded bg-[#2E8B57] text-white font-semibold">Poner fecha a {Object.values(selCita).filter(Boolean).length} marcada(s)</button>
             <button type="button" onClick={() => setSelCita(Object.fromEntries(repartos.filter((p) => !fechaCitaDe(p)).map((p) => [p.id, true])))} className="text-xs underline text-slate-600">marcar las sin fecha</button>
             {Object.values(selCita).some(Boolean) && <button type="button" onClick={() => setSelCita({})} className="text-xs underline text-slate-500">desmarcar</button>}
+            {(() => { const con = repartos.filter((p) => !fechaCitaDe(p) && planDe(p)); return con.length ? <button type="button" onClick={() => { if (!window.confirm(`¿Poner a ${con.length} obra(s) sin fecha la salida que sale del planning de Fábrica (día siguiente a terminar)? Quedan como APROXIMADAS.`)) return; con.forEach((p) => fijarFechaObra(p, planDe(p).salida, null, false)); }} className="px-3 py-1 rounded bg-amber-500 text-white font-semibold">📅 Fecha del planning a {con.length} sin fecha</button> : null; })()}
           </div>
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
@@ -25088,6 +25106,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                 <span className="text-slate-500">{tipoSalida(p) === "instalacion" ? "Instalación" : tipoSalida(p) === "recogida" ? "Recogida" : "Reparto"}:</span>
                 <input type="date" value={fechaCitaDe(p)} onChange={(e) => { const v = e.target.value; if (citaOk(p) && !window.confirm("Esta cita ya estaba CONFIRMADA con el cliente. Si la cambias, hay que volver a llamarle. ¿Cambiar?")) return; fijarFechaObra(p, v, null, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
                 <input type="time" value={(p.citaSalida && p.citaSalida.hora) || ""} onChange={(e) => { if (!fechaCitaDe(p)) { alert("Primero la fecha."); return; } fijarFechaObra(p, fechaCitaDe(p), e.target.value, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                {(() => { const pl = !fechaCitaDe(p) && planDe(p); return pl ? <button type="button" onClick={() => fijarFechaObra(p, pl.salida, null, false)} title={`Termina en fábrica el ${fmtDate(pl.fin)}`} className="px-2.5 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300 font-semibold">📅 Usar planning: {fmtDate(pl.salida)}</button> : null; })()}
                 {ec !== "ok" && fechaCitaDe(p) && <button type="button" onClick={() => confirmarDesdeLista(p)} className={`px-2.5 py-1 rounded font-semibold ${ec === "llamar" ? "bg-rose-600 text-white" : "bg-white border border-slate-300 text-slate-700"}`}>📞 Llamado: confirmar</button>}
                 {(() => { const c = clienteDe(p); const tel = c && (c.movil || c.telefono); return tel ? <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">{tel}</a> : null; })()}
                 {toArray(p.citaSalida && p.citaSalida.historial).length > 0 && <span className="text-slate-400">cambiada {toArray(p.citaSalida.historial).length}×</span>}
