@@ -43827,6 +43827,40 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
   );
 }
 
+// ALMACÉN DE VENTANAS · lo que llega por la LÍNEA y todavía no está en un caballete (terminadas en el almacén de espera, puertas terminadas, o marcadas «sin solape → Línea para paletizar»)
+function LlegadasLineaAlmacen({ indice, caballetes }) {
+  const [abierto, setAbierto] = useEstadoLocal("crm_desp_llegadasLinea", true);
+  const ubic = useObjetoFb("ubicacionesLinea"); const zonas = useZonasLinea(); const sinSol = useObjetoFb("sinSolapeLinea");
+  const lista = useMemo(() => {
+    const enCab = new Set(); toArray(caballetes).forEach((c) => toArray(c && c.ventanas).forEach((x) => { if (x) enCab.add(String(x.id)); }));
+    const nombreZona = (id) => { const z = zonas.find((q) => q.id === id); return z ? z.nombre : id; };
+    const out = []; const vistos = new Set();
+    Object.entries(ubic || {}).forEach(([cod, u]) => {
+      if (!u || !["espera", "puertasTerminadas"].includes(u.zonaId)) return;
+      const h = indice && indice.get(cod); if (!h || !h.ventana) return;
+      const id = String(h.ventana.id); if (vistos.has(id) || enCab.has(id)) return; vistos.add(id);
+      out.push({ id, pos: h.ventana.pos || "?", obra: (h.dueno && h.dueno.nombre) || "", donde: `${nombreZona(u.zonaId)} · hueco ${u.hueco}` });
+    });
+    Object.entries(sinSol || {}).forEach(([k, e]) => { if (!e || vistos.has(String(e.ventanaId)) || enCab.has(String(e.ventanaId))) return; vistos.add(String(e.ventanaId)); out.push({ id: k, pos: e.pos || "?", obra: e.obra || "", donde: "Línea · para paletizar (sin solape)" }); });
+    return out;
+  }, [ubic, zonas, sinSol, indice, caballetes]);
+  const porObra = {}; lista.forEach((x) => { (porObra[x.obra || "sin obra"] = porObra[x.obra || "sin obra"] || []).push(x); });
+  return (
+    <div className={`rounded-lg border-2 ${lista.length ? "border-emerald-600 bg-emerald-50" : "border-slate-200 bg-white"}`}>
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left">
+        <span className="text-slate-500">{abierto ? "▾" : "▸"}</span>
+        <span className="font-bold text-slate-800">Han llegado por la línea y aún no están en caballete</span>
+        <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${lista.length ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"}`}>{lista.length}</span>
+      </button>
+      {abierto && <div className="px-4 pb-3 space-y-1.5">
+        {lista.length === 0 && <p className="text-xs text-slate-500">Ninguna por ahora. Aquí van saliendo según llegan de Cristales / Solape / Línea.</p>}
+        {Object.entries(porObra).map(([obra, xs]) => (
+          <div key={obra} className="text-sm"><b className="text-slate-800">{obra}</b>: {xs.map((x) => <span key={x.id} className="inline-block mr-2"><b>{x.pos}</b> <span className="text-xs text-slate-500">({x.donde})</span></span>)}</div>
+        ))}
+      </div>}
+    </div>
+  );
+}
 // Bloque plegable (cerrado por defecto; se acuerda lo que dejó cada ordenador): título arriba, pincha y se abre todo
 function DesplegableAlm({ titulo, clave, resumen = "", children }) {
   const [abierto, setAbierto] = useEstadoLocal(`crm_desp_${clave}`, false);
@@ -45925,6 +45959,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       })()}
       <DesplegableAlm titulo="Estanterías de ventanas terminadas" clave="estTerminadas"><EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} /></DesplegableAlm>
       <IncompletasAlmacen caballetes={caballetes} indice={indicePiezas} />
+      <LlegadasLineaAlmacen indice={indicePiezas} caballetes={caballetes} />
+      <BuscarPorPresupuestoLinea indice={indicePiezas} cristales={[]} persianas={[]} quien="" puesto="almacen" />
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
@@ -47935,11 +47971,15 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
   // MEDIDAS DE LOS CRISTALES según la hoja de corte (tabla SUPERFICIES). Se lee el PDF de ESTA obra solo cuando se elige una ventana; no escribe nada en el CRM.
+  const soloDonde = puesto === "almacen"; // Almacén de ventanas: enseña DÓNDE está cada ventana de la obra (todos los puestos), sin dar de baja nada
+  const escaneosAll = useEscaneosLinea();
+  const escPorVent = useMemo(() => { const m = new Map(); toArray(escaneosAll).forEach((e) => { if (!e) return; const k = String(e.ventanaId); if (!m.has(k)) m.set(k, []); m.get(k).push(e); }); return m; }, [escaneosAll]);
+  const idxVent = useMemo(() => { const m = new Map(); if (indice) indice.forEach((h) => { const v = h && h.ventana; if (v && !m.has(String(v.id))) m.set(String(v.id), h); }); return m; }, [indice]);
   const soloSolape = puesto === "solape"; // en el puesto de Solape no se enseñan cristales ni persianas: solo dónde va la ventana
   const [medHoja, setMedHoja] = useState({}); // { [obra.key]: { estado, modelos: { "V04.105": [{comp, uds, ancho, alto}] } } }
   const obraMedKey = obra ? obra.key : "";
   useEffect(() => {
-    if (!obraMedKey || !w || soloSolape || medHoja[obraMedKey]) return;
+    if (!obraMedKey || !w || soloSolape || soloDonde || medHoja[obraMedKey]) return;
     if (!/^cd:/.test(obraMedKey)) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
     setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "leyendo" } }));
     (async () => {
@@ -47995,6 +48035,25 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   };
   const estW = w ? estadoVent(w) : null;
   const bloq = !!estW && !!w && !desbloq.includes(w.id); // ventana ya hecha: candado, no se vuelve a ticar
+  // DÓNDE está una ventana ahora (caballete > solape > línea para paletizar > casilla del mapa > última lectura de un puesto) y por qué puestos ha pasado
+  const dondeVent = (wx) => {
+    const cl = `${obra.key}__${wx.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+    const hv = idxVent.get(String(wx.id)); const bs = hv ? baseDe(hv.ventana) : "";
+    const kObra = String(obra.key).replace(/^(cd|et):/, "").replace(/[.#$\/\[\]]/g, "_");
+    const pal = Object.values(palets || {}).find((c) => c && toArray(c.ventanas).some((x) => x && String(x.id) === wx.id && String(x.obraKey || `p-${x.proyectoId}`).replace(/[.#$\/\[\]]/g, "_") === kObra));
+    const lect = (escPorVent.get(String(wx.id)) || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const pasos = [...new Set(lect.map((e) => e.puestoNombre || e.puestoId))].join(" → ");
+    const ult = lect.length ? lect[lect.length - 1] : null;
+    const hora = ult && ult.ts ? new Date(ult.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "";
+    if (pal) return { ahora: `En caballete ${pal.numero || ""}`.trim(), cls: "bg-violet-700 text-white", pasos };
+    const us = bs && ubicLin[bs] && ubicLin[bs].zonaId === "solape" ? ubicLin[bs] : (solSin[cl] || null);
+    if (us) return { ahora: `SOLAPE · estantería ${us.hueco}`, cls: "bg-amber-500 text-white", pasos };
+    if (sinSolMan[cl]) return { ahora: "LÍNEA · para paletizar", cls: "bg-emerald-600 text-white", pasos };
+    const ub = bs && ubicLin[bs] ? ubicLin[bs] : null;
+    if (ub) { const z = zonasLin.find((q) => q.id === ub.zonaId); return { ahora: `${z ? z.nombre : ub.zonaId} · hueco ${ub.hueco}`, cls: "bg-sky-600 text-white", pasos }; }
+    if (ult) return { ahora: `Última lectura: ${ult.puestoNombre || ult.puestoId}${hora ? ` (${hora})` : ""}`, cls: "bg-slate-600 text-white", pasos };
+    return { ahora: hv ? "sin lecturas todavía" : "sin etiquetas: no sé dónde está", cls: "bg-slate-200 text-slate-700", pasos };
+  };
   const darBaja = (x, k = 1) => {
     if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
@@ -48014,7 +48073,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
   };
-  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
+  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">{soloDonde ? "🔎 ¿Dónde está cada ventana? (buscar por presupuesto)" : "🔎 Buscar por presupuesto (sin etiqueta)"}</button></div>;
   return (
     <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
       <div className="flex items-center gap-2">
@@ -48025,7 +48084,19 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
       {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
       {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{estadoVent(x) ? "🔒 " : ""}{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
-      {w && !soloSolape && (
+      {soloDonde && obra && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-bold text-slate-600 uppercase">Dónde está cada ventana de la obra ({ventanas.length})</div>
+          {ventanas.map((x) => { const d = dondeVent(x); return (
+            <div key={x.id} className={`flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-md bg-white text-sm ${w && w.id === x.id ? "border-2 border-slate-800" : "border border-slate-200"}`}>
+              <b>{x.g ? `${x.g} · ` : ""}{x.pos}</b>{x.medida ? <span className="text-xs text-slate-500">{x.medida}</span> : null}
+              <span className={`px-2 py-0.5 rounded text-xs font-extrabold ${d.cls}`}>{d.ahora}</span>
+              {d.pasos ? <span className="text-xs text-slate-500">ha pasado por: {d.pasos}</span> : null}
+            </div>
+          ); })}
+        </div>
+      )}
+      {w && !soloSolape && !soloDonde && (
         <div className="space-y-1.5">
           {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
@@ -48066,7 +48137,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
-      {w && llevaSolape && (
+      {w && !soloDonde && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
           {ubSol
             ? <div className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</div>
@@ -48083,7 +48154,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
             </>}
         </div>
       )}
-      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900 flex flex-wrap items-center gap-2"><span>📍 {w.pos} está en LÍNEA para PALETIZAR (no lleva solape{sinSolape && sinSolape.por ? ` · marcado por ${sinSolape.por}` : ""}). Paletización o almacén de carga lo decide quien hace los palés.</span>{sinSolape && <button type="button" onClick={quitarSinSolape} className="ml-auto px-3 py-1 rounded-md bg-white border border-emerald-700 text-emerald-800 text-xs font-bold">Sí lleva solape (deshacer)</button>}</div>}
+      {w && !soloDonde && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900 flex flex-wrap items-center gap-2"><span>📍 {w.pos} está en LÍNEA para PALETIZAR (no lleva solape{sinSolape && sinSolape.por ? ` · marcado por ${sinSolape.por}` : ""}). Paletización o almacén de carga lo decide quien hace los palés.</span>{sinSolape && <button type="button" onClick={quitarSinSolape} className="ml-auto px-3 py-1 rounded-md bg-white border border-emerald-700 text-emerald-800 text-xs font-bold">Sí lleva solape (deshacer)</button>}</div>}
     </div>
   );
 }
