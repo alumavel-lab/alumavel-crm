@@ -47757,8 +47757,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
 }
 // Sin etiqueta a mano: se busca la obra por su nº de presupuesto (en Control del día y en las etiquetas, sin importar el día),
 // se pincha la ventana y salen sus cristales (caballete y hueco) y su persiana (carro) para darlos de baja
-// Zona de carga: máximo de ventanas esperando a la vez. Las da de baja el puesto de Carga; mientras no llegue al máximo, Cristales las manda directas a carga
-const CAPACIDAD_CARGA = 20; // ventanas que pueden esperar a la vez en la zona de carga; a partir de ahí, al almacén de ventanas
+ // ventanas que pueden esperar a la vez en la zona de carga; a partir de ahí, al almacén de ventanas
 // Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
 const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
 function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
@@ -47773,10 +47772,6 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
-  const cargaDir = useObjetoFb("cargaDirectaLinea");
-  const escLin = useEscaneosLinea();
-  // Ventanas que esperan en carga: las mandadas por Cristales y que el puesto de Carga aún no ha leído ni dado de baja
-  const enCarga = useMemo(() => Object.entries(cargaDir || {}).filter(([, e]) => e && !escLin.some((x) => x.puestoId === "carga" && String(x.ventanaId) === String(e.ventanaId) && (x.ts || 0) >= (e.ts || 0))).map(([k, e]) => ({ k, ...e })).sort((a, b) => (a.ts || 0) - (b.ts || 0)), [cargaDir, escLin]);
   const qd = String(q).replace(/\D/g, "");
   const texto = String(q).trim().toLowerCase();
   const obras = useMemo(() => {
@@ -47843,12 +47838,6 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   };
   const reconocer = useMemo(() => reconocerDe(w), [w, obra]); // eslint-disable-line
   const cris = useMemo(() => crisDeVentana(w), [w, obra, cristales]); // eslint-disable-line
-  // Presupuesto completo: ¿cuántas ventanas de la obra ya están acristaladas (todos sus cristales dados de baja)?
-  const hechasObra = useMemo(() => { // eslint-disable-line
-    const ids = new Set();
-    if (obra) obra.ventanas.forEach((wx) => { const rs = crisDeVentana(wx); if (rs.length > 0 && rs.every((r) => r.p.puesto)) ids.add(wx.id); });
-    return ids;
-  }, [obra, cristales]); // eslint-disable-line
   const pers = useMemo(() => {
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
@@ -47913,12 +47902,6 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
           })}
         </div>
       )}
-      {enCarga.length > 0 && (
-        <div className={`rounded-lg border-2 px-3 py-2 space-y-1.5 ${enCarga.length >= CAPACIDAD_CARGA ? "border-rose-600 bg-rose-50" : "border-sky-500 bg-sky-50"}`}>
-          <div className="text-sm font-extrabold text-slate-800">🚚 Esperando en CARGA: {enCarga.length} de {CAPACIDAD_CARGA}{enCarga.length >= CAPACIDAD_CARGA ? " · LLENA: coge estas ventanas y almacénalas en el almacén de ventanas, vienen más detrás" : ""}</div>
-          {enCarga.map((e) => <div key={e.k} className="flex items-center gap-2 text-sm"><span className="font-semibold">{e.pos}</span><span className="text-slate-600">{e.obra}{e.ppto ? ` · ppto ${pptoBonito(e.ppto)}` : ""}</span><button type="button" onClick={() => fbSet(ref(fbDb, `cargaDirectaLinea/${e.k}`), null).then(() => setMsg(`✓ ${e.pos} dada de baja de carga.`)).catch((er) => setMsg(`⚠ ${(er && er.message) || er}`))} className="ml-auto px-3 py-1 rounded-md bg-slate-800 text-white text-xs font-bold">Cargada (dar de baja)</button></div>)}
-        </div>
-      )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
       {w && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
@@ -47934,26 +47917,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
           )}
         </div>
       )}
-      {w && !llevaSolape && (() => {
-        const total = obra ? obra.ventanas.length : 0;
-        const faltan = obra ? obra.ventanas.filter((x) => x.id !== w.id && !hechasObra.has(x.id)).length : 0;
-        const completo = total > 0 && faltan === 0;
-        const claveC = obra ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
-        const yaCarga = !!claveC && enCarga.some((e) => e.k === claveC);
-        const llena = enCarga.length >= CAPACIDAD_CARGA;
-        const mandarCarga = () => fbSet(ref(fbDb, `cargaDirectaLinea/${claveC}`), { ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ppto: (obra.bases && obra.bases[0]) || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} apuntada en CARGA (${enCarga.length + 1} de ${CAPACIDAD_CARGA}).`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
-        return (
-          <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900 space-y-1">
-            <div>{w.pos} NO lleva solape.</div>
-            {!completo && <div className="text-base">⏳ Déjala en VENTANAS TERMINADAS: el presupuesto aún no está completo (sin contar esta, faltan {faltan} de {total} por acristalar).</div>}
-            {completo && yaCarga && <div className="text-base">✅ Ya apuntada en CARGA.</div>}
-            {completo && !yaCarga && !llena && (
-              <div className="flex flex-wrap items-center gap-2"><span className="text-base">✅ Presupuesto completo → va DIRECTA A CARGA (ahora en carga: {enCarga.length} de {CAPACIDAD_CARGA}).</span><button type="button" onClick={mandarCarga} className="px-3 py-1.5 rounded-md bg-emerald-700 text-white text-xs font-bold">Mandar a carga</button></div>
-            )}
-            {completo && !yaCarga && llena && <div className="text-base text-rose-800">⛔ CARGA LLENA ({enCarga.length} de {CAPACIDAD_CARGA}). Presupuesto completo, pero llévala al ALMACÉN DE VENTANAS hasta que Carga dé de baja las suyas.</div>}
-          </div>
-        );
-      })()}
+      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900">{w.pos} NO lleva solape → ventana TERMINADA. Déjala para paletización o almacén de carga: lo decide quien hace los palés.</div>}
     </div>
   );
 }
