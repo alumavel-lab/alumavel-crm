@@ -22857,7 +22857,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
   // Nº de presupuesto de cada pedido (en fábrica se busca por presupuesto)
   const ctxAlb = React.useContext(IncidenciasCristalCtx) || {};
-  const pptoPed = (p) => { try { const pr = p.proyectoId ? toArray(ctxAlb.proyectos).find((x) => x && x.id === p.proyectoId) || null : null; return datosObraPedido(p, pr, ctxAlb.uxExpedientes).ppto || pptoObraAmplio(pr, ctxAlb.uxExpedientes) || String(p.presupuestoNumero || p.presupuesto || p.ppto || "").trim(); } catch (e) { return ""; } };
+  const pptoPed = (p) => { try { return datosObraPedido(p, p.proyectoId ? toArray(ctxAlb.proyectos).find((x) => x && x.id === p.proyectoId) || null : null, ctxAlb.uxExpedientes).ppto || ""; } catch (e) { return ""; } };
   const pendiente = (p) => p.estado !== "Recibido" && p.estado !== "Cancelado" && toArray(p.lineas).some((l) => (parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0) > 0);
   const leer = async (file) => {
     setLeyendo(true); setError(""); setLect(null); setSelId("");
@@ -22869,10 +22869,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     finally { setLeyendo(false); }
   };
   const normPpto = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
-  // El nº base se compara solo con dígitos: «5163-5», «5.163-5» y «5163» son el mismo presupuesto (antes «5.163» ≠ «5163»)
-  const basePpto = (t) => digitosPresu(t);
+  const basePpto = (t) => normPpto(t).split(/[-/]/)[0];
   const pptoOk = normPpto(pptoAlb).replace(/\D/g, "").length >= 3;
-  const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [pptoObraAmplio(x, ctxAlb.uxExpedientes), presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) && basePpto(n) === basePpto(pptoAlb))) : null;
+  const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
   const lista = !lect ? [] : toArray(pedidos).filter(pendiente).map((p) => {
     const num = normPedidoCristal(lect.numeroPedido);
     const prov = String(lect.proveedor || "").trim().toLowerCase();
@@ -22881,7 +22880,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     const casadas = r.filas.filter((f) => f.llega > 0).length;
     const porNumero = !!num && [p.numero, p.numeroPedidoProveedor].some((n) => normPedidoCristal(n) && normPedidoCristal(n) === num);
     const porProv = !!prov && !!nombre && (nombre.includes(prov) || prov.includes(nombre));
-    const pp = pptoPed(p); const porPpto = pptoOk && ((!!pp && (normPpto(pp) === normPpto(pptoAlb) || basePpto(pp) === basePpto(pptoAlb))) || (!!obraDePpto && !!p.proyectoId && p.proyectoId === obraDePpto.id));
+    const pp = pptoPed(p); const porPpto = pptoOk && !!pp && (normPpto(pp) === normPpto(pptoAlb) || basePpto(pp) === basePpto(pptoAlb));
     return { p, casadas, porNumero, porProv, porPpto, score: (porNumero ? 1000 : 0) + (porPpto ? 500 : 0) + (porProv ? 100 : 0) + casadas };
   }).sort((a, b) => b.score - a.score);
   const buenos = lista.filter((c) => c.score > 0);
