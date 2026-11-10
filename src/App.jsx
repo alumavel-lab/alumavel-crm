@@ -47008,6 +47008,15 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
   const matesVivienda = () => toArray(h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).map((w) => ({ w, u: ubic[baseDe(w)] }));
   const textoCaballete = (mates) => `Coge también las de ventanas terminadas (estanterías ${mates.map((m) => m.u.hueco).join(", ")}) y escanéalas en Almacén ventanas.`;
   if (puestoId === "cristales") {
+    // OBLIGATORIO A PARTIR DE CONTROL (de momento solo AVISA, no bloquea): ¿la leyó la pistola de Control línea?
+    let avisoControl = "";
+    try {
+      const cods = [...new Set([...toArray(v.piezas).map((pz) => String(pz && pz.c)), ...(v.modelo ? [1, 2, 3].map((k) => codHoja(base, k)) : []), String(v.id)].filter(Boolean))];
+      const vistos = await Promise.all(cods.map((c) => fbGet(ref(fbDb, `escaneosLinea/${claveEscaneoLinea("controlDia", c)}`)).then((x) => !!(x && x.val())).catch(() => false)));
+      if (!vistos.some(Boolean)) avisoControl = " · ⚠ OJO: NO HA PASADO POR CONTROL LÍNEA (no la leyó la pistola de Control). Avísalo.";
+    } catch (e) { /* sin aviso */ }
+    const conAviso = (r) => (r && r.ok && avisoControl ? { ...r, texto: `${r.texto}${avisoControl}`, avisoControl: true } : r);
+    const r0 = await (async () => {
     const flagsInc = (await fbGet(ref(fbDb, "incidenciaVentanaLinea"))).val() || {};
     if (flagsInc[base]) return { ok: false, texto: `⛔ ${posDib(v)}: tiene una INCIDENCIA ABIERTA (apartada en Persiana A/B salida). No se puede acristalar hasta que se resuelva.` };
     const u = await ubicDe(base);
@@ -47056,6 +47065,8 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     const n = await poner("espera", base);
     if (!n) return llena("espera", v.pos);
     return { ok: true, texto: `✓ ${posDib(v)} acristalada · SIN SOLAPE → ${nom("espera")} · ESTANTERÍA ${n}`, zona: { zonaId: "espera", hueco: n } };
+    })();
+    return conAviso(r0);
   }
   const rg = REGLAS_PUESTO_LINEA[puestoId];
   if (rg) {
