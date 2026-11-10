@@ -6484,6 +6484,23 @@ export default function App() {
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
+          // CABALLETES POR RECLAMAR: los que salieron con un cliente y ya tenían que haber vuelto (fecha prevista pasada)
+          if (!currentUser || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
+          const fuera = toArray(caballetesVentanas).filter((c) => c && c.estado === "fuera");
+          if (!fuera.length) return null;
+          const diasDevA = diasDevolucionCliente(caballetesVentanas, configVentanas);
+          const hoyA = new Date().toISOString().slice(0, 10);
+          const tarde = fuera.filter((c) => { const v = vueltaPrevistaCaballete(c, diasDevA); return !v || v < hoyA; });
+          if (!tarde.length) return null;
+          const porCli = {}; tarde.forEach((c) => { const k = (c.salida && (c.salida.cliente || c.salida.obra)) || "sin cliente"; (porCli[k] = porCli[k] || []).push(c.numero); });
+          const det = Object.entries(porCli).slice(0, 3).map(([k, ns]) => `${k}: ${ns.join(", ")}`).join(" · ");
+          return (
+            <button onClick={() => { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); }} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-amber-100 text-amber-900 hover:bg-amber-200">
+              🪵 {tarde.length} caballete{tarde.length === 1 ? "" : "s"} para RECLAMAR (ya tenía{tarde.length === 1 ? "" : "n"} que haber vuelto) · {det}{Object.keys(porCli).length > 3 ? "…" : ""}. Toca para verlos →
+            </button>
+          );
+        })()}
+        {(() => {
           // Obras ya completas en palet (almacén de ventanas listo): aviso a fábrica y a quien tenga albaranes para programar la salida / el reparto
           if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
           const listas = proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida");
@@ -6493,7 +6510,7 @@ export default function App() {
           const detalle = listas.slice(0, 3).map((p) => `${nomL(p)}${p.fechaReparto ? "" : " (sin fecha de salida)"}`).join(" · ");
           return (
             <button
-              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialFabrica.actual = "almacen"; setModulo("fabrica"); } }}
+              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-teal-50 text-teal-800 hover:bg-teal-100"
             >
               <Truck size={15} />
@@ -10381,6 +10398,15 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
+// En la ficha de la obra: caballetes que se llevó y están por devolver (con desde cuándo y si ya hay que reclamarlos)
+function CaballetesFueraObra({ proyecto }) {
+  const cabs = useObjetoFb("caballetesVentanas");
+  const lista = toArray(cabs).filter((c) => c && c.estado === "fuera" && c.obra && (c.obra.proyectoId === proyecto.id || c.obra.key === `p-${proyecto.id}`));
+  if (!lista.length) return null;
+  const diasDev = diasDevolucionCliente(toArray(cabs), null); const hoy = new Date().toISOString().slice(0, 10);
+  const tarde = lista.filter((c) => { const v = vueltaPrevistaCaballete(c, diasDev); return !v || v < hoy; });
+  return <Badge className={tarde.length ? "bg-rose-50 text-rose-700 ring-rose-300" : "bg-amber-50 text-amber-800 ring-amber-300"}>🪵 {lista.length} caballete{lista.length === 1 ? "" : "s"} por devolver: {lista.map((c) => `${c.numero} (desde ${fmtDate(c.salida && c.salida.fecha)})`).join(", ")}{tarde.length ? " · ⚠ RECLAMAR" : ""}</Badge>;
+}
 function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onCrearPedidosDocProveedor, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
@@ -10758,6 +10784,7 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
           {proyecto.fechaAceptado ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge> : proyecto.estadoPresupuesto === "Presupuesto aceptado" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">⚠ Sin fecha de aceptación (pulsa Editar)</Badge> : null}
           {proyecto.fechaEntregado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Entregado el {fmtDate(proyecto.fechaEntregado)}</Badge>}
+          <CaballetesFueraObra proyecto={proyecto} />
         </div>
         {proyecto.estadoTrabajo === "Cancelado" && proyecto.anulado && (
           <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
@@ -61013,10 +61040,12 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
   );
 }
 
+// Para abrir Línea (pistola) directamente en una pantalla (p.ej. «almacen» desde un aviso de arriba)
+const tabInicialLinea = { actual: null };
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
-  const [tab, setTab] = useState(soloAlmacen ? "almacenDia" : "puesto");
+  const [tab, setTab] = useState(() => { const t = tabInicialLinea.actual; tabInicialLinea.actual = null; return t || (soloAlmacen ? "almacenDia" : "puesto"); });
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = soloAlmacen ? [
