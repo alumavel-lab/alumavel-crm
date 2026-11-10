@@ -47945,8 +47945,6 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
             </>}
         </div>
       )}
-        </div>
-      )}
       {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900">📍 {w.pos} está en LÍNEA (no lleva solape). Paletización o almacén de carga lo decide quien hace los palés.</div>}
     </div>
   );
