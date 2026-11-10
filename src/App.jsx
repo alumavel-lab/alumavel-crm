@@ -31069,6 +31069,8 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
   const [filtroEstado, setFiltroEstado] = useState("");
   const [tab, setTab] = useState("todo");
   const [editandoFechaId, setEditandoFechaId] = useState(null);
+  // Planning de Fábrica (lo que publica Fábrica) y obras metidas a mano en Control del día: también son fabricación
+  const planF = useObjetoFb("planFabrica"); const manualCD = useObjetoFb("controlDiaObras");
 
   const clienteNombre = (proyectoId) => {
     const p = proyectos.find((pr) => pr.id === proyectoId);
@@ -31125,6 +31127,39 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
       }
     });
 
+    // FABRICACIÓN SEGÚN EL PLANNING (Fábrica) Y CONTROL DEL DÍA (a mano). Si la obra ocupa varios días sale en cada uno (día 1/2, 2/2)
+    {
+      const porId = new Map(toArray(proyectos).map((pr) => [String(pr.id), pr]));
+      const deUx = (uxId) => toArray(proyectos).find((pr) => pr && String(pr.uxcarExpedienteId || "") === String(uxId));
+      const resolver = (tipo, id) => (tipo === "proyecto" || tipo === "p" ? porId.get(String(id)) : tipo === "uxcar" || tipo === "u" ? deUx(id) : null) || null;
+      const obrasP = (planF && planF.obras) || {}; const diasP = (planF && planF.dias) || {};
+      const diasDe = {}; // clave obra -> [fechas]
+      Object.keys(diasP).sort().forEach((fch) => Object.keys(diasP[fch] || {}).forEach((k) => { (diasDe[k] = diasDe[k] || []).push(fch); }));
+      const puestos = new Set(); // "fecha|proyectoId o clave"
+      const meter = (fch, pr, nombre, extra, origen) => {
+        if (pr && filtroEstado && pr.estadoTrabajo !== filtroEstado) return;
+        if (!pr && filtroEstado) return;
+        if (pr && toKey(pr.fechaFabricacion) === toKey(fch)) return; // ya sale por su fecha de fabricación
+        const marca = `${toKey(fch)}|${pr ? pr.id : nombre}`; if (puestos.has(marca)) return; puestos.add(marca);
+        push(fch, {
+          type: "proyecto_fabricacion", id: pr ? pr.id : "", campo: null,
+          label: `Fabricación (${origen})${extra} — ${pr ? `#${pr.numero} ${pr.nombre}` : nombre}`,
+          badge: EVENT_DOT.proyecto_fabricacion(),
+        });
+      };
+      Object.entries(diasDe).forEach(([k, fs]) => {
+        const o = obrasP[k] || {}; const m = /^(proyecto|uxcar)-(.+)$/.exec(k) || [];
+        const pr = resolver(o.tipo || m[1], o.id || m[2]);
+        const nombre = String(o.nombre || (diasP[fs[0]] && diasP[fs[0]][k] && diasP[fs[0]][k].nombre) || k).replace(/ · en fabricación$/, "");
+        fs.forEach((fch, i) => meter(fch, pr, nombre, fs.length > 1 ? ` día ${i + 1}/${fs.length}` : "", "planning"));
+      });
+      Object.entries(manualCD || {}).forEach(([fch, obs]) => Object.entries(obs || {}).forEach(([k, si]) => {
+        if (!si) return; const m = /^(p|u)-(.+)$/.exec(k); if (!m) return;
+        const pr = resolver(m[1], m[2]); if (!pr && m[1] === "p") return;
+        meter(fch, pr, m[1] === "u" ? `Uxcar exp. ${m[2]}` : k, "", "control del día");
+      }));
+    }
+
     pedidos.forEach((pd) => {
       if (pd.estado === "Recibido" || pd.estado === "Cancelado") return;
       if (pd.fechaEntregaPrevista) {
@@ -31148,14 +31183,14 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
     });
 
     return map;
-  }, [proyectos, pedidos, incidencias, filtroEstado, tab]);
+  }, [proyectos, pedidos, incidencias, filtroEstado, tab, planF, manualCD]);
 
   const weeks = useMemo(() => buildMonthMatrix(cursor.getFullYear(), cursor.getMonth()), [cursor]);
   const todayKey = claveLocalCal(today);
   const selectedEvents = eventsByDay[selectedDay] || [];
 
   const openEvent = (ev) => {
-    if (ev.type.startsWith("proyecto_")) openProyecto(ev.id);
+    if (ev.type.startsWith("proyecto_")) { if (ev.id) openProyecto(ev.id); else window.alert("Esta obra del planning no está enlazada con ningún proyecto del CRM."); }
     else if (ev.type === "pedido") openPedido(ev.id);
     else if (ev.type === "incidencia") openIncidencia(ev.id);
   };
@@ -31167,12 +31202,14 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
     const ev = arrastrando;
     setArrastrando(null); setEncima("");
     if (!ev || !diaDestino || ev.dia === diaDestino) return;
+    if (!ev.campo) { window.alert("Esta fecha sale del planning de Fábrica / Control del día: cámbiala allí, no aquí."); return; }
     const txt = new Date(diaDestino + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
     if (!window.confirm(`¿Mover «${ev.label}» al ${txt}?`)) return;
     cambiarFecha(ev, diaDestino);
     setSelectedDay(diaDestino);
   };
   const cambiarFecha = (ev, nuevaFecha) => {
+    if (!ev.campo) { window.alert("Esta fecha sale del planning de Fábrica / Control del día: cámbiala allí, no aquí."); setEditandoFechaId(null); return; }
     if (ev.type.startsWith("proyecto_")) onCambiarFechaProyecto(ev.id, ev.campo, nuevaFecha);
     else if (ev.type === "pedido") onCambiarFechaPedido(ev.id, ev.campo, nuevaFecha);
     else if (ev.type === "incidencia") onCambiarFechaIncidencia(ev.id, ev.campo, nuevaFecha);
