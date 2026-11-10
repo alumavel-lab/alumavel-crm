@@ -47831,9 +47831,9 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
   };
-  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 bg-white text-slate-700">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
+  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
   return (
-    <div className="mt-3 mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
+    <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
       <div className="flex items-center gap-2">
         <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setObraKey(""); setVentId(""); setMsg(""); }} placeholder="Nº de presupuesto (o nombre de la obra)" className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm" />
         <button type="button" onClick={() => { setAbierto(false); setQ(""); setObraKey(""); setVentId(""); setMsg(""); }} className="text-xs text-slate-500 hover:underline">Cerrar</button>
@@ -48779,6 +48779,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
@@ -48822,7 +48823,6 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
