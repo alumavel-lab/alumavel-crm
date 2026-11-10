@@ -50466,7 +50466,10 @@ function MiPuesto({ sinFichar = false, currentUser, usuarios, config, proyectos,
   const mios = puestos.filter((p) => toArray(p.usuarioIds).includes(currentUser && currentUser.id));
   const [codigo, setCodigo] = useState("");
   const [puestoId, setPuestoId] = useState(null);
-  const puesto = puestos.find((p) => p.id === puestoId) || (mios.length === 1 ? mios[0] : null);
+  // Sin puesto asignado: no se pide ningún código. Entra directo con su usuario a las obras del día
+  // y sus partes quedan a su nombre (puesto «General»).
+  const puestoGeneral = { id: "", nombre: "General", codigo: "", usuarioIds: [] };
+  const puesto = puestos.find((p) => p.id === puestoId) || (mios.length === 1 ? mios[0] : (mios.length === 0 ? puestoGeneral : null));
   // En una tablet compartida: se entra con el código y se elige quién es
   const [empleadoId, setEmpleadoId] = useState(currentUser ? currentUser.id : "");
   const empleado = toArray(usuarios).find((u) => u.id === empleadoId) || currentUser;
@@ -50480,16 +50483,11 @@ function MiPuesto({ sinFichar = false, currentUser, usuarios, config, proyectos,
         {mios.length > 1 && (
           <div className="space-y-2">{mios.map((p) => <button key={p.id} onClick={() => setPuestoId(p.id)} className="w-full text-left bg-white border border-slate-200 rounded-lg px-4 py-3 font-semibold hover:border-[#2E8B57]">{p.nombre} <span className="text-xs text-slate-400">({p.codigo})</span></button>)}</div>
         )}
-        {mios.length === 0 && <p className="text-sm text-slate-500">No tienes ningún puesto asignado. Escribe el código del puesto:</p>}
-        <div className="flex gap-2">
-          <TextInput value={codigo} onChange={(e) => setCodigo(e.target.value.toUpperCase())} placeholder="Código del puesto (ej. SOL)" className="uppercase" />
-          <button onClick={() => { const p = puestos.find((x) => x.codigo === codigo.trim()); if (p) setPuestoId(p.id); else alert("No hay ningún puesto con ese código."); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 rounded-md text-sm font-semibold">Entrar</button>
-        </div>
       </div>
     );
   }
   const obras = toArray(plan && plan.dias && plan.dias[hoy]);
-  const misPartes = partes.filter((x) => x.fecha === hoy && x.puestoId === puesto.id).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+  const misPartes = partes.filter((x) => x.fecha === hoy && (puesto.id ? x.puestoId === puesto.id : x.usuarioId === (empleado && empleado.id))).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
   const fichaje = fichajes.find((f) => f.empleado === nombreEmp && f.fecha === hoy);
   const estadoFichaje = fichaje ? fichaje.estado : "sin_entrada";
   const btn = (txt, accion, color) => <button onClick={() => onFichar(nombreEmp, accion)} style={{ backgroundColor: color, color: "#ffffff" }} className="flex-1 py-4 rounded-lg text-base font-bold">{txt}</button>;
