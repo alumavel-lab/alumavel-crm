@@ -48457,6 +48457,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
   const [camara, setCamara] = useState(false); // lectura con la cámara del móvil
   const [ficha, setFicha] = useState(null);
+  const [auxLeido, setAuxLeido] = useState(null); // etiqueta de AUXILIAR (AX…) leída en cualquier puesto
   const inputRef = useRef(null);
   const escaneos = useEscaneosLinea();
   const zonas = useZonasLinea();
@@ -48497,12 +48498,37 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     if (dig.length > 12) { for (const k of indice.keys()) if (dig.includes(k)) return k; }
     return null;
   };
+  const leerAuxiliarEnPuesto = async (txt, avisarM) => {
+    const c = String(txt).trim().toUpperCase().replace(/^\*|\*$/g, "");
+    try {
+      const snap = await fbGet(ref(fbDb, "auxiliaresPiezas"));
+      const todo = snap && snap.exists() ? snap.val() : {};
+      const e = Object.entries(todo || {}).map(([id, x]) => ({ ...x, id })).find((x) => x && String(x.cod).toUpperCase() === c);
+      if (!e) { avisarM(false, `No conozco la etiqueta ${c}: no es un auxiliar cortado en el CRM (Línea → Auxiliares).`); return; }
+      const donde = e.baja ? `YA DADO DE BAJA (salió de ${e.baja.carroNombre || "su carro"}${e.baja.hueco ? ` · hueco ${e.baja.hueco}` : ""} el ${new Date(e.baja.at).toLocaleDateString("es-ES")}${e.baja.por ? ` por ${e.baja.por}` : ""})` : e.carro ? `📍 ${e.carroNombre || "carro"} · HUECO ${e.hueco || "?"}` : "📍 sin carro asignado";
+      const lleva = [e.ventanaPos && `ventana ${e.ventanaPos}`, e.grupo, e.cliente].filter(Boolean).join(" · ");
+      const eje = e.ejeI || e.ejeD || e.eje ? `\n⚙ ${[e.ejeI && `eje izq. ${e.ejeI}`, e.ejeD && `eje der. ${e.ejeD}`, e.eje && `eje ${e.ejeLado || ""} ${e.eje}`].filter(Boolean).join(" · ")}` : "";
+      avisarM(!e.baja, `🔩 AUXILIAR ${e.nombre || ""} ${e.lCorte ? e.lCorte + " mm" : ""}${e.ref ? ` (${e.ref})` : ""}\nPpto ${e.ppto || "?"}${e.obra ? ` · ${e.obra}` : ""}${lleva ? ` · ${lleva}` : ""}${eje}\n${donde}`, !!e.baja);
+      setAuxLeido(e);
+    } catch (er) { avisarM(false, `No se pudo leer el auxiliar: ${(er && er.message) || er}`); }
+  };
+  // Dar de baja un auxiliar: sale del carro (su hueco queda libre) y se anota quién y cuándo
+  const darBajaAuxiliar = async () => {
+    const e = auxLeido; if (!e || e.baja || !e.id) return;
+    try {
+      await fbUpdate(ref(fbDb, `auxiliaresPiezas/${e.id}`), { baja: { at: Date.now(), por: quien || "", puesto: nombrePuestoLinea(puestoId), carro: e.carro || "", carroNombre: e.carroNombre || "", hueco: e.hueco || "" }, carro: "", hueco: "", carroNombre: "" });
+      setAuxLeido(null);
+      avisar(true, `✓ Auxiliar ${e.nombre || ""} ${e.lCorte ? e.lCorte + " mm" : ""} dado de baja: ya no está en ${e.carroNombre || "el carro"}${e.hueco ? ` · hueco ${e.hueco}` : ""}.`);
+    } catch (er) { avisar(false, `No se pudo dar de baja: ${(er && er.message) || er}`); }
+  };
   const procesar = async (textoCam) => {
     const txt = (typeof textoCam === "string" ? textoCam : codigo).trim();
     const mesaAhora = mesaRef.current; // la mesa que estaba elegida al leer (por si alguien pulsa otra mientras se procesa)
     const avisarM = (ok, texto, repetida) => avisar(ok, texto, repetida, mesaAhora);
     setCodigo("");
     if (!txt) return;
+    // Etiqueta de AUXILIAR (guía, inversor, mosquitera…): vale en cualquier puesto; dice qué es, de qué ventana y en qué carro está
+    if (/^\*?AX\d{3,}\*?$/i.test(txt)) { setAuxLeido(null); setUltimo(null); await leerAuxiliarEnPuesto(txt, avisarM); return; }
     const cod = piezaDeTexto(txt);
     if (!cod) { avisarM(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
     const h = indice.get(cod);
@@ -48636,6 +48662,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
+        {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); procesar(v); }} onCerrar={() => { setCamara(false); enfocar(); }} />}
