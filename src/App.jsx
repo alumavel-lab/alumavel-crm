@@ -24707,6 +24707,7 @@ const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "
 function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
+  const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
   const [firmando, setFirmando] = useState(null); // "carga" | "cliente" | "responsable"
   const [subiendoFotoCarga, setSubiendoFotoCarga] = useState(false);
   const [borrador, setBorrador] = useState(null);
@@ -24719,10 +24720,13 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     const ciudad = p.provinciaReparto === "Otra ciudad..." ? p.ciudadRepartoManual : p.provinciaReparto;
     return [p.ubicacion || (c && c.direccion) || "", ciudad || (c && c.provincia) || ""].filter(Boolean).join(", ");
   };
+  // Buscador: casa con el nº de presupuesto (con o sin punto), el cliente, el nombre o nº de la obra, el nº de albarán o la dirección
+  const nq = String(qAlb || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const casaQ = (p) => { if (!nq) return true; const a = p.albaranEntrega || {}; const t = [p.numero, p.nombre, presupuestoDeObra(p), p.presupuestoNumero, p.expediente, p.referencia, (clienteDe(p) || {}).nombre, direccionDe(p), a.numero, a.chofer, a.matricula].filter(Boolean).join(" ").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); return t.includes(nq) || t.replace(/\./g, "").includes(nq.replace(/\./g, "")); };
   // Repartos en camión y recogidas en fábrica: los dos llevan albarán firmado por el cliente
-  const repartos = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p)) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo))
+  const repartos = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p)) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p))
     .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
-  const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente))
+  const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente) && casaQ(p))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
   const siguienteNumero = () => {
     const max = proyectos.reduce((m, x) => Math.max(m, parseInt(String((x.albaranEntrega && x.albaranEntrega.numero) || "").replace(/\D/g, ""), 10) || 0), 0);
@@ -24876,6 +24880,13 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
       </div>
+      {(tab === "repartos" || tab === "firmados") && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input value={qAlb} onChange={(e) => setQAlb(e.target.value)} placeholder="🔎 Buscar por presupuesto, cliente, obra, nº de albarán, dirección…" className="flex-1 min-w-[240px] border-2 border-slate-300 rounded-md px-3 py-2 text-sm" />
+          {qAlb && <button type="button" onClick={() => setQAlb("")} className="text-xs text-slate-500 underline">Borrar</button>}
+          {qAlb && <span className="text-xs text-slate-500">{tab === "repartos" ? repartos.length : firmados.length} encontrado{(tab === "repartos" ? repartos.length : firmados.length) === 1 ? "" : "s"}</span>}
+        </div>
+      )}
       {tab === "cargas" && <div className="p-4"><CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} /></div>}
       {tab === "repartos" && (
         <div className="space-y-2">
@@ -24926,7 +24937,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   <td className="px-3 py-2 text-right"><button onClick={() => descargarPdfAlbaranEntrega(p, { cliente: clienteDe(p), direccion: direccionDe(p) })} className="text-xs font-semibold text-[#2E8B57] hover:underline">Descargar PDF</button></td>
                 </tr>
               ); })}
-              {toArray(envios).filter((e) => e.firmaChofer).map((e) => (
+              {toArray(envios).filter((e) => e.firmaChofer && (!nq || [e.numeroAlbaran, e.descripcion, (proveedores.find((x) => x.id === e.proveedorId) || {}).nombre, (proyectos.find((x) => x.id === e.proyectoId) || {}).nombre].filter(Boolean).join(" ").toLowerCase().includes(nq))).map((e) => (
                 <tr key={e.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold whitespace-nowrap">{e.numeroAlbaran || "—"} <span className="text-xs font-normal text-slate-400">salida</span></td>
                   <td className="px-3 py-2">{(proveedores.find((x) => x.id === e.proveedorId) || {}).nombre || "—"} · {e.descripcion}</td>
