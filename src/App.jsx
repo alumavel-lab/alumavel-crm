@@ -47838,10 +47838,11 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
   }, [reconocer, persianas]);
   const darBaja = (x) => {
-    if ((parseFloat(x.p.cantidad) || 1) > 1) { setMsg("Esa fila trae varias unidades de cristal: márcala a mano en Cristales."); return; }
+    const uds = parseFloat(x.p.cantidad) || 1;
+    if (uds > 1 && !window.confirm(`Esta fila son ${uds} unidades del mismo cristal (${x.p.ancho || "?"} × ${x.p.alto || "?"}). Se dan de baja las ${uds} a la vez.\n\n¿Seguir?`)) return;
     if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
     onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? { ...q2, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: w.id, ventanaPos: w.pos } : q2)) });
-    setMsg(`✓ Cristal ${x.p.ref || ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
+    setMsg(`✓ Cristal ${x.p.ref || ""}${uds > 1 ? ` (${uds} uds)` : ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
   };
   const darBajaPersiana = (x) => {
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
