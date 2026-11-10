@@ -24795,7 +24795,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
     .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
   // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
-  const fijarFechaObra = (p, fecha, hora, confirmar) => {
+  const fijarFechaObra = (p, fecha, hora, confirmar, extraCita = {}) => {
     if (!onGuardarCita) return;
     const t = tipoSalida(p); const ant = p.citaSalida || {}; const ahora = new Date().toISOString(); const yo = nombreYo || "—";
     const fAnt = fechaCitaDe(p); const hNueva = hora == null ? ant.hora || "" : hora;
@@ -24803,7 +24803,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     const conf = confirmar ? { por: yo, ts: ahora } : cambia ? false : ant.contactadoCliente || false;
     const rep = confirmar && t === "reparto" ? { por: yo, ts: ahora } : cambia ? false : ant.avisadoRepartidor || false;
     const cita = { ...ant, tipo: t, fecha: fecha || "", hora: hNueva, contactadoCliente: conf, avisadoRepartidor: rep, por: yo, ts: ahora,
-      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10) };
+      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10), ...extraCita };
     onGuardarCita(p.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: fecha || "", citaSalida: cita });
   };
   const confirmarDesdeLista = (p) => {
@@ -24830,11 +24830,18 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     setCitaB({ fecha: fechaCitaDe(p), hora: c.hora || "", cliente: !!c.contactadoCliente, repartidor: !!c.avisadoRepartidor, nota: c.nota || "" });
     setAbiertoId(p.id);
   };
-  const guardarCita = () => {
+  // aprox = no he podido contactar con el cliente: se guarda la fecha que creo, como APROXIMADA (no deja firmar la carga hasta confirmarla)
+  const guardarCita = (aprox = false) => {
     if (!abierto || !citaB) return;
     const t = tipoSalida(abierto);
     if (!citaB.fecha) { alert(`Pon la FECHA de ${t === "instalacion" ? "instalación" : t}: es obligatoria.`); return; }
-    if (!citaB.cliente) { alert("Marca que has LLAMADO AL CLIENTE y quedado con él: es obligatorio."); return; }
+    if (aprox) {
+      const ant = abierto.citaSalida || {};
+      fijarFechaObra(abierto, citaB.fecha, citaB.hora || "", false, { nota: citaB.nota || "", contactadoCliente: false, avisadoRepartidor: false, intentos: [...toArray(ant.intentos), { por: nombreYo || "—", ts: new Date().toISOString() }].slice(-10) });
+      setCitaB({ ...citaB, cliente: false, repartidor: false });
+      return;
+    }
+    if (!citaB.cliente) { alert("Para CONFIRMAR marca que has llamado al cliente. Si no has podido contactar, usa «Guardar fecha aproximada»."); return; }
     if (t === "reparto" && !citaB.repartidor) { alert("Marca que has AVISADO AL REPARTIDOR: es obligatorio en los repartos."); return; }
     const ant = abierto.citaSalida || {}; const ahora = new Date().toISOString();
     const marca = (si, prev) => (si ? (prev && prev.por ? prev : { por: nombreYo || "—", ts: ahora }) : false);
@@ -24861,11 +24868,11 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           <h2 className="text-xl font-extrabold text-slate-900">#{abierto.numero} — {abierto.nombre}</h2>
           <div className="text-sm text-slate-600 mt-1">{cli ? cli.nombre : "—"}{cli && (cli.movil || cli.telefono) ? <> · <a href={`tel:${cli.movil || cli.telefono}`} className="text-[#2E8B57] font-semibold">{cli.movil || cli.telefono}</a></> : null}</div>
           <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
-          <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · Reparto {fmtDate(abierto.fechaReparto) || "sin fecha"}</div>
+          <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · {tipoSalida(abierto) === "recogida" ? "Recogida" : tipoSalida(abierto) === "instalacion" ? "Instalación" : "Reparto"} {fmtDate(fechaCitaDe(abierto)) || "sin fecha"}{abierto.citaSalida && abierto.citaSalida.hora ? ` ${abierto.citaSalida.hora}` : ""}</div>
         </div>
         {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
           <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
-            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
+            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : fechaCitaDe(abierto) ? `Fecha aproximada ${fmtDate(fechaCitaDe(abierto))} · sin confirmar` : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
             {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."} Sin esto no se puede firmar la carga.</div>}
             <div className="flex flex-wrap items-end gap-2">
               <label className="text-xs text-slate-600">Fecha<br /><input type="date" value={citaB.fecha} onChange={(e) => setCitaB({ ...citaB, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
@@ -24875,7 +24882,11 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.cliente} onChange={(e) => setCitaB({ ...citaB, cliente: e.target.checked })} /> He llamado al cliente y está de acuerdo con la fecha{c.contactadoCliente && c.contactadoCliente.por ? <span className="text-xs text-slate-500">({c.contactadoCliente.por}, {new Date(c.contactadoCliente.ts).toLocaleString("es-ES")})</span> : null}</label>
             {t === "reparto" && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.repartidor} onChange={(e) => setCitaB({ ...citaB, repartidor: e.target.checked })} /> He avisado al repartidor{c.avisadoRepartidor && c.avisadoRepartidor.por ? <span className="text-xs text-slate-500">({c.avisadoRepartidor.por})</span> : null}</label>}
             <input value={citaB.nota} onChange={(e) => setCitaB({ ...citaB, nota: e.target.value })} placeholder="Nota (quién recoge, furgoneta, llamar antes…)" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
-            <button type="button" onClick={guardarCita} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">Guardar cita (sale en el calendario)</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => guardarCita(false)} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">✓ Guardar cita confirmada</button>
+              <button type="button" onClick={() => guardarCita(true)} className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-bold">Guardar fecha aproximada (no he podido contactar)</button>
+            </div>
+            <div className="text-[11px] text-slate-500">Las dos salen en el calendario. La aproximada queda en ámbar «sin llamar» y no deja firmar la carga hasta confirmarla.{toArray(c.intentos).length ? ` Intentos sin contactar: ${toArray(c.intentos).length} (último ${new Date(toArray(c.intentos).slice(-1)[0].ts).toLocaleString("es-ES")}, ${toArray(c.intentos).slice(-1)[0].por}).` : ""}</div>
             {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
           </div>
         ); })()}
