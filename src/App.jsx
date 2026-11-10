@@ -42327,7 +42327,11 @@ function analizarBloqueCorte(b, modelo, uds) {
   b.split("\n").forEach((l) => { const mc = l.match(/^\s*([\d.+]+\/[\d.]+\/[\d.+]+\S*)\s.*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?([\d.]+,\d\d)\s+([\d.]+,\d\d)\s*$/); if (mc && numEs(mc[4]) > 0 && numEs(mc[5]) > 0) cristales.push({ comp: mc[1], uds: parseInt(mc[2], 10), ancho: numEs(mc[4]), alto: numEs(mc[5]) }); });
   // Un dibujo con DOS ventanas pegadas (p.ej. 756 + 1513) trae un cajón de persiana por cada una: «CAJON Ac. derecha» y «CAJON Ac. izquierda». Nº de ventanas físicas por unidad del modelo.
   const nCajones = (b.match(/CAJ[OÓ]N\s+Ac\.?\s*(?:derecha|izquierda|der\b|izq\b)/gi) || []).length;
-  const vent = nCajones >= 2 && nCajones <= 6 ? nCajones : 1;
+  // Sin cajón (o con uno solo): se cuenta por el PERFIL DE MARCO. Cada marco tiene 4 piezas («MARCO VENTANA 2 BLANCO» = 2 piezas):
+  // dos ventanas pegadas en el mismo dibujo traen 8 piezas de marco → 2 ventanas. No cuentan refuerzos, tapajuntas, uniones ni junquillos.
+  const piezasMarco = b.split("\n").reduce((a, l) => { if (!/\bMARCO\b/i.test(l) || /REFUERZO|TAPAJ|ENSANCH|JUNQUILL|UNI[OÓ]N|PERFIL\s+DE|ADAPTADOR|ACOPLE/i.test(l)) return a; const mu = l.match(/MARCO\b.*?\s(\d{1,2})\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]/i); return a + (mu ? parseInt(mu[1], 10) : 0); }, 0);
+  const porMarco = piezasMarco >= 8 ? Math.round(piezasMarco / 4) : 1;
+  const vent = nCajones >= 2 && nCajones <= 6 ? nCajones : porMarco >= 2 && porMarco <= 6 ? porMarco : 1;
   return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo, cristales, vent };
 }
 function agruparHojaCorte(paginas) {
