@@ -42955,11 +42955,14 @@ function imprimirPegatinasExpediente(lotes) {
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
 // Nº del recuadro de cada ventana (listado de dibujos), por la cola de su código: las zonas de la Línea lo usan como hueco preferido (1 con 1, 2 con 2…)
 const POS_LOTE_POR_VENTANA = new Map();
+// Ancho y presupuesto de cada ventana por su código de pieza: lo usan los estantes que se llenan POR ANCHO (Solape y Ventanas terminadas)
+const INFO_VENTANA_LINEA = new Map();
 function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
   const m = new Map();
   const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => {
     m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz });
     if (v.posicionLote) POS_LOTE_POR_VENTANA.set(String(pz.c).slice(1), parseInt(v.posicionLote, 10));
+    { const am = String(v.medida || "").match(/^\s*([\d.,]+)/); INFO_VENTANA_LINEA.set(String(pz.c), { ancho: am ? uxMedidaMm(am[1]) : 0, ppto: String(v.num || "").split("-")[0].replace(/\D/g, "") || String(dueno.presupuesto || "").split("-")[0].replace(/\D/g, "") }); }
     if (v.modelo && String(pz.c)[0] === "9") [1, 2, 3].forEach((k) => { const c = codHoja(String(pz.c), k); m.set(c, { dueno, lote, ventana: v, pieza: { c, t: `Hoja ${k}` } }); });
   })));
   toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "", presupuesto: pr.presupuestoNumero || "" }, pr.etiquetasFab));
@@ -43950,6 +43953,26 @@ async function fijarHuecoLinea(zona, cod, hueco, por) {
   if (!n || n < 1 || n > zona.huecos) return { ok: false, motivo: `El estante va del 1 al ${zona.huecos}` };
   const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
   if (prev && prev.zonaId === zona.id && Number(prev.hueco) === n) return { ok: true };
+  if (ZONAS_POR_ANCHO.has(zona.id)) {
+    // estante por ANCHO: entra si la suma de anchos cabe en los 3000 mm
+    const anchoEst = Number(zona.anchoEstante) || ANCHO_ESTANTE_MM;
+    const todas = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {};
+    const anchoDe = (c, u) => { const a = Number((u && u.ancho) || (INFO_VENTANA_LINEA.get(String(c)) || {}).ancho) || 0; return a > 0 && a <= anchoEst ? a : anchoEst; };
+    const enEst = Object.entries(todas).filter(([c, u]) => u && u.zonaId === zona.id && Number(u.hueco) === n && String(c) !== String(cod));
+    const usado = enEst.reduce((t, [c, u]) => t + anchoDe(c, u), 0); const mio = anchoDe(cod, null);
+    if (usado + mio > anchoEst) return { ok: false, motivo: `El estante ${n} no tiene sitio: ocupa ${usado} de ${anchoEst} mm y esta ventana mide ${mio} de ancho` };
+    const slotsUsados = new Set(enEst.map(([, u]) => u.slot || 1));
+    for (let sl = 1; sl <= 8; sl++) {
+      if (slotsUsados.has(sl)) continue;
+      const rr = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${n}_${sl}`), (cur) => (cur && cur !== cod ? undefined : cod));
+      if (!rr.committed) continue;
+      if (prev && prev.zonaId) await runTransaction(ref(fbDb, `ocupacionLinea/${prev.zonaId}/${prev.hueco}_${prev.slot || 1}`), (cur) => (cur === cod ? null : undefined));
+      const inf = INFO_VENTANA_LINEA.get(String(cod)) || {};
+      await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: n, slot: sl, ancho: mio, ppto: inf.ppto || "", ts: Date.now(), por: por || "" });
+      return { ok: true };
+    }
+    return { ok: false, motivo: `El estante ${n} está lleno` };
+  }
   const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${n}_1`), (cur) => (cur && cur !== cod ? undefined : cod));
   if (!r.committed) { const ocupa = (await fbGet(ref(fbDb, `ocupacionLinea/${zona.id}/${n}_1`))).val(); return { ok: false, motivo: `El estante ${n} ya está ocupado${ocupa ? ` (ventana ${ocupa})` : ""}` }; }
   if (prev && prev.zonaId) await runTransaction(ref(fbDb, `ocupacionLinea/${prev.zonaId}/${prev.hueco}_${prev.slot || 1}`), (cur) => (cur === cod ? null : undefined));
@@ -46701,7 +46724,42 @@ async function liberarHuerfanasLinea(zonaId, indice) {
 }
 // Coloca (o mueve) una pieza en el primer sitio libre de una zona; cada hueco admite "cap" piezas (marco 1, hojas 2).
 // El sitio se reserva con una transacción: dos ordenadores no pueden asignar el mismo. Si no hay sitio, no cambia nada.
+// ESTANTES QUE SE LLENAN POR ANCHO: cada estante mide 3000 × 2600 mm. Caben ventanas mientras la suma de sus ANCHOS no pase de 3000
+// (2 de 1500, 1 de 1800, 3 de 500…) y SIEMPRE agrupadas por presupuesto: primero un estante con ventanas de su mismo presupuesto que tenga
+// sitio, si no uno vacío; solo si no queda ninguno vacío, uno con hueco aunque sea de otro presupuesto. Ventana sin medida = ocupa el estante entero.
+const ZONAS_POR_ANCHO = new Set(["solape", "espera"]);
+const ANCHO_ESTANTE_MM = 3000;
+async function ocuparEstantePorAncho(zona, cod, por, ubicLocal, desde = 1, hasta = null) {
+  const max = Math.min(hasta || zona.huecos, zona.huecos); const anchoEst = Number(zona.anchoEstante) || ANCHO_ESTANTE_MM;
+  const info = (c, u) => { const i = INFO_VENTANA_LINEA.get(String(c)) || {}; const a = Number((u && u.ancho) || i.ancho) || 0; return { ancho: a > 0 && a <= anchoEst ? a : anchoEst, ppto: String((u && u.ppto) || i.ppto || "") }; };
+  const yo = info(cod, null);
+  // siempre con lo que hay AHORA en la base de datos (algunas llamadas mandan una lista vieja o vacía)
+  try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) ubicLocal = fr; } catch (e) { /* con la que haya */ }
+  const prev = (ubicLocal || {})[cod] || null;
+  const est = new Map(); // hueco → { usado, pptos:Set, slots:Set }
+  Object.entries(ubicLocal || {}).forEach(([c, u]) => { if (!u || u.zonaId !== zona.id || String(c) === String(cod)) return; const e = est.get(u.hueco) || { usado: 0, pptos: new Set(), slots: new Set() }; const i = info(c, u); e.usado += i.ancho; if (i.ppto) e.pptos.add(i.ppto); e.slots.add(u.slot || 1); est.set(u.hueco, e); });
+  const huecos = []; for (let h = desde; h <= max; h++) huecos.push(h);
+  const cabe = (h) => { const e = est.get(h); return !e || e.usado + yo.ancho <= anchoEst; };
+  const mismos = huecos.filter((h) => { const e = est.get(h); return e && yo.ppto && e.pptos.size === 1 && e.pptos.has(yo.ppto) && cabe(h); }).sort((a, b) => est.get(b).usado - est.get(a).usado);
+  const vacios = huecos.filter((h) => !est.get(h));
+  const mezcla = huecos.filter((h) => est.get(h) && cabe(h) && !mismos.includes(h));
+  for (const h of [...mismos, ...vacios, ...mezcla]) {
+    const usados = (est.get(h) || { slots: new Set() }).slots;
+    for (let sl = 1; sl <= 8; sl++) {
+      if (usados.has(sl)) continue;
+      const k = `${h}_${sl}`;
+      const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${k}`), (cur) => (cur && cur !== cod ? undefined : cod));
+      if (!r.committed) continue;
+      const claveprev = prev && prev.zonaId ? `${prev.zonaId}/${prev.hueco}_${prev.slot || 1}` : "";
+      if (claveprev && claveprev !== `${zona.id}/${k}`) await runTransaction(ref(fbDb, `ocupacionLinea/${claveprev}`), (cur) => (cur === cod ? null : undefined));
+      await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: h, slot: sl, ancho: yo.ancho, ppto: yo.ppto, ts: Date.now(), por: por || "" });
+      return { hueco: h, slot: sl, cap: 8, mezclado: mezcla.includes(h) };
+    }
+  }
+  return null;
+}
 async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = null, cap = 1) {
+  if (zona && ZONAS_POR_ANCHO.has(zona.id)) return ocuparEstantePorAncho(zona, cod, por, ubicLocal, desde, hasta);
   const max = Math.min(hasta || zona.huecos, zona.huecos);
   const ocupados = new Set(Object.values(ubicLocal || {}).filter((u) => u && u.zonaId === zona.id).map((u) => `${u.hueco}_${u.slot || 1}`));
   const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
