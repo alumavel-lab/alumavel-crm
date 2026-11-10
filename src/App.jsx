@@ -47024,12 +47024,32 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
       return { ok: true, texto: `✓ ${posDib(v)} acristalada · LLEVA SOLAPE / POSTIGO → ${nom("solape")} · ESTANTERÍA ${n}`, zona: { zonaId: "solape", hueco: n } };
     }
     const mates = matesVivienda();
+    // ZONA DE PALET LLENA: si ya hay 20 ventanas esperando a que las paleticen, esta NO va a palet: al ALMACÉN DE VENTANAS (Ventanas terminadas),
+    // en su estante por ancho y agrupada por presupuesto. Se cuentan las mandadas a palet por Cristales que aún no están en ningún palet (últimos 7 días).
+    const MAX_ESPERA_PALET = 20;
+    const aPalet = async () => {
+      try {
+        const [pp, cabs] = await Promise.all([fbGet(ref(fbDb, "paraPaletLinea")), fbGet(ref(fbDb, "caballetesVentanas"))]);
+        const enPalet = new Set(); Object.values(cabs.val() || {}).forEach((c) => toArray(c && c.ventanas).forEach((x) => { if (x) enPalet.add(String(x.id)); }));
+        const hace7 = Date.now() - 7 * 86400000;
+        const esperando = Object.entries(pp.val() || {}).filter(([k, e]) => e && (e.ts || 0) >= hace7 && !enPalet.has(String(e.ventanaId)) && k !== base);
+        if (esperando.length >= MAX_ESPERA_PALET) {
+          const n = await poner("espera", base);
+          if (!n) return llena("espera", v.pos);
+          return { ok: true, texto: `⚠ ${posDib(v)} acristalada · SIN SOLAPE · Ya hay ${esperando.length} ventanas esperando palet (máximo ${MAX_ESPERA_PALET}) → LLÉVALA AL ALMACÉN DE VENTANAS · ${nom("espera")} · ESTANTE ${n}`, zona: { zonaId: "espera", hueco: n } };
+        }
+        await fbSet(ref(fbDb, `paraPaletLinea/${base}`), { ventanaId: String(v.id), pos: v.pos || "", obra: (h.dueno && h.dueno.nombre) || "", ts: Date.now() });
+        return null;
+      } catch (e) { return null; }
+    };
     if (mates.length > 0 && mates.every((m) => m.u && m.u.zonaId === "espera")) {
+      const lleno = await aPalet(); if (lleno) return lleno;
       await liberarCodigoLinea(base);
       return { ok: true, texto: `✓ ${posDib(v)} acristalada · SIN SOLAPE · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`, zona: null };
     }
     // Vivienda de UNA sola ventana: está completa, va directa a carga. Si tiene más ventanas, esta espera en «Ventanas terminadas» (o en Solape si lo elige quien acristala) hasta que estén todas: no pasa a carga antes.
     if (mates.length === 0) {
+      const lleno = await aPalet(); if (lleno) return lleno;
       await liberarCodigoLinea(base);
       return { ok: true, texto: `✓ ${posDib(v)} acristalada · SIN SOLAPE · Es la única ventana de su vivienda → VA DIRECTA POR LA LÍNEA a carga (sin estantería).`, zona: null };
     }
