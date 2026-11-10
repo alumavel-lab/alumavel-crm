@@ -47755,72 +47755,96 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     </div>
   );
 }
-// Sin etiqueta a mano: se busca la obra por su nº de presupuesto, se elige la ventana y salen sus cristales (caballete y hueco) para darlos de baja
+// Sin etiqueta a mano: se busca la obra por su nº de presupuesto (en Control del día y en las etiquetas, sin importar el día),
+// se pincha la ventana y salen sus cristales (caballete y hueco) y su persiana (carro) para darlos de baja
 function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
   const [obraKey, setObraKey] = useState("");
   const [ventId, setVentId] = useState("");
   const [msg, setMsg] = useState("");
-  const dq = digitosPresu(q);
+  const snapCD = useObjetoFb("controlDiaVentanasObra");
+  const qd = String(q).replace(/\D/g, "");
+  const texto = String(q).trim().toLowerCase();
   const obras = useMemo(() => {
-    if (!abierto || String(q).trim().length < 2) return [];
-    const mapa = new Map(); const t = String(q).trim().toLowerCase();
-    indice.forEach((h) => {
-      const d = h.dueno; if (!d || mapa.has(d.key)) return;
-      const dp = digitosPresu(d.presupuesto);
-      if ((dq.length >= 3 && dp && (dp === dq || dp.includes(dq))) || String(d.nombre || "").toLowerCase().includes(t)) mapa.set(d.key, d);
+    if (!abierto || texto.length < 2) return [];
+    const out = []; const basesVistas = new Set();
+    const casaPpto = (bases) => qd.length >= 3 && bases.some((b) => b === qd || b.includes(qd));
+    // 1) Control del día: ventanas de la hoja de corte (valen aunque aún no haya etiquetas)
+    Object.entries(snapCD || {}).forEach(([k, sn]) => {
+      if (!sn || !toArray(sn.ventanas).length) return;
+      const bases = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
+      if (!(casaPpto(bases) || String(sn.nombre || "").toLowerCase().includes(texto))) return;
+      bases.forEach((b) => basesVistas.add(b));
+      out.push({ key: `cd:${k}`, nombre: sn.nombre || k, bases, ventanas: toArray(sn.ventanas).map((w) => ({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" })) });
     });
-    return [...mapa.values()].slice(0, 12);
-  }, [abierto, q, indice, dq]);
+    // 2) Etiquetas de fabricación (obras que ya las tienen subidas)
+    const porDueno = new Map();
+    indice.forEach((h) => {
+      const d = h.dueno; if (!d || !h.ventana) return;
+      const g = porDueno.get(d.key) || { d, vs: new Map() }; if (!g.vs.has(h.ventana.id)) g.vs.set(h.ventana.id, h.ventana); porDueno.set(d.key, g);
+    });
+    porDueno.forEach(({ d, vs }) => {
+      const bases = [basePresuDia(d.presupuesto)].filter((b) => b.length >= 3);
+      if (bases.length && bases.every((b) => basesVistas.has(b))) return;
+      if (!(casaPpto(bases) || String(d.nombre || "").toLowerCase().includes(texto))) return;
+      out.push({ key: `et:${d.key}`, nombre: d.nombre, bases, ventanas: [...vs.values()].map((v) => ({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", g: v.grupo || "" })) });
+    });
+    return out.slice(0, 12);
+  }, [abierto, texto, qd, snapCD, indice]);
   const obra = obras.length === 1 ? obras[0] : obras.find((o) => o.key === obraKey) || null;
-  const ventanas = useMemo(() => {
-    if (!obra) return [];
-    const m = new Map();
-    indice.forEach((h) => { if (h.dueno && h.dueno.key === obra.key && h.ventana && !m.has(h.ventana.id)) m.set(h.ventana.id, h); });
-    return [...m.values()].sort((a, b) => String(a.ventana.grupo || "").localeCompare(String(b.ventana.grupo || ""), "es", { numeric: true }) || String(a.ventana.pos || "").localeCompare(String(b.ventana.pos || ""), "es", { numeric: true }));
-  }, [obra, indice]);
-  const h = ventanas.find((x) => x.ventana.id === ventId) || null;
+  const ventanas = useMemo(() => (obra ? obra.ventanas.slice().sort((a, b) => String(a.g).localeCompare(String(b.g), "es", { numeric: true }) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true })) : []), [obra]);
+  const w = ventanas.find((x) => x.id === ventId) || null;
+  // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
+  const reconocer = useMemo(() => {
+    if (!w || !obra) return null;
+    const exp = ((String(w.g).match(/^\s*(\d{2,})\b/) || [])[1]) || "";
+    const viv = normVivLinea(String(w.g || "").replace(/^\s*\d+\s*/, ""));
+    const pos = normVivLinea(w.pos);
+    const casa = (refTxt) => { const r = normVivLinea(refTxt); if (!r) return false; return [viv, pos].some((a) => a && (r === a || (a.length >= 2 && r.includes(a)) || (r.length >= 3 && a.includes(r)))); };
+    const pptoDe = (...ts) => ts.some((t) => String(t || "").split(/[·,;\s]+/).some((tt) => { const b = basePresuDia(tt); return b.length >= 3 && obra.bases.includes(b); }));
+    return { exp, casa, pptoDe };
+  }, [w, obra]);
   const cris = useMemo(() => {
-    if (!h) return [];
-    const d = datosVentanaLinea(h); const out = [];
+    if (!reconocer) return [];
+    const out = [];
     toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
-      if (!d.exp || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) return;
+      const deObra = reconocer.pptoDe(c.presupuesto, p.presupuesto, p.ppto) || (reconocer.exp && numsExpediente(p.expediente || c.expediente).includes(reconocer.exp));
+      if (!deObra || !reconocer.casa(p.ref)) return;
       out.push({ c, p, i });
     }));
     return out;
-  }, [h, cristales]);
+  }, [reconocer, cristales]);
   const pers = useMemo(() => {
-    if (!h) return [];
-    const d = datosVentanaLinea(h);
-    return toArray(persianas).filter((y) => y && d.exp && numsExpediente(y.expediente).includes(d.exp) && d.casa(y.ref));
-  }, [h, persianas]);
-  const darBajaPersiana = (x) => {
-    if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
-    const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
-    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
-    setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
-  };
+    if (!reconocer) return [];
+    return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
+  }, [reconocer, persianas]);
   const darBaja = (x) => {
     if ((parseFloat(x.p.cantidad) || 1) > 1) { setMsg("Esa fila trae varias unidades de cristal: márcala a mano en Cristales."); return; }
     if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
-    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? { ...q2, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q2)) });
+    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? { ...q2, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: w.id, ventanaPos: w.pos } : q2)) });
     setMsg(`✓ Cristal ${x.p.ref || ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
+  };
+  const darBajaPersiana = (x) => {
+    if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
+    const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
+    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
+    setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
   };
   if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 bg-white text-slate-700">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
   return (
-    <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
+    <div className="mt-3 mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
       <div className="flex items-center gap-2">
         <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setObraKey(""); setVentId(""); setMsg(""); }} placeholder="Nº de presupuesto (o nombre de la obra)" className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm" />
         <button type="button" onClick={() => { setAbierto(false); setQ(""); setObraKey(""); setVentId(""); setMsg(""); }} className="text-xs text-slate-500 hover:underline">Cerrar</button>
       </div>
-      {String(q).trim().length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto que tenga etiquetas de fabricación subidas.</p>}
-      {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.presupuesto ? ` · ppto ${o.presupuesto}` : ""}</button>)}</div>}
-      {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.presupuesto ? ` · ppto ${obra.presupuesto}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
-      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.ventana.id} type="button" onClick={() => { setVentId(x.ventana.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${h && h.ventana.id === x.ventana.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.ventana.grupo ? `${x.ventana.grupo} · ` : ""}{x.ventana.pos}{x.ventana.medida ? ` · ${x.ventana.medida}` : ""}</button>)}</div>}
-      {h && (
+      {texto.length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto ni en Control del día ni en las etiquetas. Mira que su hoja de corte esté subida en Control del día.</p>}
+      {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
+      {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
+      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}</button>)}</div>}
+      {w && (
         <div className="space-y-1.5">
-          <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {h.ventana.pos}{h.ventana.grupo ? ` (${h.ventana.grupo})` : ""}</div>
+          <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
           {cris.length === 0 && <p className="text-sm text-slate-500">No encuentro cristales de esta ventana en el almacén (mira que el packing list esté subido y que la vivienda coincida).</p>}
           {cris.map((x) => (
             <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
@@ -47830,11 +47854,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
               {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
             </div>
           ))}
-        </div>
-      )}
-      {h && (
-        <div className="space-y-1.5">
-          <div className="text-xs font-bold text-slate-600 uppercase">Persiana de {h.ventana.pos}</div>
+          <div className="text-xs font-bold text-slate-600 uppercase pt-1">Persiana de {w.pos}</div>
           {pers.length === 0 && <p className="text-sm text-slate-500">No encuentro persiana de esta ventana en el almacén (o no lleva).</p>}
           {pers.map((x) => {
             const hecha = x.entregada || x.colocadaVentana;
@@ -48760,7 +48780,6 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
@@ -48803,6 +48822,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
@@ -50156,6 +50176,8 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
   const incidencias = delDia.filter((x) => x.incidencia);
   const conAdicional = delDia.filter((x) => parseFloat(x.adicional) > 0);
   const sumaAd = (arr) => Math.round(arr.reduce((a, x) => a + (parseFloat(x.adicional) || 0), 0) * 100) / 100;
+  const semanaAd = partes.filter((x) => x.fecha >= lunes && x.fecha <= finSemana && parseFloat(x.adicional) > 0);
+  const diasSemana = Array.from({ length: 7 }, (_, i) => addDiasISO(lunes, i));
   const [verAdicional, setVerAdicional] = useState(true);
   // Informe imprimible por trabajador: lo que apuntó en el cuadro «aparte» × la tarifa que se ponga aquí.
   const [tarifa, setTarifa] = useState(() => { try { return localStorage.getItem("tarifaAdicionalInforme") || ""; } catch (e) { return ""; } });
@@ -50227,7 +50249,7 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
           </div>
         </div>
       )}
-      {conAdicional.length > 0 && (
+      {(conAdicional.length > 0 || semanaAd.length > 0) && (
         <div className="bg-white border-2 border-slate-300 rounded-lg p-3 mb-3">
           <div className="flex items-center gap-2 mb-2">
             <div className="text-xs font-bold text-slate-700 uppercase mr-auto">{etiqueta} (aparte) · total {sumaAd(conAdicional)}{tarifaNum ? ` · ${eur(sumaAd(conAdicional) * tarifaNum)}` : ""}</div>
@@ -50236,6 +50258,20 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
             <button onClick={() => setVerAdicional(!verAdicional)} className="text-xs text-slate-500 hover:underline">{verAdicional ? "Ocultar" : "Ver"}</button>
           </div>
           {verAdicional && (
+            <div className="mb-3 overflow-x-auto">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase mb-1">Resumen de la semana ({fmtDate(lunes)} – {fmtDate(finSemana)})</div>
+              <table className="w-full text-sm">
+                <thead className="text-xs text-slate-400 uppercase"><tr><th className="text-left py-1">Día</th><th className="text-right py-1">{etiqueta}</th>{tarifaNum ? <th className="text-right py-1">× {tarifa} €</th> : null}</tr></thead>
+                <tbody>
+                  {diasSemana.map((f) => { const xs = semanaAd.filter((x) => x.fecha === f); return (
+                    <tr key={f} className={`border-t border-slate-100 ${f === dia && !semana ? "bg-emerald-50" : ""}`}><td className="py-1">{fmtDia(f)}</td><td className="py-1 text-right font-semibold">{xs.length ? sumaAd(xs) : "—"}</td>{tarifaNum ? <td className="py-1 text-right">{xs.length ? eur(sumaAd(xs) * tarifaNum) : "—"}</td> : null}</tr>
+                  ); })}
+                  <tr className="border-t-2 border-slate-300 font-extrabold"><td className="py-1">Total semana</td><td className="py-1 text-right">{sumaAd(semanaAd)}</td>{tarifaNum ? <td className="py-1 text-right">{eur(sumaAd(semanaAd) * tarifaNum)}</td> : null}</tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {verAdicional && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {[["usuarioNombre", "Por empleado"], ["fecha", "Por día"], ["obraNombre", "Por obra / proyecto"]].map(([k, t]) => {
                 const m = {}; conAdicional.forEach((x) => { const kk = x[k] || "—"; (m[kk] = m[kk] || []).push(x); });
@@ -50243,7 +50279,7 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
                   <div key={k}>
                     <div className="text-[11px] font-semibold text-slate-500 uppercase mb-1">{t}</div>
                     {Object.entries(m).sort((a, b) => (k === "fecha" ? a[0].localeCompare(b[0]) : sumaAd(b[1]) - sumaAd(a[1]))).map(([n, xs]) => (
-                      <div key={n} className="flex text-sm py-0.5"><span className="text-slate-700 truncate">{k === "fecha" ? fmtDia(n) : n}</span><span className="ml-auto font-semibold">{sumaAd(xs)}</span></div>
+                      <div key={n} className="flex text-sm py-0.5"><span className="text-slate-700 truncate">{k === "fecha" ? fmtDia(n) : n}</span><span className="ml-auto font-semibold">{sumaAd(xs)}{tarifaNum ? <span className="ml-2 text-slate-500 font-normal">{eur(sumaAd(xs) * tarifaNum)}</span> : null}</span></div>
                     ))}
                   </div>
                 );
