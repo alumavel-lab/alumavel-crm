@@ -47779,6 +47779,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
+  const [desbloq, setDesbloq] = useState([]); // ventanas que se han desbloqueado a propósito en esta pantalla
   const sinSolMan = useObjetoFb("sinSolapeLinea"); // ventanas marcadas a mano como SIN solape: se quedan en la Línea para paletizar
   const palets = useObjetoFb("caballetesVentanas"); // palets del Almacén del día: cada uno con las ventanas que lleva
   const solSin = useObjetoFb("solapeSinEtiquetaLinea"); // estanterías de solape apuntadas para ventanas que no tienen etiquetas
@@ -47892,7 +47893,10 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if ((rs.length > 0 && rs.every((r) => r.p.puesto)) || cpManual[cl]) return { txt: "cristal puesto · en LÍNEA", cls: "bg-sky-600 text-white" };
     return null;
   };
+  const estW = w ? estadoVent(w) : null;
+  const bloq = !!estW && !!w && !desbloq.includes(w.id); // ventana ya hecha: candado, no se vuelve a ticar
   const darBaja = (x, k = 1) => {
+    if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
     const marc = marcasUd(x.p);
     if (uds > 1 && marc.includes(k)) { setMsg(`La unidad ${k} ya estaba dada de baja.`); return; }
@@ -47904,6 +47908,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     setMsg(`✓ Cristal ${x.p.ref || ""}${uds > 1 ? ` (${nuevas} de ${uds})` : ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
   };
   const darBajaPersiana = (x) => {
+    if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
     const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
@@ -47922,12 +47927,13 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
       {w && (
         <div className="space-y-1.5">
+          {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
           {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
           {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
-            : <button type="button" onClick={apuntarPuesto} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
+            : <button type="button" disabled={bloq} onClick={apuntarPuesto} className={`px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold ${bloq ? "opacity-40" : ""}`}>Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
           {sinCrisVentana && crisObra.length > 0 && <p className="text-sm font-semibold text-amber-800">No sé cuál es el cristal de {w.pos} (medida de la ventana {w.medida || "—"}). Estos son los cristales pendientes del presupuesto: elige por la medida.</p>}
           {filasCris.map((x) => (
             <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
@@ -47938,8 +47944,8 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
               {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : ((parseFloat(x.p.cantidad) || 1) > 1
                 ? <span className="ml-auto flex flex-wrap gap-1.5">{Array.from({ length: Math.round(parseFloat(x.p.cantidad)) }, (_, n) => n + 1).map((k) => marcasUd(x.p).includes(k)
                     ? <span key={k} className="px-3 py-1.5 rounded-md bg-slate-200 text-slate-500 text-xs font-bold">✓ Unidad {k}</span>
-                    : <button key={k} type="button" onClick={() => darBaja(x, k)} className="px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja unidad {k}</button>)}</span>
-                : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>)}
+                    : <button key={k} type="button" disabled={bloq} onClick={() => darBaja(x, k)} className={`px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>Dar de baja unidad {k}</button>)}</span>
+                : <button type="button" disabled={bloq} onClick={() => darBaja(x)} className={`ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>{bloq ? "🔒 " : ""}Dar de baja</button>)}
             </div>
           ))}
           <div className="text-xs font-bold text-slate-600 uppercase pt-1">Persiana de {w.pos}</div>
@@ -47951,7 +47957,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
                 <span className="font-semibold">{x.ref || "?"}</span>
                 <span>{x.largo || "?"} × {x.alto || "?"}</span>
                 <span className="text-slate-600">📍 {x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? `en ${x.enPuesto}` : "sin sitio asignado"}</span>
-                {hecha ? <span className="ml-auto text-xs font-semibold">✓ ya dada de baja</span> : <button type="button" onClick={() => darBajaPersiana(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
+                {hecha ? <span className="ml-auto text-xs font-semibold">✓ ya dada de baja</span> : <button type="button" disabled={bloq} onClick={() => darBajaPersiana(x)} className={`ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>{bloq ? "🔒 " : ""}Dar de baja</button>}
               </div>
             );
           })}
