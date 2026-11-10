@@ -6483,6 +6483,24 @@ export default function App() {
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
+          // Obras ya completas en palet (almacén de ventanas listo): aviso a fábrica y a quien tenga albaranes para programar la salida / el reparto
+          if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
+          const listas = proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida");
+          if (!listas.length) return null;
+          const sinProg = listas.filter((p) => !p.fechaReparto);
+          const nomL = (p) => { const pp = presupuestoDeObra(p); return pp ? `Ppto ${pp}` : (p.nombre || "obra"); };
+          const detalle = listas.slice(0, 3).map((p) => `${nomL(p)}${p.fechaReparto ? "" : " (sin fecha de salida)"}`).join(" · ");
+          return (
+            <button
+              onClick={() => { if (tieneAcceso("albaranes") || isAdmin) setModulo("albaranes"); else { tabInicialFabrica.actual = "almacen"; setModulo("fabrica"); } }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-teal-50 text-teal-800 hover:bg-teal-100"
+            >
+              <Truck size={15} />
+              🚚 {listas.length} obra{listas.length === 1 ? "" : "s"} con todas las ventanas ya en palet, lista{listas.length === 1 ? "" : "s"} para repartir o programar la salida{sinProg.length ? ` · ${sinProg.length} sin fecha de salida` : ""}: {detalle}{listas.length > 3 ? "…" : ""}. Toca para verlas →
+            </button>
+          );
+        })()}
+        {(() => {
           // Fábrica ha dado material por llegado: se avisa a quien lleva los pedidos (administrador y responsable de pedidos)
           if (!currentUser || !(isAdmin || currentUser.responsablePedidos)) return null;
           const nuevos = pedidos.filter((p) => p.avisoRecepcion && !(p.avisoRecepcion.vistoPor && p.avisoRecepcion.vistoPor[currentUser.id]) && String(p.avisoRecepcion.porId || "") !== String(currentUser.id) && (Date.now() - new Date(p.avisoRecepcion.fecha).getTime()) < 14 * 86400000);
@@ -7477,7 +7495,7 @@ export default function App() {
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
-        {modulo === "condiciones" && <CondicionesModulo isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
+        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
         {modulo === "uxcar" && (
           <UxcarModulo
             incidenciasUx={incidenciasUx} stockUx={stockUxAuto} nombreUsuarioUx={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Ecowin PVC"}
@@ -8930,6 +8948,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
       return;
     }
+    if (String(f.presupuestoNumero || presupuestoDeObra(f) || "").replace(/\D/g, "").length < 3) {
+      setErrorMsg("Falta el nº de presupuesto de Edmo (obligatorio).");
+      alert("Falta el nº de presupuesto de Edmo: es obligatorio en toda obra (ej. 5163-5).");
+      return;
+    }
     if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
       setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
       alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
@@ -8986,6 +9009,9 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
           </Field>
           <Field label="Nombre / descripción breve" required>
             <TextInput value={f.nombre} onChange={set("nombre")} required />
+          </Field>
+          <Field label="Nº de presupuesto (Edmo)" required>
+            <TextInput value={f.presupuestoNumero || ""} onChange={set("presupuestoNumero")} placeholder="ej. 5163-5" />
           </Field>
         </div>
 
@@ -14422,14 +14448,14 @@ const tipoLineaRecepcion = (l, pedido) => {
   return "otro";
 };
 async function leerAlbaranRecepcion(file) {
-  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
+  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","presupuesto":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "presupuesto" es el nº de presupuesto de NUESTRA obra (el que va en la cabecera como "Ref. Cli.", "Ref. Cliente", "Su referencia" u "Obra"; p. ej. en "Ref. Cli.: 5163-5 PVC ROMAN-" es "5163-5"): solo el número, con su guion y sufijo si lo lleva (5163-5, 6.740-1), sin el texto que le sigue; si no aparece, "". No lo confundas con el nº de pedido del proveedor (PV-…) ni con el nº de albarán. "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 16000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
   const trozo = limpio.slice(oi, of + 1);
   let o;
   try { o = JSON.parse(trozo); } catch (e) { o = JSON.parse(repararJsonIA(trozo)); }
   return {
-    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(),
+    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
     lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), refObra: String(l.refObra || "").trim(), pedidoProv: String(l.pedidoProv || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
   };
 }
@@ -22826,6 +22852,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const [error, setError] = useState("");
   const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
   const [selId, setSelId] = useState("");
+  const [pptoAlb, setPptoAlb] = useState(""); // nº de presupuesto (Edmo) del albarán: OBLIGATORIO antes de recibir
   const inputRef = useRef(null);
   const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
   // Nº de presupuesto de cada pedido (en fábrica se busca por presupuesto)
@@ -22837,10 +22864,14 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     try {
       const r = await leerAlbaranRecepcion(file);
       if (!r.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
-      setLect({ ...r, archivo: file.name || "" });
+      setLect({ ...r, archivo: file.name || "" }); setPptoAlb(r.presupuesto || "");
     } catch (e) { setError("No se pudo leer el albarán: " + (e.message || "prueba con una foto más clara")); }
     finally { setLeyendo(false); }
   };
+  const normPpto = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
+  const basePpto = (t) => normPpto(t).split(/[-/]/)[0];
+  const pptoOk = normPpto(pptoAlb).replace(/\D/g, "").length >= 3;
+  const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
   const lista = !lect ? [] : toArray(pedidos).filter(pendiente).map((p) => {
     const num = normPedidoCristal(lect.numeroPedido);
     const prov = String(lect.proveedor || "").trim().toLowerCase();
@@ -22849,11 +22880,12 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     const casadas = r.filas.filter((f) => f.llega > 0).length;
     const porNumero = !!num && [p.numero, p.numeroPedidoProveedor].some((n) => normPedidoCristal(n) && normPedidoCristal(n) === num);
     const porProv = !!prov && !!nombre && (nombre.includes(prov) || prov.includes(nombre));
-    return { p, casadas, porNumero, porProv, score: (porNumero ? 1000 : 0) + (porProv ? 100 : 0) + casadas };
+    const pp = pptoPed(p); const porPpto = pptoOk && !!pp && (normPpto(pp) === normPpto(pptoAlb) || basePpto(pp) === basePpto(pptoAlb));
+    return { p, casadas, porNumero, porProv, porPpto, score: (porNumero ? 1000 : 0) + (porPpto ? 500 : 0) + (porProv ? 100 : 0) + casadas };
   }).sort((a, b) => b.score - a.score);
   const buenos = lista.filter((c) => c.score > 0);
   const elegido = lect ? (lista.find((c) => c.p.id === selId) || buenos[0] || null) : null;
-  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
+  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porPpto ? "coincide el presupuesto" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
   const cerrarTodo = () => {
     const n = toArray(elegido.p.lineas).filter((l) => !l.confirmadoFabrica).length;
     if (window.confirm(`¿Dar por COMPLETO el pedido #${elegido.p.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} y desaparece de Materiales pendientes.\n\nHazlo solo si ya no falta nada: lo que no haya venido se da por recibido.`)) { onCerrarPedido(elegido.p.id); setLect(null); }
@@ -22875,6 +22907,17 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
       {lect && (
         <div className="mt-4 space-y-3">
           <div className="text-xs text-slate-500">Albarán {lect.numeroAlbaran || lect.archivo}{lect.proveedor ? ` · ${lect.proveedor}` : ""}{lect.numeroPedido ? ` · pedido ${lect.numeroPedido}` : ""} · {lect.lineas.length} línea{lect.lineas.length === 1 ? "" : "s"} leída{lect.lineas.length === 1 ? "" : "s"}</div>
+          <div className={`rounded-md border-2 px-3 py-2 space-y-1 ${pptoOk ? "border-emerald-300 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-sm font-extrabold text-slate-800">Nº de presupuesto (Edmo) · obligatorio</label>
+              <input value={pptoAlb} onChange={(e) => setPptoAlb(e.target.value)} placeholder="ej. 5163-5" className="border-2 border-slate-300 rounded-md px-2 py-1 text-sm font-bold w-40" />
+              {pptoOk && lect.presupuesto && normPpto(lect.presupuesto) === normPpto(pptoAlb) && <span className="text-xs text-emerald-700">leído del albarán (Ref. Cli.)</span>}
+            </div>
+            {!pptoOk && <div className="text-xs font-semibold text-rose-700">⚠ No he encontrado el nº de presupuesto en el albarán. Escríbelo para poder recibir: sin él no sé a qué obra va este material.</div>}
+            {pptoOk && (obraDePpto
+              ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b></div>
+              : <div className="text-xs font-semibold text-amber-800">⚠ Ninguna obra del CRM tiene el presupuesto {pptoAlb}. Revisa el número; si es correcto, la obra aún no está dada de alta en Proyectos.</div>)}
+          </div>
           {lista.length === 0 ? (
             <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm">No hay ningún pedido pendiente de recibir con el que comparar este albarán.</div>
           ) : (
@@ -22888,7 +22931,8 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
               {buenos.length > 1 && <span className="text-xs text-slate-500">Hay {buenos.length} pedidos que podrían ser: revisa que sea el tuyo</span>}
             </div>
           )}
-          {elegido && (
+          {elegido && !pptoOk && <div className="px-3 py-2 rounded-md bg-rose-100 border border-rose-400 text-rose-800 text-sm font-bold">Pon arriba el nº de presupuesto para poder recibir este albarán.</div>}
+          {elegido && pptoOk && (
             <>
               <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
                 puedeRecibir={false} infoInicial={lect}
@@ -43827,6 +43871,56 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
   );
 }
 
+// ALMACÉN DE VENTANAS · lo que llega por la LÍNEA y todavía no está en un caballete (terminadas en el almacén de espera, puertas terminadas, o marcadas «sin solape → Línea para paletizar»)
+function LlegadasLineaAlmacen({ indice, caballetes }) {
+  const [abierto, setAbierto] = useEstadoLocal("crm_desp_llegadasLinea", true);
+  const ubic = useObjetoFb("ubicacionesLinea"); const zonas = useZonasLinea(); const sinSol = useObjetoFb("sinSolapeLinea");
+  const lista = useMemo(() => {
+    const enCab = new Set(); toArray(caballetes).forEach((c) => toArray(c && c.ventanas).forEach((x) => { if (x) enCab.add(String(x.id)); }));
+    const nombreZona = (id) => { const z = zonas.find((q) => q.id === id); return z ? z.nombre : id; };
+    const out = []; const vistos = new Set();
+    Object.entries(ubic || {}).forEach(([cod, u]) => {
+      if (!u || !["espera", "puertasTerminadas"].includes(u.zonaId)) return;
+      const h = indice && indice.get(cod); if (!h || !h.ventana) return;
+      const id = String(h.ventana.id); if (vistos.has(id) || enCab.has(id)) return; vistos.add(id);
+      out.push({ id, pos: h.ventana.pos || "?", obra: (h.dueno && h.dueno.nombre) || "", donde: `${nombreZona(u.zonaId)} · hueco ${u.hueco}` });
+    });
+    Object.entries(sinSol || {}).forEach(([k, e]) => { if (!e || vistos.has(String(e.ventanaId)) || enCab.has(String(e.ventanaId))) return; vistos.add(String(e.ventanaId)); out.push({ id: k, pos: e.pos || "?", obra: e.obra || "", donde: "Línea · para paletizar (sin solape)" }); });
+    return out;
+  }, [ubic, zonas, sinSol, indice, caballetes]);
+  const porObra = {}; lista.forEach((x) => { (porObra[x.obra || "sin obra"] = porObra[x.obra || "sin obra"] || []).push(x); });
+  return (
+    <div className={`rounded-lg border-2 ${lista.length ? "border-emerald-600 bg-emerald-50" : "border-slate-200 bg-white"}`}>
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left">
+        <span className="text-slate-500">{abierto ? "▾" : "▸"}</span>
+        <span className="font-bold text-slate-800">Han llegado por la línea y aún no están en caballete</span>
+        <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${lista.length ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"}`}>{lista.length}</span>
+      </button>
+      {abierto && <div className="px-4 pb-3 space-y-1.5">
+        {lista.length === 0 && <p className="text-xs text-slate-500">Ninguna por ahora. Aquí van saliendo según llegan de Cristales / Solape / Línea.</p>}
+        {Object.entries(porObra).map(([obra, xs]) => (
+          <div key={obra} className="text-sm"><b className="text-slate-800">{obra}</b>: {xs.map((x) => <span key={x.id} className="inline-block mr-2"><b>{x.pos}</b> <span className="text-xs text-slate-500">({x.donde})</span></span>)}</div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+// Bloque plegable (cerrado por defecto; se acuerda lo que dejó cada ordenador): título arriba, pincha y se abre todo
+function DesplegableAlm({ titulo, clave, resumen = "", children }) {
+  const [abierto, setAbierto] = useEstadoLocal(`crm_desp_${clave}`, false);
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left">
+        <span className="text-slate-500">{abierto ? "▾" : "▸"}</span>
+        <span className="font-bold text-slate-800">{titulo}</span>
+        {resumen && <span className="text-xs text-slate-500">{resumen}</span>}
+        <span className="ml-auto text-xs font-semibold text-slate-500">{abierto ? "Cerrar" : "Abrir"}</span>
+      </button>
+      {abierto && <div className="px-3 pb-3">{children}</div>}
+    </div>
+  );
+}
+
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 // Almacenes de ventanas. Los marcados "de Uxcar" (Valencia, Palma de Mallorca…) salen con "Uxcar ·" delante en todos los selectores.
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }])
@@ -44071,6 +44165,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
 
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false, onMoverDiaFabrica = null }) {
   const [verTodo, setVerTodo] = useState(false);
+  const [ticBusca, setTicBusca] = useState(""); // buscador de palés en «Cargar en el palet»
   const [ticFuera, setTicFuera] = useState(false); // en «Cargar en el palet»: ver también los palés que están fuera
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
@@ -44086,6 +44181,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const guardarAlmacenes = (lista) => onSaveConfig && onSaveConfig({ ...(config || {}), almacenesCaballetes: lista.map(({ nombreBase, ...r }) => (nombreBase !== undefined ? { ...r, nombre: nombreBase } : r)) });
   const [editando, setEditando] = useState(null); // caballete que se está cargando
   const [filtro, setFiltro] = useState("");
+  const [busqCab, setBusqCab] = useState(""); // buscar un caballete / palet por su número (C-12): ignora los filtros de almacén y estado
   const [codigo, setCodigo] = useState("");
   const [escaneadoId, setEscaneadoId] = useState(null);
   const [camara, setCamara] = useState(false);
@@ -44852,7 +44948,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     onBorrarSinObra(fab);
     relinkarLote(fab, o);
   };
-  const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
+  const qCab = String(busqCab || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : qCab ? lista.filter((c) => String(c.numero || "").toUpperCase().replace(/[^A-Z0-9]/g, "").includes(qCab)) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
   // ---- CARGAR TICANDO: mismo dato que la pistola (las ventanas entran en el caballete con colocarVentana) ----
   const ventanasPorObraTic = (() => {
@@ -44893,12 +44990,46 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <div className="text-sm font-bold text-slate-700">1. El palet: lee su código de barras o tócalo</div>
             <input value={ticCod} onChange={(e) => setTicCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); elegirPaletCod(e.currentTarget.value); } }} placeholder="Código del palet (pistola) y Enter" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
             <div className="flex flex-wrap items-center gap-2 mb-1"><label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600"><input type="checkbox" checked={ticFuera} onChange={(e) => setTicFuera(e.target.checked)} /> Ver también los palés que están fuera (al tocarlos se abre todo el almacén)</label></div>
+            <input value={ticBusca} onChange={(e) => setTicBusca(e.target.value)} placeholder="🔎 Buscar palet u obra (ej. C-12, 6.740, Uxcar…)" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
             <div className="flex flex-wrap gap-1.5 max-h-72 overflow-y-auto">
-              {(ticFuera ? cabsAhora() : cabs).sort(natNum).map((c) => { const fuera = (c.estado || "libre") === "fuera"; const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
+              {(ticFuera ? cabsAhora() : cabs).filter((c) => { const q = normBuscaLista(ticBusca); if (!q) return true; const txt = normBuscaLista([c.numero, c.codigo, c.obra && c.obra.nombre, c.obra && c.obra.cliente, c.reserva && c.reserva.nombre, ...toArray(c.ventanas).map((w) => w.pos)].filter(Boolean).join(" ")); return q.split(" ").every((t) => txt.includes(t)); }).sort(natNum).map((c) => { const fuera = (c.estado || "libre") === "fuera"; const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
                 <button key={c.id} type="button" onClick={() => { if (fuera) { setVerTodo(true); return; } setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); }} className={`px-2.5 py-1.5 rounded-lg border-2 text-xs font-bold ${sel ? "bg-emerald-600 border-emerald-800 text-white" : fuera ? "bg-slate-200 border-slate-400 text-slate-500" : libre ? "bg-white border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-900"}`}>{c.numero}{c.obra && c.obra.nombre ? ` · ${String(c.obra.nombre).slice(0, 18)}` : fuera ? " · fuera" : libre ? " · libre" : ""} · {toArray(c.ventanas).length}</button>
               ); })}
             </div>
           </div>
+          {palet && (() => { const c = cabsAhora().find((z) => z.id === palet.id) || palet; const vs = toArray(c.ventanas); return (
+            <div className="rounded-lg border-2 border-emerald-300 bg-emerald-50/40 p-2 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-extrabold text-slate-900">📦 Palet {c.numero}</span>
+                <span className="text-xs text-slate-600">{c.obra && c.obra.nombre ? c.obra.nombre : "sin obra"} · {vs.length} ventana{vs.length === 1 ? "" : "s"}</span>
+                <button type="button" onClick={() => setTicPalet("")} className="ml-auto text-xs text-slate-500 hover:underline">Cerrar</button>
+              </div>
+              <div className="flex gap-1.5">
+                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, almacenId: e.target.value, historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-300 rounded px-1 py-1 bg-white">
+                  {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
+                </select>
+                <input key={c.id + (c.ubicacion || "")} defaultValue={c.ubicacion || ""} onBlur={(e) => e.target.value !== (c.ubicacion || "") && onGuardar({ ...c, ubicacion: e.target.value })} placeholder="Sitio (ej. fila 3)" className="flex-1 min-w-0 text-xs border border-slate-300 rounded px-1.5 py-1 bg-white" />
+              </div>
+              {vs.length === 0 && <div className="text-xs text-slate-500 italic">Vacío.</div>}
+              {vs.map((w) => (
+                <div key={`${w.obraKey || w.proyectoId}-${w.id}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs bg-white rounded border border-slate-200 px-2 py-1">
+                  <span className="font-bold text-slate-900">{posDib(w)}</span>
+                  <select value="" onChange={(e) => { if (e.target.value) cambiarCaballete(w, c.obra, e.target.value); }} className="ml-auto text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white">
+                    <option value="">Mover a…</option>
+                    {opcionesDestino(c.obra, c.id).map((x) => <option key={x.id} value={x.id}>{textoOpcion(x, w, c.obra)}</option>)}
+                  </select>
+                  <button type="button" onClick={() => { if (window.confirm(`¿Sacar la ventana ${w.pos} del palet ${c.numero}?`)) quitarVentana(w); }} className="text-slate-400 hover:text-rose-500"><Trash2 size={12} /></button>
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-2 text-xs">
+                {vs.length > 0 && <select value="" onChange={(e) => { if (e.target.value) juntarCaballete(c, e.target.value); }} className="text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white text-slate-600">
+                  <option value="">Juntar en…</option>
+                  {cabsAhora().filter((x) => x.id !== c.id && (x.estado || "libre") !== "fuera").sort(natNum).map((x) => <option key={x.id} value={x.id}>{x.numero} · {toArray(x.ventanas).length} ventanas</option>)}
+                </select>}
+                {c.estado === "cargado" && <button type="button" onClick={() => { if (window.confirm(`¿Vaciar el palet ${c.numero}?`)) onGuardar({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-500 hover:underline">Vaciar</button>}
+              </div>
+            </div>
+          ); })()}
           <div className="space-y-1">
             <div className="text-sm font-bold text-slate-700">2. La obra</div>
             <BuscadorLista
@@ -45549,6 +45680,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             })}
           </div>
         </div>
+        {onGuardarEtiquetasObra && <DesplegableAlm titulo="⬆ Subir etiquetas" clave="subirEtiqDia" resumen="· solo si no vinieron ya subidas de atrás"><SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} /></DesplegableAlm>}
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
           {avisoSinEt}
@@ -45907,8 +46039,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
         ) : null;
       })()}
-      <EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} />
+      <DesplegableAlm titulo="Estanterías de ventanas terminadas" clave="estTerminadas"><EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} /></DesplegableAlm>
       <IncompletasAlmacen caballetes={caballetes} indice={indicePiezas} />
+      <LlegadasLineaAlmacen indice={indicePiezas} caballetes={caballetes} />
+      <BuscarPorPresupuestoLinea indice={indicePiezas} cristales={[]} persianas={[]} quien="" puesto="almacen" />
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
@@ -45936,7 +46070,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           );
         })()}
       </div>
-      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} />}
+      {onGuardarEtiquetasObra && <DesplegableAlm titulo="Subir etiquetas de las ventanas" clave="subirEtiq"><SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} /></DesplegableAlm>}
+      <DesplegableAlm titulo="Planning de caballetes" clave="planningCab" resumen="· previsión por semanas y próximas cargas">
+      <div className="space-y-3">
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
         <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
@@ -45945,6 +46081,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         ? <PlanningCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig}
             pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} onGuardar={onGuardar} almacenPrincipal={almacenes[0].id} />
         : <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />}
+      </div>
+      </DesplegableAlm>
+      <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">🔎 Buscar caballete / palet:</span>
+        <input value={busqCab} onChange={(e) => setBusqCab(e.target.value)} placeholder="por ejemplo C-12" className="border border-slate-300 rounded-md px-2.5 py-1.5 text-sm w-40" />
+        {busqCab && <button type="button" onClick={() => setBusqCab("")} className="text-xs text-slate-500 hover:underline">Borrar</button>}
+        {busqCab && <span className={`text-xs font-semibold ${filtrados.length ? "text-emerald-700" : "text-rose-600"}`}>{filtrados.length ? `${filtrados.length} encontrado${filtrados.length === 1 ? "" : "s"} (se ignoran los filtros de almacén y estado)` : `No existe ningún caballete que se llame así. Si lo había, se ha borrado o se llama de otra forma.`}</span>}
+      </div>
       <div className="grid grid-cols-3 gap-3">
         {[["libre", "Libres"], ["cargado", "Con ventanas"], ["fuera", "Fuera (a devolver)"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(filtro === k ? "" : k)} className={`text-left rounded-lg p-3 border ${filtro === k ? "border-[#2E8B57]" : "border-transparent"} ${k === "fuera" && cuenta("fuera") ? "bg-amber-50" : "bg-slate-50"}`}>
@@ -47013,11 +47157,8 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
-  const solSinMapa = useObjetoFb("solapeSinEtiquetaLinea"); // ventanas mandadas a Solape desde el buscador por presupuesto (sin etiquetas)
-  const sinSolMapa = useObjetoFb("sinSolapeLinea"); // ventanas marcadas «sin solape»: en la Línea para paletizar
-  const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } });
-    Object.entries(solSinMapa || {}).forEach(([k, e]) => { if (!e || !e.hueco) return; const z = (m.solape = m.solape || {}); (z[e.hueco] = z[e.hueco] || []).push({ cod: `sin:${k}`, slot: 9, sin: { k, pos: e.pos || "?", obra: e.obra || "" } }); }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic, solSinMapa]);
-  const etiquetaDe = (cod) => { if (String(cod).startsWith("sin:")) { const e = (solSinMapa || {})[String(cod).slice(4)]; return e && e.pos ? e.pos : "?"; } const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
+  const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
+  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
@@ -47040,12 +47181,6 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
               <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
               {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
             </div>
-            {z.id === "sinPersiana" && Object.keys(sinSolMapa || {}).filter((k) => sinSolMapa[k]).length > 0 && (
-              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1.5">
-                <span className="text-[11px] font-bold uppercase text-emerald-800">En la Línea para paletizar (sin solape):</span>
-                {Object.entries(sinSolMapa).filter(([, e]) => e).map(([k, e]) => <span key={k} title={e.obra || ""} className="rounded bg-emerald-600 px-1.5 py-0.5 text-[11px] font-bold text-white">{e.pos || "?"}</span>)}
-              </div>
-            )}
             <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
               {Array.from({ length: z.huecos }, (_, i) => i + 1).map((hu) => {
                 const piezas = oc[hu] || [];
@@ -47054,7 +47189,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { const reales = piezas.filter((x) => !x.sin); if (reales.length) setAbierto({ z, hu, piezas: reales }); else if (piezas.length && (admin || control) && window.confirm(`¿Liberar la estantería ${hu} de "${z.nombre}" (${piezas.map((x) => x.sin.pos).join(", ")})? Solo quita la marca del CRM.`)) Promise.all(piezas.map((x) => fbSet(ref(fbDb, `solapeSinEtiquetaLinea/${x.sin.k}`), null))).catch(() => {}); }} title={piezas.length ? piezas.map((x) => (x.sin ? `${x.sin.pos}${x.sin.obra ? ` · ${x.sin.obra}` : ""} (apuntada desde el buscador)` : `${etiquetaDe(x.cod)} · ${x.cod}`)).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -47776,7 +47911,46 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
  // ventanas que pueden esperar a la vez en la zona de carga; a partir de ahí, al almacén de ventanas
 // Unidades de una fila de cristal con varias unidades: cada una se da de baja por separado y una unidad ya marcada no se puede marcar otra vez
 const marcasUd = (p) => { const m = toArray(p && p.uMarc).map(Number).filter((n) => n >= 1); if (m.length) return m; const n = parseInt(p && p.uPuestas, 10) || 0; return Array.from({ length: n }, (_, i) => i + 1); };
-function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "" }) {
+// PUESTO SOLAPE: qué hay ya en el almacén de solape (con su estantería) y qué ventanas de las obras de HOY llevan solape / postigo y todavía no se han puesto
+function ListaSolapeLinea({ indice }) {
+  const ubic = useObjetoFb("ubicacionesLinea"); const solSin = useObjetoFb("solapeSinEtiquetaLinea"); const sinSol = useObjetoFb("sinSolapeLinea");
+  const snapCD = useObjetoFb("controlDiaVentanasObra"); const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras");
+  const hoy = new Date().toLocaleDateString("sv-SE");
+  const { dentro, pendientes } = useMemo(() => {
+    const vistos = new Set(); const dentro = [];
+    Object.entries(ubic || {}).forEach(([cod, u]) => { if (!u || u.zonaId !== "solape") return; const h = indice && indice.get(cod); if (!h || !h.ventana) return; const id = String(h.ventana.id); if (vistos.has(id)) return; vistos.add(id); dentro.push({ id, pos: posDib(h.ventana), obra: (h.dueno && h.dueno.nombre) || "", hueco: u.hueco }); });
+    Object.entries(solSin || {}).forEach(([k, e]) => { if (!e) return; vistos.add(String(e.ventanaId)); dentro.push({ id: k, pos: e.pos || "?", obra: e.obra || "", hueco: e.hueco }); });
+    dentro.sort((a, b) => (Number(a.hueco) || 0) - (Number(b.hueco) || 0));
+    const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[hoy] || {};
+    const basesDia = new Set(); Object.keys(delDia).forEach((k) => toArray((planObras[k] || {}).pres).map(basePresuDia).filter((b) => b.length >= 3).forEach((b) => basesDia.add(b)));
+    const manualHoy = (manual && manual[hoy]) || {};
+    const pendientes = [];
+    Object.entries(snapCD || {}).forEach(([k, sn]) => {
+      if (!sn) return; const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
+      if (!(manualHoy[k] || bs.some((b) => basesDia.has(b)))) return;
+      toArray(sn.ventanas).forEach((w) => {
+        const ex = toArray(w.ex).map(String); if (!(ex.includes("SOLAPE") || ex.includes("POSTIGO"))) return;
+        const clave = `cd:${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+        if ((sinSol || {})[clave] || (solSin || {})[clave] || vistos.has(String(w.id))) return;
+        pendientes.push({ id: `${k}_${w.id}`, pos: w.pos || "?", obra: sn.nombre || k, medida: w.medida || "", ex: ex.filter((x) => x === "SOLAPE" || x === "POSTIGO").join(" + ") });
+      });
+    });
+    return { dentro, pendientes };
+  }, [ubic, solSin, sinSol, snapCD, planFab, manual, indice, hoy]);
+  return (
+    <div className="mb-3 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-lg border-2 border-amber-500 bg-amber-50 p-3">
+        <div className="text-sm font-extrabold text-amber-900 mb-1">Por poner solape / postigo (obras de hoy): {pendientes.length}</div>
+        {pendientes.length === 0 ? <p className="text-xs text-amber-800">Ninguna pendiente. Si falta alguna, busca su presupuesto abajo.</p> : <div className="max-h-52 overflow-y-auto space-y-1">{pendientes.map((x) => <div key={x.id} className="text-xs text-slate-800"><b>{x.pos}</b>{x.medida ? ` · ${x.medida}` : ""} <span className="text-amber-800 font-semibold">({x.ex})</span> <span className="text-slate-500">· {x.obra}</span></div>)}</div>}
+      </div>
+      <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 p-3">
+        <div className="text-sm font-extrabold text-emerald-900 mb-1">Ya en el almacén de solape: {dentro.length}</div>
+        {dentro.length === 0 ? <p className="text-xs text-emerald-800">Vacío.</p> : <div className="max-h-52 overflow-y-auto space-y-1">{dentro.map((x) => <div key={x.id} className="text-xs text-slate-800"><b className="text-emerald-800">Estantería {x.hueco}</b> · <b>{x.pos}</b> <span className="text-slate-500">· {x.obra}</span></div>)}</div>}
+      </div>
+    </div>
+  );
+}
+function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persianas, guardarPersianas, quien = "", puesto = "" }) {
   const [abierto, setAbierto] = useState(false);
   const [q, setQ] = useState("");
   const [obraKey, setObraKey] = useState("");
@@ -47876,7 +48050,52 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     }));
     return out;
   }, [reconocer, cristales]);
+  // Diagnóstico: cuántos cristales de este presupuesto hay en el almacén (con o sin dar de baja) y cuántos caballetes hay en total
+  const diagCris = useMemo(() => {
+    if (!reconocer) return { total: 0, puestos: 0, cab: 0 };
+    let total = 0; let puestos = 0;
+    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p) => { const deObra = reconocer.pptoDe(c.presupuesto, p.presupuesto, p.ppto) || (reconocer.exp && numsExpediente(p.expediente || c.expediente).includes(reconocer.exp)); if (deObra) { total++; if (p.puesto) puestos++; } }));
+    return { total, puestos, cab: toArray(cristales).length };
+  }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
+  // MEDIDAS DE LOS CRISTALES según la hoja de corte (tabla SUPERFICIES). Se lee el PDF de ESTA obra solo cuando se elige una ventana; no escribe nada en el CRM.
+  const soloDonde = puesto === "almacen"; // Almacén de ventanas: enseña DÓNDE está cada ventana de la obra (todos los puestos), sin dar de baja nada
+  const escaneosAll = useEscaneosLinea();
+  const escPorVent = useMemo(() => { const m = new Map(); toArray(escaneosAll).forEach((e) => { if (!e) return; const k = String(e.ventanaId); if (!m.has(k)) m.set(k, []); m.get(k).push(e); }); return m; }, [escaneosAll]);
+  const idxVent = useMemo(() => { const m = new Map(); if (indice) indice.forEach((h) => { const v = h && h.ventana; if (v && !m.has(String(v.id))) m.set(String(v.id), h); }); return m; }, [indice]);
+  const soloSolape = puesto === "solape"; // en el puesto de Solape no se enseñan cristales ni persianas: solo dónde va la ventana
+  const [medHoja, setMedHoja] = useState({}); // { [obra.key]: { estado, modelos: { "V04.105": [{comp, uds, ancho, alto}] } } }
+  const obraMedKey = obra ? obra.key : "";
+  useEffect(() => {
+    if (!obraMedKey || !w || soloSolape || soloDonde || medHoja[obraMedKey]) return;
+    if (!/^cd:/.test(obraMedKey)) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
+    setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "leyendo" } }));
+    (async () => {
+      try {
+        const sn = await fbGet(ref(fbDb, `controlDiaHojaCorte/${obraMedKey.replace(/^cd:/, "")}`)); const hh = sn.val();
+        if (!hh || !hh.url) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "sinhoja" } })); return; }
+        const lib = await cargarPdfJs(); const pdf = await lib.getDocument({ data: new Uint8Array(await bajarArchivoGuardado(hh.url)) }).promise;
+        const mods = []; let cur = null;
+        for (let n = 1; n <= pdf.numPages; n++) {
+          const tc = await (await pdf.getPage(n)).getTextContent();
+          const t = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ");
+          const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+(\S.{0,39}?)\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})(?=\s|$)/);
+          if (m) { cur = { pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), texto: t }; mods.push(cur); } else if (cur) cur.texto += " " + t;
+        }
+        const modelos = {};
+        mods.forEach((md) => {
+          const crs = []; const re = /([\d.+]+\/[\d.]+\/[\d.+]+\S*)[^\n]*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?(\d[\d.]*,\d\d)\s+(\d[\d.]*,\d\d)/g; let mc;
+          while ((mc = re.exec(md.texto))) { const a = numEs(mc[4]); const h2 = numEs(mc[5]); if (a > 0 && h2 > 0) crs.push({ comp: mc[1], uds: parseInt(mc[2], 10) || 1, ancho: a, alto: h2 }); }
+          modelos[md.pos.split(/\s+/)[0]] = crs;
+        });
+        setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "ok", modelos } }));
+      } catch (e) { setMedHoja((m) => ({ ...m, [obraMedKey]: { estado: "error", motivo: (e && e.message) || String(e) } })); }
+    })();
+  // eslint-disable-next-line
+  }, [obraMedKey, !!w]);
+  const posMed = w ? String(w.pos || "").trim().split(/\s+/)[0].toUpperCase() : "";
+  const mh = obraMedKey ? medHoja[obraMedKey] : null;
+  const crHoja = w ? ((w.cr && w.cr.length > 0) ? w.cr : (mh && mh.modelos && mh.modelos[posMed]) || []) : [];
   const claveP = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
   const apuntadoMan = claveP ? cpManual[claveP] : null;
   const apuntarPuesto = () => fbSet(ref(fbDb, `cristalPuestoManualLinea/${claveP}`), { ventanaId: w.id, pos: w.pos || "", medida: w.medida || "", obra: obra.nombre || "", ppto: (obra.bases && obra.bases[0]) || "", fecha: hoyISO(), ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ Cristal de ${w.pos} apuntado como PUESTO${quien ? ` (${quien})` : ""}.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
@@ -47904,6 +48123,25 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   };
   const estW = w ? estadoVent(w) : null;
   const bloq = !!estW && !!w && !desbloq.includes(w.id); // ventana ya hecha: candado, no se vuelve a ticar
+  // DÓNDE está una ventana ahora (caballete > solape > línea para paletizar > casilla del mapa > última lectura de un puesto) y por qué puestos ha pasado
+  const dondeVent = (wx) => {
+    const cl = `${obra.key}__${wx.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+    const hv = idxVent.get(String(wx.id)); const bs = hv ? baseDe(hv.ventana) : "";
+    const kObra = String(obra.key).replace(/^(cd|et):/, "").replace(/[.#$\/\[\]]/g, "_");
+    const pal = Object.values(palets || {}).find((c) => c && toArray(c.ventanas).some((x) => x && String(x.id) === wx.id && String(x.obraKey || `p-${x.proyectoId}`).replace(/[.#$\/\[\]]/g, "_") === kObra));
+    const lect = (escPorVent.get(String(wx.id)) || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const pasos = [...new Set(lect.map((e) => e.puestoNombre || e.puestoId))].join(" → ");
+    const ult = lect.length ? lect[lect.length - 1] : null;
+    const hora = ult && ult.ts ? new Date(ult.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "";
+    if (pal) return { ahora: `En caballete ${pal.numero || ""}`.trim(), cls: "bg-violet-700 text-white", pasos };
+    const us = bs && ubicLin[bs] && ubicLin[bs].zonaId === "solape" ? ubicLin[bs] : (solSin[cl] || null);
+    if (us) return { ahora: `SOLAPE · estantería ${us.hueco}`, cls: "bg-amber-500 text-white", pasos };
+    if (sinSolMan[cl]) return { ahora: "LÍNEA · para paletizar", cls: "bg-emerald-600 text-white", pasos };
+    const ub = bs && ubicLin[bs] ? ubicLin[bs] : null;
+    if (ub) { const z = zonasLin.find((q) => q.id === ub.zonaId); return { ahora: `${z ? z.nombre : ub.zonaId} · hueco ${ub.hueco}`, cls: "bg-sky-600 text-white", pasos }; }
+    if (ult) return { ahora: `Última lectura: ${ult.puestoNombre || ult.puestoId}${hora ? ` (${hora})` : ""}`, cls: "bg-slate-600 text-white", pasos };
+    return { ahora: hv ? "sin lecturas todavía" : "sin etiquetas: no sé dónde está", cls: "bg-slate-200 text-slate-700", pasos };
+  };
   const darBaja = (x, k = 1) => {
     if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
@@ -47923,7 +48161,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
   };
-  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">🔎 Buscar por presupuesto (sin etiqueta)</button></div>;
+  if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">{soloDonde ? "🔎 ¿Dónde está cada ventana? (buscar por presupuesto)" : "🔎 Buscar por presupuesto (sin etiqueta)"}</button></div>;
   return (
     <div className="mb-3 border-2 border-slate-300 rounded-lg p-3 bg-slate-50 space-y-2">
       <div className="flex items-center gap-2">
@@ -47933,13 +48171,27 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {texto.length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto ni en Control del día ni en las etiquetas. Mira que su hoja de corte esté subida en Control del día.</p>}
       {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
       {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
-      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
-      {w && (
+      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{estadoVent(x) ? "🔒 " : ""}{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
+      {soloDonde && obra && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-bold text-slate-600 uppercase">Dónde está cada ventana de la obra ({ventanas.length})</div>
+          {ventanas.map((x) => { const d = dondeVent(x); return (
+            <div key={x.id} className={`flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-md bg-white text-sm ${w && w.id === x.id ? "border-2 border-slate-800" : "border border-slate-200"}`}>
+              <b>{x.g ? `${x.g} · ` : ""}{x.pos}</b>{x.medida ? <span className="text-xs text-slate-500">{x.medida}</span> : null}
+              <span className={`px-2 py-0.5 rounded text-xs font-extrabold ${d.cls}`}>{d.ahora}</span>
+              {d.pasos ? <span className="text-xs text-slate-500">ha pasado por: {d.pasos}</span> : null}
+            </div>
+          ); })}
+        </div>
+      )}
+      {w && !soloSolape && !soloDonde && (
         <div className="space-y-1.5">
           {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
-          {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
-          {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
+          {crHoja.length === 0 && mh && mh.estado === "leyendo" && <div className="text-xs text-sky-700">Leyendo las medidas de los cristales de la hoja de corte…</div>}
+          {crHoja.length === 0 && mh && (mh.estado === "sinhoja" || mh.estado === "error" || (mh.estado === "ok" && !(mh.modelos && mh.modelos[posMed]))) && <div className="text-xs text-slate-500">No he podido sacar la medida del cristal de {w.pos} de la hoja de corte{mh.estado === "sinhoja" ? " (esta obra no tiene hoja de corte subida en Control del día)" : mh.estado === "error" ? ` (${mh.motivo})` : " (no encuentro esa ventana en la hoja)"}.</div>}
+          {crHoja.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Medida del cristal según la hoja de corte:</span> {crHoja.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
+          {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">{diagCris.total > 0 ? `En el almacén hay ${diagCris.total} cristal(es) de este presupuesto y los ${diagCris.puestos} ya están dados de baja.` : `En el almacén (${diagCris.cab} caballetes) no hay NINGÚN cristal que lleve este presupuesto. Si el packing list está subido, mira en Almacén de cristales con qué presupuesto o expediente ha quedado guardado.`} Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
             : <button type="button" disabled={bloq} onClick={apuntarPuesto} className={`px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold ${bloq ? "opacity-40" : ""}`}>Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
@@ -47973,7 +48225,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
-      {w && llevaSolape && (
+      {w && !soloDonde && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
           {ubSol
             ? <div className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</div>
@@ -47990,7 +48242,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
             </>}
         </div>
       )}
-      {w && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900 flex flex-wrap items-center gap-2"><span>📍 {w.pos} está en LÍNEA para PALETIZAR (no lleva solape{sinSolape && sinSolape.por ? ` · marcado por ${sinSolape.por}` : ""}). Paletización o almacén de carga lo decide quien hace los palés.</span>{sinSolape && <button type="button" onClick={quitarSinSolape} className="ml-auto px-3 py-1 rounded-md bg-white border border-emerald-700 text-emerald-800 text-xs font-bold">Sí lleva solape (deshacer)</button>}</div>}
+      {w && !soloDonde && !llevaSolape && <div className="rounded-lg border-2 border-emerald-600 bg-emerald-50 px-3 py-2 text-base font-bold text-emerald-900 flex flex-wrap items-center gap-2"><span>📍 {w.pos} está en LÍNEA para PALETIZAR (no lleva solape{sinSolape && sinSolape.por ? ` · marcado por ${sinSolape.por}` : ""}). Paletización o almacén de carga lo decide quien hace los palés.</span>{sinSolape && <button type="button" onClick={quitarSinSolape} className="ml-auto px-3 py-1 rounded-md bg-white border border-emerald-700 text-emerald-800 text-xs font-bold">Sí lleva solape (deshacer)</button>}</div>}
     </div>
   );
 }
@@ -48903,7 +49155,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} />
+        {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
+        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} />
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {auxLeido && !auxLeido.baja && <div className="mb-3 flex flex-wrap items-center gap-2"><button type="button" onClick={darBajaAuxiliar} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Dar de baja este auxiliar (sale del carro)</button><button type="button" onClick={() => setAuxLeido(null)} className="px-3 py-2 rounded-md bg-slate-100 text-slate-600 text-sm font-semibold">Dejarlo en el carro</button></div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
@@ -52544,6 +52797,8 @@ function documentosQueFaltanUx(e, uxPedidos) {
    Solo el administrador crea, edita y borra. El texto se escribe con marcas sencillas:
    "## Título", "- punto", "- [ ] casilla", "1. paso", "**negrita**" y tablas con |. */
 const COND_RUTAS = { equipo: "condiciones", uxcar: "portalUxcar/condiciones" };
+// Puestos para los que se puede marcar un documento (los de la línea + el almacén de ventanas)
+const COND_PUESTOS = () => [...PUESTOS_LINEA.filter((q) => q.id !== "controlDia").map((q) => ({ id: q.id, nombre: q.nombre })), { id: "almacenventanas", nombre: "Almacén de ventanas" }];
 const condEsc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const condInline = (s) => condEsc(s).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
 function condMdAHtml(texto) {
@@ -52688,6 +52943,17 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
         </div>
         {f.para === "uxcar" && <p className="text-[11px] text-amber-700 mt-1">Lo verá Uxcar: escribe solo con la marca Ecowin PVC y sin datos internos.</p>}
       </div>
+      {f.para === "equipo" && (
+        <div className="text-sm">
+          <span className="font-semibold text-slate-700">¿Para qué puestos?</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {COND_PUESTOS().map((q) => (
+              <label key={q.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.puestos).includes(q.id)} onChange={(e) => set("puestos", e.target.checked ? [...toArray(f.puestos), q.id] : toArray(f.puestos).filter((x) => x !== q.id))} /> {q.nombre}</label>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1">Quien tenga un puesto asignado solo verá los documentos marcados para su puesto. Si no marcas ninguno, solo lo ven los administradores y el personal sin puesto asignado.</p>
+        </div>
+      )}
       <label className="block text-sm"><span className="font-semibold text-slate-700">Texto</span>
         <textarea value={f.contenido} onChange={(e) => set("contenido", e.target.value)} rows={16} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono" />
         <span className="text-[11px] text-slate-400">## Título de apartado · - punto · - [ ] casilla · 1. paso · **negrita** · tablas con | columna | columna |</span></label>
@@ -52710,7 +52976,8 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
 }
 
 // Módulo del CRM
-function CondicionesModulo({ isAdmin, usuario }) {
+function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
+  const restringido = !isAdmin && toArray(puestosUsuario).length > 0; // con puesto asignado: solo ve lo de su puesto
   const [docs, setDocs] = useState({ equipo: null, uxcar: null });
   const [para, setPara] = useState("equipo");
   const [vista, setVista] = useState("lista"); // lista | ver | editar | nuevo
@@ -52722,7 +52989,8 @@ function CondicionesModulo({ isAdmin, usuario }) {
     return () => { u1(); u2(); };
   }, []);
   const avisar = (m) => { setAviso(m); setTimeout(() => setAviso(""), 2600); };
-  const lista = docs[para];
+  const paraVer = restringido ? "equipo" : para;
+  const lista = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))) : docs[para];
   const abierto = toArray(lista).find((d) => d.id === abiertoId);
 
   const guardar = async (f, archivo) => {
@@ -52734,6 +53002,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
         orden: f.orden === "" || f.orden == null ? 99 : Number(f.orden),
         fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
         archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "", version: f.version || 1,
+        puestos: f.para === "equipo" ? toArray(f.puestos) : [],
       };
       if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
       const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
@@ -52789,7 +53058,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
         )}
       </div>
       <p className="text-sm text-slate-500 mb-4">Guías y normas de trabajo para tenerlas siempre a mano. Lo de la pestaña "Para Uxcar" también lo ven ellos en su portal.</p>
-      {vista === "lista" && (
+      {vista === "lista" && !restringido && (
         <div className="flex gap-1 mb-4">
           {[["equipo", "Para el equipo"], ["uxcar", "Para Uxcar"]].map(([k, t]) => (
             <button key={k} onClick={() => setPara(k)} className={`text-sm font-semibold px-3 py-1.5 rounded-md ${para === k ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
@@ -52814,7 +53083,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
       ) : (
         <>
           <CondicionesLista docs={lista} onAbrir={(id) => { setAbiertoId(id); setVista("ver"); }}
-            vacio={para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
+            vacio={restringido ? "Todavía no hay guías para tu puesto. Si echas algo en falta, díselo al responsable." : para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
           {isAdmin && guiasAnticuadas.length > 0 && (
             <button onClick={actualizarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-amber-400 text-amber-700 hover:bg-amber-50">
               <RefreshCw size={14} /> Actualizar {guiasAnticuadas.length === 1 ? "1 guía" : `${guiasAnticuadas.length} guías`} con la versión nueva: {guiasAnticuadas.map((x) => x.g.titulo.replace(/^Guía (del equipo|de fábrica|para Uxcar): /, "")).join(" · ")}
@@ -53258,6 +53527,80 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 - [ ] **Presupuesto "CORRECCIÓN"**: si la vivienda ya estaba cargada, quedaría duplicada.
 - [ ] **Color distinto** al del resto del lote.
 - [ ] Si el lote ya tenía etiquetas de la línea, el rápido las **sustituye** (te lo pregunta).`,
+  },
+  {
+    para: "equipo", orden: 10, version: 1, puestos: ["soldadora", "herraje", "pilastra", "colgado", "persianaA", "persianaB", "lineaPers", "puerta", "cristales", "solape", "especiales", "carga", "almacenventanas"], titulo: "Cómo leer con la pistola (todos los puestos)",
+    contenido: `## Lo básico
+1. Elige tu puesto (arriba, en **Línea (pistola)**). Si tienes puesto fijo, ya sale elegido.
+2. Pasa la pistola por la **etiqueta** de la ventana. Cada pieza (marco u hoja) cuenta **una sola vez en tu puesto**.
+3. Si la vuelves a leer sale **YA LEÍDA**: no se cuenta otra vez. No pasa nada.
+4. Si no estás seguro de qué es una ventana, pulsa **Escáner: consultar una ventana**: te enseña su ficha **sin registrar nada**.
+5. Sin pistola puedes usar **Leer con la cámara del móvil**.
+
+## Si algo no sale como aquí
+- Pulsa el botón rojo **Incidencia** (abajo a la derecha). Escribe qué pasa y de qué ventana.
+- No inventes un dato: si el CRM no encuentra algo, dilo en la incidencia.`,
+  },
+  {
+    para: "equipo", orden: 11, version: 1, puestos: ["cristales"], titulo: "Puesto Cristales: cómo se trabaja",
+    contenido: `## Con etiqueta
+Pasa la pistola por la ventana. El CRM te dice **dónde está su cristal** (caballete y hueco) y lo da de baja en la segunda lectura.
+
+## Sin etiqueta: buscar por presupuesto
+1. Pulsa **Buscar por presupuesto (sin etiqueta)** y escribe el número (por ejemplo 6740).
+2. Pincha la **obra** y luego la **ventana**.
+3. Salen los **cristales del almacén** con su caballete y hueco. Pulsa **Dar de baja**.
+4. Si la fila trae **varias unidades**, se dan de baja **de una en una**: **Dar de baja unidad 1**, **unidad 2**…
+5. Si no encuentra el cristal, te enseña la **medida del cristal según la hoja de corte** (caja azul). Si ya lo has puesto, pulsa **Apuntar cristal como PUESTO**.
+
+## El candado 🔒
+- Una ventana con **🔒** ya está hecha (en solape, en la línea para paletizar o con el cristal puesto). **No se vuelve a ticar**.
+- Puedes abrirla y mirarla. Solo **Desbloquear** (te pide confirmar) deja tocarla otra vez: hazlo solo si estás seguro.
+
+## Después de acristalar
+- Si la ventana **lleva solape o postigo**: apúntala en **Solape** con el número de estantería (1 a 36).
+- Si **no lleva**: pulsa **Sin solape → LÍNEA para paletizar**. Se queda en la línea.`,
+  },
+  {
+    para: "equipo", orden: 12, version: 1, puestos: ["solape"], titulo: "Puesto Solape / postigo: cómo se trabaja",
+    contenido: `## Qué ves al entrar
+- **Por poner solape / postigo (obras de hoy)**: ventanas que llevan solape o postigo y todavía no están colocadas.
+- **Ya en el almacén de solape**: las que ya están, con su **estantería**.
+
+## Poner una ventana en el almacén de solape
+1. Busca su presupuesto con **Buscar por presupuesto** y pincha la ventana.
+2. Escribe la **estantería (1 a 36)**. Si la dejas en blanco usa la primera libre.
+3. Pulsa **Apuntar en Solape** y llévala a esa estantería.
+
+## Si resulta que no lleva solape
+Pulsa **Sin solape → LÍNEA para paletizar**: se queda en la línea para el que hace los palés.
+
+## Mapa del almacén
+Las estanterías ocupadas salen en el mapa del almacén de solape. Si una estantería quedó mal apuntada, el responsable puede liberarla.`,
+  },
+  {
+    para: "equipo", orden: 13, version: 1, puestos: ["almacenventanas", "carga"], titulo: "Almacén de ventanas: cómo se trabaja",
+    contenido: `## Los caballetes
+Cada caballete (C-01, C-02…) tiene un estado:
+| Estado | Qué significa |
+| --- | --- |
+| Libre | Vacío y disponible |
+| Reservado | Apartado para una obra |
+| Con ventanas | Ya lleva ventanas |
+| Fuera (a devolver) | Salió con el cliente y hay que reclamarlo |
+
+## Cómo entran las ventanas
+1. Pasa la pistola por la ventana. Si ya estaba en un caballete, cuenta la pieza. Si no, la mete en el caballete que toca (el reservado o uno libre). Si no queda ninguno, crea uno nuevo.
+2. Cada ventana se completa cuando se han leído **todas sus piezas** (por ejemplo 3/4).
+3. Si la ventana tiene una **incidencia abierta**, no se carga: se guarda en el almacén de ventanas terminadas.
+
+## Qué ver en la pantalla
+- **Han llegado por la línea y aún no están en caballete**: lo que sale de Cristales, Solape o la Línea y falta meter en un caballete.
+- **¿Dónde está cada ventana?**: escribe el presupuesto y sale cada ventana de la obra con su sitio actual y los puestos por los que ha pasado.
+- **Planning de caballetes** y demás bloques: están plegados, pincha el título para abrirlos.
+
+## Si algo no cuadra
+Pulsa **Incidencia** y cuéntalo. No muevas ni quites ventanas de un caballete si no estás seguro.`,
   },
 ];
 
@@ -58031,13 +58374,6 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
   modelos.forEach((md) => {
     const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
-    // Medidas de los cristales: tabla SUPERFICIES (composición · Ud · ToT · [color] · ancho · alto)
-    const crs = []; const reCr = /([\d.+]+\/[\d.]+\/[\d.+]+\S*)[^\n]*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?(\d[\d.]*,\d\d)\s+(\d[\d.]*,\d\d)/g; let mc;
-    while ((mc = reCr.exec(String(md.texto || "")))) { const a = numEs(mc[4]); const h = numEs(mc[5]); if (a > 0 && h > 0) crs.push({ comp: mc[1], uds: parseInt(mc[2], 10) || 1, ancho: a, alto: h }); }
-    md.cristales = crs;
-    // Un dibujo con dos ventanas pegadas trae un cajón de persiana por cada una
-    const nCaj = (String(md.texto || "").match(/CAJ[OÓ]N\s+Ac\.?\s*(?:derecha|izquierda|der\b|izq\b)/gi) || []).length;
-    md.vent = nCaj >= 2 && nCaj <= 6 ? nCaj : 1;
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -58931,7 +59267,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), v: 3, modelos: r.modelos })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -59093,7 +59429,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // La HOJA DE CORTE se lee SOLA de los documentos de la obra (o de su expediente de Uxcar): obras del día que miras y de hoy en adelante.
   // Una vez por obra (si falla, se apunta el motivo y no se reintenta; se puede subir a mano).
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
-  const hojaVieja = (o) => { const h = hojasCD && hojasCD[limpia(o.d.key)]; return !!(h && toArray(h.modelos).length && !(h.v >= 3)); }; // leída antes de sacar medidas de cristales y nº de cajones: se vuelve a leer sola una vez
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
     .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
@@ -59108,7 +59443,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
           const d = docsHojaDe(o)[0];
           let r;
           try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
-          if (!r.ok && !hojaVieja(o)) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
+          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
         }
       } finally { hojaLeyendo.current = false; }
     })();
