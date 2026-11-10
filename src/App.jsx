@@ -8948,6 +8948,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
       return;
     }
+    if (String(f.presupuestoNumero || presupuestoDeObra(f) || "").replace(/\D/g, "").length < 3) {
+      setErrorMsg("Falta el nº de presupuesto de Edmo (obligatorio).");
+      alert("Falta el nº de presupuesto de Edmo: es obligatorio en toda obra (ej. 5163-5).");
+      return;
+    }
     if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
       setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
       alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
@@ -9004,6 +9009,9 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
           </Field>
           <Field label="Nombre / descripción breve" required>
             <TextInput value={f.nombre} onChange={set("nombre")} required />
+          </Field>
+          <Field label="Nº de presupuesto (Edmo)" required>
+            <TextInput value={f.presupuestoNumero || ""} onChange={set("presupuestoNumero")} placeholder="ej. 5163-5" />
           </Field>
         </div>
 
