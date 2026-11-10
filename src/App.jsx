@@ -47919,11 +47919,12 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
       const p = ps[i];
       if (sel && sel.cId != null) { if (c.id !== sel.cId || i !== sel.idx || p.puesto) continue; }
       else if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) continue;
-      if ((parseFloat(p.cantidad) || 1) > 1) { variasUnidades = true; continue; }
       if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
-      onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
+      const uds = Math.max(1, Math.round(parseFloat(p.cantidad) || 1)); // cada lectura da de baja UNA unidad
+      const nuevas = Math.min(uds, (parseInt(p.uPuestas, 10) || 0) + 1);
+      onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? (nuevas >= uds ? { ...q, uPuestas: uds, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : { ...q, uPuestas: nuevas }) : q)) });
       const donde = c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto} (sin hueco en el mapa)` : "sin ubicar en el mapa";
-      return { ok: true, foco: { tipo: "cristal", puesto: true, exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
+      return { ok: true, foco: { tipo: "cristal", puesto: true, exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""}${uds > 1 ? ` (unidad ${nuevas} de ${uds})` : ""} del caballete ${c.lote || c.numero || ""} (${donde}) · ${nuevas >= uds ? "marcado como puesto" : "faltan " + (uds - nuevas) + " por dar de baja"}` };
     }
   }
   return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
