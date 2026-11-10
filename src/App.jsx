@@ -47780,6 +47780,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
   const sinSolMan = useObjetoFb("sinSolapeLinea"); // ventanas marcadas a mano como SIN solape: se quedan en la Línea para paletizar
+  const palets = useObjetoFb("caballetesVentanas"); // palets del Almacén del día: cada uno con las ventanas que lleva
   const solSin = useObjetoFb("solapeSinEtiquetaLinea"); // estanterías de solape apuntadas para ventanas que no tienen etiquetas
   const cpManual = useObjetoFb("cristalPuestoManualLinea"); // cristal apuntado como puesto a mano (cuando no hay packing list en el almacén)
   const qd = String(q).replace(/\D/g, "");
@@ -47881,6 +47882,9 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     const cl = `${obra.key}__${wx.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
     const hv = [...indice.values()].find((h) => h.ventana && String(h.ventana.id) === wx.id);
     const bs = hv ? baseDe(hv.ventana) : "";
+    const kObra = String(obra.key).replace(/^(cd|et):/, "").replace(/[.#$\/\[\]]/g, "_");
+    const pal = Object.values(palets || {}).find((c) => c && toArray(c.ventanas).some((x) => x && String(x.id) === wx.id && String(x.obraKey || `p-${x.proyectoId}`).replace(/[.#$\/\[\]]/g, "_") === kObra));
+    if (pal) return { txt: `PALET ${pal.numero || ""}`.trim(), cls: "bg-violet-700 text-white" };
     const us = bs && ubicLin[bs] && ubicLin[bs].zonaId === "solape" ? ubicLin[bs] : (solSin[cl] || null);
     if (us) return { txt: `SOLAPE ${us.hueco}`, cls: "bg-amber-500 text-white" };
     if (sinSolMan[cl]) return { txt: "PALETIZAR", cls: "bg-emerald-600 text-white" };
