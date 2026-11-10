@@ -47779,7 +47779,9 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubicLin = useObjetoFb("ubicacionesLinea");
   const zonasLin = useZonasLinea();
   const [huecoSol, setHuecoSol] = useState("");
+  const [desbloq, setDesbloq] = useState([]); // ventanas que se han desbloqueado a propósito en esta pantalla
   const sinSolMan = useObjetoFb("sinSolapeLinea"); // ventanas marcadas a mano como SIN solape: se quedan en la Línea para paletizar
+  const palets = useObjetoFb("caballetesVentanas"); // palets del Almacén del día: cada uno con las ventanas que lleva
   const solSin = useObjetoFb("solapeSinEtiquetaLinea"); // estanterías de solape apuntadas para ventanas que no tienen etiquetas
   const cpManual = useObjetoFb("cristalPuestoManualLinea"); // cristal apuntado como puesto a mano (cuando no hay packing list en el almacén)
   const qd = String(q).replace(/\D/g, "");
@@ -47875,7 +47877,26 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (!reconocer) return [];
     return toArray(persianas).filter((y) => y && (reconocer.pptoDe(y.presupuesto, y.ppto) || (reconocer.exp && numsExpediente(y.expediente).includes(reconocer.exp))) && reconocer.casa(y.ref));
   }, [reconocer, persianas]);
+  // Estado de cada ventana de la lista: a dónde se ha mandado (solape con su estantería / línea para paletizar) y si su cristal ya está puesto
+  const estadoVent = (wx) => {
+    if (!obra) return null;
+    const cl = `${obra.key}__${wx.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+    const hv = [...indice.values()].find((h) => h.ventana && String(h.ventana.id) === wx.id);
+    const bs = hv ? baseDe(hv.ventana) : "";
+    const kObra = String(obra.key).replace(/^(cd|et):/, "").replace(/[.#$\/\[\]]/g, "_");
+    const pal = Object.values(palets || {}).find((c) => c && toArray(c.ventanas).some((x) => x && String(x.id) === wx.id && String(x.obraKey || `p-${x.proyectoId}`).replace(/[.#$\/\[\]]/g, "_") === kObra));
+    if (pal) return { txt: `PALET ${pal.numero || ""}`.trim(), cls: "bg-violet-700 text-white" };
+    const us = bs && ubicLin[bs] && ubicLin[bs].zonaId === "solape" ? ubicLin[bs] : (solSin[cl] || null);
+    if (us) return { txt: `SOLAPE ${us.hueco}`, cls: "bg-amber-500 text-white" };
+    if (sinSolMan[cl]) return { txt: "PALETIZAR", cls: "bg-emerald-600 text-white" };
+    const rs = crisDeVentana(wx);
+    if ((rs.length > 0 && rs.every((r) => r.p.puesto)) || cpManual[cl]) return { txt: "cristal puesto · en LÍNEA", cls: "bg-sky-600 text-white" };
+    return null;
+  };
+  const estW = w ? estadoVent(w) : null;
+  const bloq = !!estW && !!w && !desbloq.includes(w.id); // ventana ya hecha: candado, no se vuelve a ticar
   const darBaja = (x, k = 1) => {
+    if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     const uds = Math.max(1, Math.round(parseFloat(x.p.cantidad) || 1));
     const marc = marcasUd(x.p);
     if (uds > 1 && marc.includes(k)) { setMsg(`La unidad ${k} ya estaba dada de baja.`); return; }
@@ -47887,6 +47908,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     setMsg(`✓ Cristal ${x.p.ref || ""}${uds > 1 ? ` (${nuevas} de ${uds})` : ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
   };
   const darBajaPersiana = (x) => {
+    if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
     const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
@@ -47902,15 +47924,16 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
       {texto.length >= 2 && obras.length === 0 && <p className="text-sm text-slate-500">No encuentro ninguna obra con ese presupuesto ni en Control del día ni en las etiquetas. Mira que su hoja de corte esté subida en Control del día.</p>}
       {obras.length > 1 && <div className="flex flex-wrap gap-2">{obras.map((o) => <button key={o.key} type="button" onClick={() => { setObraKey(o.key); setVentId(""); }} className={`px-2.5 py-1.5 rounded-md text-xs font-semibold border ${obra && obra.key === o.key ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{o.nombre}{o.bases[0] ? ` · ppto ${pptoBonito(o.bases[0])}` : ""}</button>)}</div>}
       {obra && <div className="text-sm font-bold text-slate-800">{obra.nombre}{obra.bases[0] ? ` · ppto ${pptoBonito(obra.bases[0])}` : ""} <span className="text-xs font-normal text-slate-500">· {ventanas.length} ventanas: pincha una</span></div>}
-      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}</button>)}</div>}
+      {obra && <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">{ventanas.map((x) => <button key={x.id} type="button" onClick={() => { setVentId(x.id); setMsg(""); }} className={`px-2 py-1 rounded-md text-xs font-semibold border ${w && w.id === x.id ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-300"}`}>{x.g ? `${x.g} · ` : ""}{x.pos}{x.medida ? ` · ${x.medida}` : ""}{(() => { const e = estadoVent(x); return e ? <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-extrabold ${e.cls}`}>{e.txt}</span> : null; })()}</button>)}</div>}
       {w && (
         <div className="space-y-1.5">
+          {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
           {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
           {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
-            : <button type="button" onClick={apuntarPuesto} className="px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
+            : <button type="button" disabled={bloq} onClick={apuntarPuesto} className={`px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold ${bloq ? "opacity-40" : ""}`}>Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
           {sinCrisVentana && crisObra.length > 0 && <p className="text-sm font-semibold text-amber-800">No sé cuál es el cristal de {w.pos} (medida de la ventana {w.medida || "—"}). Estos son los cristales pendientes del presupuesto: elige por la medida.</p>}
           {filasCris.map((x) => (
             <div key={`${x.c.id}_${x.i}`} className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border text-sm ${x.p.puesto ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-white border-slate-300"}`}>
@@ -47921,8 +47944,8 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
               {x.p.puesto ? <span className="ml-auto text-xs font-semibold">✓ ya dado de baja</span> : ((parseFloat(x.p.cantidad) || 1) > 1
                 ? <span className="ml-auto flex flex-wrap gap-1.5">{Array.from({ length: Math.round(parseFloat(x.p.cantidad)) }, (_, n) => n + 1).map((k) => marcasUd(x.p).includes(k)
                     ? <span key={k} className="px-3 py-1.5 rounded-md bg-slate-200 text-slate-500 text-xs font-bold">✓ Unidad {k}</span>
-                    : <button key={k} type="button" onClick={() => darBaja(x, k)} className="px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja unidad {k}</button>)}</span>
-                : <button type="button" onClick={() => darBaja(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>)}
+                    : <button key={k} type="button" disabled={bloq} onClick={() => darBaja(x, k)} className={`px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>Dar de baja unidad {k}</button>)}</span>
+                : <button type="button" disabled={bloq} onClick={() => darBaja(x)} className={`ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>{bloq ? "🔒 " : ""}Dar de baja</button>)}
             </div>
           ))}
           <div className="text-xs font-bold text-slate-600 uppercase pt-1">Persiana de {w.pos}</div>
@@ -47934,7 +47957,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
                 <span className="font-semibold">{x.ref || "?"}</span>
                 <span>{x.largo || "?"} × {x.alto || "?"}</span>
                 <span className="text-slate-600">📍 {x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? `en ${x.enPuesto}` : "sin sitio asignado"}</span>
-                {hecha ? <span className="ml-auto text-xs font-semibold">✓ ya dada de baja</span> : <button type="button" onClick={() => darBajaPersiana(x)} className="ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold">Dar de baja</button>}
+                {hecha ? <span className="ml-auto text-xs font-semibold">✓ ya dada de baja</span> : <button type="button" disabled={bloq} onClick={() => darBajaPersiana(x)} className={`ml-auto px-3 py-1.5 rounded-md bg-rose-700 text-white text-xs font-bold ${bloq ? "opacity-40" : ""}`}>{bloq ? "🔒 " : ""}Dar de baja</button>}
               </div>
             );
           })}
@@ -57999,6 +58022,13 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
   modelos.forEach((md) => {
     const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
+    // Medidas de los cristales: tabla SUPERFICIES (composición · Ud · ToT · [color] · ancho · alto)
+    const crs = []; const reCr = /([\d.+]+\/[\d.]+\/[\d.+]+\S*)[^\n]*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?(\d[\d.]*,\d\d)\s+(\d[\d.]*,\d\d)/g; let mc;
+    while ((mc = reCr.exec(String(md.texto || "")))) { const a = numEs(mc[4]); const h = numEs(mc[5]); if (a > 0 && h > 0) crs.push({ comp: mc[1], uds: parseInt(mc[2], 10) || 1, ancho: a, alto: h }); }
+    md.cristales = crs;
+    // Un dibujo con dos ventanas pegadas trae un cajón de persiana por cada una
+    const nCaj = (String(md.texto || "").match(/CAJ[OÓ]N\s+Ac\.?\s*(?:derecha|izquierda|der\b|izq\b)/gi) || []).length;
+    md.vent = nCaj >= 2 && nCaj <= 6 ? nCaj : 1;
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -58892,7 +58922,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), v: 3, modelos: r.modelos })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -59054,9 +59084,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // La HOJA DE CORTE se lee SOLA de los documentos de la obra (o de su expediente de Uxcar): obras del día que miras y de hoy en adelante.
   // Una vez por obra (si falla, se apunta el motivo y no se reintenta; se puede subir a mano).
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
+  const hojaVieja = (o) => { const h = hojasCD && hojasCD[limpia(o.d.key)]; return !!(h && toArray(h.modelos).length && !(h.v >= 3)); }; // leída antes de sacar medidas de cristales y nº de cajones: se vuelve a leer sola una vez
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && (!hojaDeObra(o) || hojaVieja(o)) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
@@ -59068,7 +59099,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
           const d = docsHojaDe(o)[0];
           let r;
           try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
-          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
+          if (!r.ok && !hojaVieja(o)) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
         }
       } finally { hojaLeyendo.current = false; }
     })();
