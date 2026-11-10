@@ -58022,6 +58022,13 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
   modelos.forEach((md) => {
     const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
+    // Medidas de los cristales: tabla SUPERFICIES (composición · Ud · ToT · [color] · ancho · alto)
+    const crs = []; const reCr = /([\d.+]+\/[\d.]+\/[\d.+]+\S*)[^\n]*?(\d+)\s+(\d+)\s+(?:[A-Za-z_]+\s+)?(\d[\d.]*,\d\d)\s+(\d[\d.]*,\d\d)/g; let mc;
+    while ((mc = reCr.exec(String(md.texto || "")))) { const a = numEs(mc[4]); const h = numEs(mc[5]); if (a > 0 && h > 0) crs.push({ comp: mc[1], uds: parseInt(mc[2], 10) || 1, ancho: a, alto: h }); }
+    md.cristales = crs;
+    // Un dibujo con dos ventanas pegadas trae un cajón de persiana por cada una
+    const nCaj = (String(md.texto || "").match(/CAJ[OÓ]N\s+Ac\.?\s*(?:derecha|izquierda|der\b|izq\b)/gi) || []).length;
+    md.vent = nCaj >= 2 && nCaj <= 6 ? nCaj : 1;
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -58915,7 +58922,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), v: 3, modelos: r.modelos })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -59077,9 +59084,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // La HOJA DE CORTE se lee SOLA de los documentos de la obra (o de su expediente de Uxcar): obras del día que miras y de hoy en adelante.
   // Una vez por obra (si falla, se apunta el motivo y no se reintenta; se puede subir a mano).
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
+  const hojaVieja = (o) => { const h = hojasCD && hojasCD[limpia(o.d.key)]; return !!(h && toArray(h.modelos).length && !(h.v >= 3)); }; // leída antes de sacar medidas de cristales y nº de cajones: se vuelve a leer sola una vez
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && (!hojaDeObra(o) || hojaVieja(o)) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
@@ -59091,7 +59099,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
           const d = docsHojaDe(o)[0];
           let r;
           try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
-          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
+          if (!r.ok && !hojaVieja(o)) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
         }
       } finally { hojaLeyendo.current = false; }
     })();
