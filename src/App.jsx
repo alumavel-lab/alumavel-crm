@@ -47867,6 +47867,13 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     }));
     return out;
   }, [reconocer, cristales]);
+  // Diagnóstico: cuántos cristales de este presupuesto hay en el almacén (con o sin dar de baja) y cuántos caballetes hay en total
+  const diagCris = useMemo(() => {
+    if (!reconocer) return { total: 0, puestos: 0, cab: 0 };
+    let total = 0; let puestos = 0;
+    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p) => { const deObra = reconocer.pptoDe(c.presupuesto, p.presupuesto, p.ppto) || (reconocer.exp && numsExpediente(p.expediente || c.expediente).includes(reconocer.exp)); if (deObra) { total++; if (p.puesto) puestos++; } }));
+    return { total, puestos, cab: toArray(cristales).length };
+  }, [reconocer, cristales]);
   const sinCrisVentana = !!w && cris.length === 0;
   const claveP = obra && w ? `${obra.key}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_") : "";
   const apuntadoMan = claveP ? cpManual[claveP] : null;
@@ -47930,7 +47937,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
           {bloq && <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border-2 border-slate-500 bg-slate-100 text-sm font-bold text-slate-800"><span>🔒 {w.pos} YA ESTÁ HECHA ({estW.txt}). No se vuelve a ticar.</span><button type="button" onClick={() => { if (window.confirm(`${w.pos} ya figura como hecha (${estW.txt}).\n\n¿Desbloquearla para ticar otra vez?`)) setDesbloq((d) => [...d, w.id]); }} className="ml-auto px-2.5 py-1 rounded-md bg-white border border-slate-500 text-xs font-semibold">Desbloquear</button></div>}
           <div className="text-xs font-bold text-slate-600 uppercase">Cristales de {w.pos}{w.g ? ` (${w.g})` : ""}</div>
           {w.cr && w.cr.length > 0 && <div className="px-3 py-2 rounded-md border-2 border-sky-400 bg-sky-50 text-sm text-sky-900"><span className="font-bold">Según la hoja de corte:</span> {w.cr.map((c, n) => <span key={n} className="ml-2 font-semibold">{c.ancho} × {c.alto} mm{c.uds > 1 ? ` · ${c.uds} uds` : ""} <span className="font-normal text-sky-700">({c.comp})</span></span>)}</div>}
-          {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">No hay ningún cristal pendiente de este presupuesto en el almacén: su packing list (listado de vidrios) no está subido o ya están todos dados de baja. Medida de la ventana: {w.medida || "—"}.</p>}
+          {sinCrisVentana && crisObra.length === 0 && <p className="text-sm text-slate-500">{diagCris.total > 0 ? `En el almacén hay ${diagCris.total} cristal(es) de este presupuesto y los ${diagCris.puestos} ya están dados de baja.` : `En el almacén (${diagCris.cab} caballetes) no hay NINGÚN cristal que lleve este presupuesto. Si el packing list está subido, mira en Almacén de cristales con qué presupuesto o expediente ha quedado guardado.`} Medida de la ventana: {w.medida || "—"}.</p>}
           {sinCrisVentana && crisObra.length === 0 && (apuntadoMan
             ? <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-md border bg-slate-100 border-slate-200 text-sm text-slate-600"><span className="font-semibold">✓ Cristal de {w.pos} apuntado como PUESTO{apuntadoMan.por ? ` por ${apuntadoMan.por}` : ""}{apuntadoMan.fecha ? ` el ${apuntadoMan.fecha}` : ""}</span><button type="button" onClick={quitarPuesto} className="ml-auto text-xs text-slate-500 underline">Quitar</button></div>
             : <button type="button" disabled={bloq} onClick={apuntarPuesto} className={`px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold ${bloq ? "opacity-40" : ""}`}>Apuntar cristal de {w.pos} como PUESTO (sin packing list)</button>)}
