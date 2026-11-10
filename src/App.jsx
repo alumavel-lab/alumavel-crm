@@ -7477,7 +7477,7 @@ export default function App() {
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
-        {modulo === "condiciones" && <CondicionesModulo isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
+        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
         {modulo === "uxcar" && (
           <UxcarModulo
             incidenciasUx={incidenciasUx} stockUx={stockUxAuto} nombreUsuarioUx={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Ecowin PVC"}
@@ -52709,6 +52709,8 @@ function documentosQueFaltanUx(e, uxPedidos) {
    Solo el administrador crea, edita y borra. El texto se escribe con marcas sencillas:
    "## Título", "- punto", "- [ ] casilla", "1. paso", "**negrita**" y tablas con |. */
 const COND_RUTAS = { equipo: "condiciones", uxcar: "portalUxcar/condiciones" };
+// Puestos para los que se puede marcar un documento (los de la línea + el almacén de ventanas)
+const COND_PUESTOS = () => [...PUESTOS_LINEA.filter((q) => q.id !== "controlDia").map((q) => ({ id: q.id, nombre: q.nombre })), { id: "almacenventanas", nombre: "Almacén de ventanas" }];
 const condEsc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const condInline = (s) => condEsc(s).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
 function condMdAHtml(texto) {
@@ -52853,6 +52855,17 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
         </div>
         {f.para === "uxcar" && <p className="text-[11px] text-amber-700 mt-1">Lo verá Uxcar: escribe solo con la marca Ecowin PVC y sin datos internos.</p>}
       </div>
+      {f.para === "equipo" && (
+        <div className="text-sm">
+          <span className="font-semibold text-slate-700">¿Para qué puestos?</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {COND_PUESTOS().map((q) => (
+              <label key={q.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.puestos).includes(q.id)} onChange={(e) => set("puestos", e.target.checked ? [...toArray(f.puestos), q.id] : toArray(f.puestos).filter((x) => x !== q.id))} /> {q.nombre}</label>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1">Quien tenga un puesto asignado solo verá los documentos marcados para su puesto. Si no marcas ninguno, solo lo ven los administradores y el personal sin puesto asignado.</p>
+        </div>
+      )}
       <label className="block text-sm"><span className="font-semibold text-slate-700">Texto</span>
         <textarea value={f.contenido} onChange={(e) => set("contenido", e.target.value)} rows={16} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono" />
         <span className="text-[11px] text-slate-400">## Título de apartado · - punto · - [ ] casilla · 1. paso · **negrita** · tablas con | columna | columna |</span></label>
@@ -52875,7 +52888,8 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
 }
 
 // Módulo del CRM
-function CondicionesModulo({ isAdmin, usuario }) {
+function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
+  const restringido = !isAdmin && toArray(puestosUsuario).length > 0; // con puesto asignado: solo ve lo de su puesto
   const [docs, setDocs] = useState({ equipo: null, uxcar: null });
   const [para, setPara] = useState("equipo");
   const [vista, setVista] = useState("lista"); // lista | ver | editar | nuevo
@@ -52887,7 +52901,8 @@ function CondicionesModulo({ isAdmin, usuario }) {
     return () => { u1(); u2(); };
   }, []);
   const avisar = (m) => { setAviso(m); setTimeout(() => setAviso(""), 2600); };
-  const lista = docs[para];
+  const paraVer = restringido ? "equipo" : para;
+  const lista = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))) : docs[para];
   const abierto = toArray(lista).find((d) => d.id === abiertoId);
 
   const guardar = async (f, archivo) => {
@@ -52899,6 +52914,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
         orden: f.orden === "" || f.orden == null ? 99 : Number(f.orden),
         fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
         archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "", version: f.version || 1,
+        puestos: f.para === "equipo" ? toArray(f.puestos) : [],
       };
       if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
       const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
@@ -52954,7 +52970,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
         )}
       </div>
       <p className="text-sm text-slate-500 mb-4">Guías y normas de trabajo para tenerlas siempre a mano. Lo de la pestaña "Para Uxcar" también lo ven ellos en su portal.</p>
-      {vista === "lista" && (
+      {vista === "lista" && !restringido && (
         <div className="flex gap-1 mb-4">
           {[["equipo", "Para el equipo"], ["uxcar", "Para Uxcar"]].map(([k, t]) => (
             <button key={k} onClick={() => setPara(k)} className={`text-sm font-semibold px-3 py-1.5 rounded-md ${para === k ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
@@ -52979,7 +52995,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
       ) : (
         <>
           <CondicionesLista docs={lista} onAbrir={(id) => { setAbiertoId(id); setVista("ver"); }}
-            vacio={para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
+            vacio={restringido ? "Todavía no hay guías para tu puesto. Si echas algo en falta, díselo al responsable." : para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
           {isAdmin && guiasAnticuadas.length > 0 && (
             <button onClick={actualizarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-amber-400 text-amber-700 hover:bg-amber-50">
               <RefreshCw size={14} /> Actualizar {guiasAnticuadas.length === 1 ? "1 guía" : `${guiasAnticuadas.length} guías`} con la versión nueva: {guiasAnticuadas.map((x) => x.g.titulo.replace(/^Guía (del equipo|de fábrica|para Uxcar): /, "")).join(" · ")}
@@ -53423,6 +53439,80 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 - [ ] **Presupuesto "CORRECCIÓN"**: si la vivienda ya estaba cargada, quedaría duplicada.
 - [ ] **Color distinto** al del resto del lote.
 - [ ] Si el lote ya tenía etiquetas de la línea, el rápido las **sustituye** (te lo pregunta).`,
+  },
+  {
+    para: "equipo", orden: 10, version: 1, puestos: ["soldadora", "herraje", "pilastra", "colgado", "persianaA", "persianaB", "lineaPers", "puerta", "cristales", "solape", "especiales", "carga", "almacenventanas"], titulo: "Cómo leer con la pistola (todos los puestos)",
+    contenido: `## Lo básico
+1. Elige tu puesto (arriba, en **Línea (pistola)**). Si tienes puesto fijo, ya sale elegido.
+2. Pasa la pistola por la **etiqueta** de la ventana. Cada pieza (marco u hoja) cuenta **una sola vez en tu puesto**.
+3. Si la vuelves a leer sale **YA LEÍDA**: no se cuenta otra vez. No pasa nada.
+4. Si no estás seguro de qué es una ventana, pulsa **Escáner: consultar una ventana**: te enseña su ficha **sin registrar nada**.
+5. Sin pistola puedes usar **Leer con la cámara del móvil**.
+
+## Si algo no sale como aquí
+- Pulsa el botón rojo **Incidencia** (abajo a la derecha). Escribe qué pasa y de qué ventana.
+- No inventes un dato: si el CRM no encuentra algo, dilo en la incidencia.`,
+  },
+  {
+    para: "equipo", orden: 11, version: 1, puestos: ["cristales"], titulo: "Puesto Cristales: cómo se trabaja",
+    contenido: `## Con etiqueta
+Pasa la pistola por la ventana. El CRM te dice **dónde está su cristal** (caballete y hueco) y lo da de baja en la segunda lectura.
+
+## Sin etiqueta: buscar por presupuesto
+1. Pulsa **Buscar por presupuesto (sin etiqueta)** y escribe el número (por ejemplo 6740).
+2. Pincha la **obra** y luego la **ventana**.
+3. Salen los **cristales del almacén** con su caballete y hueco. Pulsa **Dar de baja**.
+4. Si la fila trae **varias unidades**, se dan de baja **de una en una**: **Dar de baja unidad 1**, **unidad 2**…
+5. Si no encuentra el cristal, te enseña la **medida del cristal según la hoja de corte** (caja azul). Si ya lo has puesto, pulsa **Apuntar cristal como PUESTO**.
+
+## El candado 🔒
+- Una ventana con **🔒** ya está hecha (en solape, en la línea para paletizar o con el cristal puesto). **No se vuelve a ticar**.
+- Puedes abrirla y mirarla. Solo **Desbloquear** (te pide confirmar) deja tocarla otra vez: hazlo solo si estás seguro.
+
+## Después de acristalar
+- Si la ventana **lleva solape o postigo**: apúntala en **Solape** con el número de estantería (1 a 36).
+- Si **no lleva**: pulsa **Sin solape → LÍNEA para paletizar**. Se queda en la línea.`,
+  },
+  {
+    para: "equipo", orden: 12, version: 1, puestos: ["solape"], titulo: "Puesto Solape / postigo: cómo se trabaja",
+    contenido: `## Qué ves al entrar
+- **Por poner solape / postigo (obras de hoy)**: ventanas que llevan solape o postigo y todavía no están colocadas.
+- **Ya en el almacén de solape**: las que ya están, con su **estantería**.
+
+## Poner una ventana en el almacén de solape
+1. Busca su presupuesto con **Buscar por presupuesto** y pincha la ventana.
+2. Escribe la **estantería (1 a 36)**. Si la dejas en blanco usa la primera libre.
+3. Pulsa **Apuntar en Solape** y llévala a esa estantería.
+
+## Si resulta que no lleva solape
+Pulsa **Sin solape → LÍNEA para paletizar**: se queda en la línea para el que hace los palés.
+
+## Mapa del almacén
+Las estanterías ocupadas salen en el mapa del almacén de solape. Si una estantería quedó mal apuntada, el responsable puede liberarla.`,
+  },
+  {
+    para: "equipo", orden: 13, version: 1, puestos: ["almacenventanas", "carga"], titulo: "Almacén de ventanas: cómo se trabaja",
+    contenido: `## Los caballetes
+Cada caballete (C-01, C-02…) tiene un estado:
+| Estado | Qué significa |
+| --- | --- |
+| Libre | Vacío y disponible |
+| Reservado | Apartado para una obra |
+| Con ventanas | Ya lleva ventanas |
+| Fuera (a devolver) | Salió con el cliente y hay que reclamarlo |
+
+## Cómo entran las ventanas
+1. Pasa la pistola por la ventana. Si ya estaba en un caballete, cuenta la pieza. Si no, la mete en el caballete que toca (el reservado o uno libre). Si no queda ninguno, crea uno nuevo.
+2. Cada ventana se completa cuando se han leído **todas sus piezas** (por ejemplo 3/4).
+3. Si la ventana tiene una **incidencia abierta**, no se carga: se guarda en el almacén de ventanas terminadas.
+
+## Qué ver en la pantalla
+- **Han llegado por la línea y aún no están en caballete**: lo que sale de Cristales, Solape o la Línea y falta meter en un caballete.
+- **¿Dónde está cada ventana?**: escribe el presupuesto y sale cada ventana de la obra con su sitio actual y los puestos por los que ha pasado.
+- **Planning de caballetes** y demás bloques: están plegados, pincha el título para abrirlos.
+
+## Si algo no cuadra
+Pulsa **Incidencia** y cuéntalo. No muevas ni quites ventanas de un caballete si no estás seguro.`,
   },
 ];
 
