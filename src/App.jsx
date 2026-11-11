@@ -2298,6 +2298,30 @@ export default function App() {
     saveInstalaciones(instalaciones.map((i) => (i.id === id ? { ...i, ...patch } : i)));
   };
 
+  // PRESUPUESTO desde una instalación o una incidencia (reparación, extra, fuera de garantía…): abre el formulario ya relleno
+  const hacerPresupuestoDe = (tipo, obj) => {
+    if (!obj) return;
+    const pr = obj.proyectoId ? proyectos.find((x) => x.id === obj.proyectoId) : null;
+    const cl = pr ? clientes.find((c) => c.id === pr.clienteId) : clientes.find((c) => c.nombre && c.nombre === obj.clienteNombre);
+    const esInst = tipo === "instalacion";
+    const horas = esInst ? toArray(obj.registroHoras).reduce((a, r) => a + (parseFloat(r.horas) || 0), 0) : 0;
+    const gastos = esInst ? toArray(obj.gastos).reduce((a, g) => a + (parseFloat(g.importe) || 0), 0) : toArray(obj.gastos).reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+    const g = !esInst && pr ? garantiaObra(pr, obj.fecha) : null;
+    const desc = esInst
+      ? `${obj.tipoTrabajo || "Instalación"}: ${obj.nombre || (pr ? `#${pr.numero} ${pr.nombre}` : "")}${obj.notas ? `\n${obj.notas}` : ""}${horas ? `\nHoras empleadas: ${horas}` : ""}${gastos ? `\nGastos: ${gastos.toFixed(2)} €` : ""}`
+      : `Reparación — incidencia #${obj.numero || ""}${pr ? ` (obra #${pr.numero} ${pr.nombre})` : ""}\n${obj.especificaciones || ""}${obj.observaciones ? `\n${obj.observaciones}` : ""}${g && !g.sinFecha ? `\nGarantía: ${g.dentro ? "EN garantía" : "FUERA de garantía"} (hasta ${fmtDate(g.hasta)})` : ""}`;
+    setPresupuestoPrefill({
+      clienteNombre: (cl && cl.nombre) || obj.clienteNombre || "",
+      telefono: obj.telefono || (cl && (cl.movil || cl.telefono)) || "",
+      direccionEnvio: obj.direccion || (pr && pr.ubicacion) || (cl && cl.direccion) || "",
+      descripcion: desc,
+      comentarios: `Creado desde ${esInst ? "la instalación" : `la incidencia #${obj.numero || ""}`}. Revisa los datos y pon el importe antes de guardar.`,
+      extra: { ...(pr ? { proyectoId: pr.id } : {}), ...(esInst ? { origenInstalacionId: obj.id } : { origenIncidenciaId: obj.id }) },
+    });
+    if (esInst) updateInstalacion(obj.id, { presupuestoPedido: new Date().toISOString().slice(0, 10) });
+    else saveIncidencias(incidencias.map((x) => (x.id === obj.id ? { ...x, presupuestoPedido: new Date().toISOString().slice(0, 10) } : x)));
+    setModulo("presupuestos"); setPresupuestoEditId(null); setPresupuestoView("form");
+  };
   const crearInstalacionManual = (data) => {
     const nueva = {
       id: uid(), proyectoId: data.proyectoId || null, nombre: data.nombre || "", clienteNombre: data.clienteNombre || "",
@@ -7114,6 +7138,7 @@ export default function App() {
           <IncidenciasModulo
             usuarios={usuarios}
             onFechaGarantia={(pid, v) => { updateProyectoInline(pid, { fechaGarantia: v || "" }); showToast(v ? "Fecha de entrega para la garantía guardada en la obra" : "Fecha de garantía quitada"); }}
+            onHacerPresupuesto={(inc) => hacerPresupuestoDe("incidencia", inc)}
             onMandarMontadores={(inc) => {
               const pr = proyectos.find((x) => x.id === inc.proyectoId);
               const cl = pr && clientes.find((c) => c.id === pr.clienteId);
@@ -7530,6 +7555,7 @@ export default function App() {
             setDetailId={setInstalacionDetailId}
             onUpdate={updateInstalacion}
             onCrearManual={crearInstalacionManual}
+            onHacerPresupuesto={(inst) => hacerPresupuestoDe("instalacion", inst)}
             onAddHora={addHoraInstalacion}
             onDeleteHora={deleteHoraInstalacion}
             onAddGasto={addGastoInstalacion}
@@ -25319,7 +25345,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, configMontaje, onSaveConfigMontaje, pedidosMontaje = [] }) {
+function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, configMontaje, onSaveConfigMontaje, pedidosMontaje = [] }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -25374,6 +25400,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         cliente={proyecto ? clientes.find((c) => c.id === proyecto.clienteId) : null}
         onBack={() => setView("list")}
         onUpdate={(patch) => onUpdate(instalacion.id, patch)}
+        onHacerPresupuesto={onHacerPresupuesto ? () => onHacerPresupuesto(instalacion) : null}
         onAddHora={(r) => onAddHora(instalacion.id, r)}
         onDeleteHora={(rid) => onDeleteHora(instalacion.id, rid)}
         onAddGasto={(g) => onAddGasto(instalacion.id, g)}
@@ -25789,7 +25816,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
+function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -25905,6 +25932,11 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
           </p>
         ); })()}
       </div>
+      {onHacerPresupuesto && (
+        <button type="button" onClick={onHacerPresupuesto} className="w-full mb-4 flex items-center justify-center gap-2 border-2 border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold py-3 rounded-lg">
+          <FileText size={16} /> Hacer presupuesto de esta {String(instalacion.tipoTrabajo || "instalación").toLowerCase()}{instalacion.presupuestoPedido ? ` · ya se abrió uno el ${fmtDate(instalacion.presupuestoPedido)}` : ""}
+        </button>
+      )}
       <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
         <h2 className="font-display font-bold text-slate-800 mb-2">Fotos, planos y documentos ({toArray(instalacion.archivos).length})</h2>
         <AdjuntosPicker lista={instalacion.archivos} onCambiar={(l) => onUpdate({ archivos: l })} titulo="📷 Añadir más" />
@@ -25912,7 +25944,7 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
 
       <div className="flex gap-2 mb-6">
         {ESTADO_INSTALACION.map((e) => (
-          <button key={e} onClick={() => onUpdate({ estado: e })}
+          <button key={e} onClick={() => { onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
             {e}
           </button>
@@ -30743,7 +30775,7 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -30815,6 +30847,7 @@ function IncidenciasModulo({ onFechaGarantia = null, usuarios = [], onMandarMont
         openPedido={openPedido}
         onPedirMateriales={() => onPedirMateriales(incidencia)}
         onMandarMontadores={onMandarMontadores ? () => onMandarMontadores(incidencia) : null}
+        onHacerPresupuesto={onHacerPresupuesto ? () => onHacerPresupuesto(incidencia) : null}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(incidencia.id); setView("form"); }}
         onDelete={() => onDelete(incidencia.id)}
@@ -31115,7 +31148,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
-function IncidenciaDetail({ onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
   const totalGastos = gastos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
@@ -31356,6 +31389,12 @@ function IncidenciaDetail({ onFechaGarantia = null, incidencia, proyecto, client
             <button onClick={onMandarMontadores} disabled={!!incidencia.enviadaMontadores}
               className="w-full flex items-center justify-center gap-2 border-2 border-violet-300 bg-violet-50 hover:bg-violet-100 text-violet-900 text-sm font-bold py-3 rounded-lg disabled:opacity-60">
               <Wrench size={16} /> {incidencia.enviadaMontadores ? `Mandada a los montadores el ${fmtDate(incidencia.enviadaMontadores)}` : "Mandar a los montadores (reparación)"}
+            </button>
+          )}
+          {onHacerPresupuesto && (
+            <button type="button" onClick={onHacerPresupuesto}
+              className="w-full flex items-center justify-center gap-2 border-2 border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold py-3 rounded-lg">
+              <FileText size={16} /> Pasar a presupuesto{incidencia.presupuestoPedido ? ` · ya se abrió uno el ${fmtDate(incidencia.presupuestoPedido)}` : ""}
             </button>
           )}
           <button
@@ -33463,13 +33502,14 @@ function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirP
     if (!prefill) return;
     setPrefillPresupuesto({
       id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
-      clienteNombre: prefill.clienteNombre || "", telefono: "", email: "",
+      clienteNombre: prefill.clienteNombre || "", telefono: prefill.telefono || "", email: "",
       descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, recoge: false, zona: "",
       techos: prefill.techos || [],
       persianas: prefill.persianas || [],
       ventanas: prefill.ventanas || [],
+      ...(prefill.extra || {}),
     });
     setEditId(null);
     setView("form");
