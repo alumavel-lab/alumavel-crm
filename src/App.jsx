@@ -30918,7 +30918,28 @@ const opcionesAsignarIncidencia = (usuarios) => {
   const op = (u) => <option key={u.id} value={u.id}>{nom(u)}</option>;
   return mon.length ? [<optgroup key="m" label="Montadores">{mon.map(op)}</optgroup>, <optgroup key="r" label="Resto del equipo">{resto.map(op)}</optgroup>] : resto.map(op);
 };
+// Foto o documento → dataUrl (fotos reducidas a 1000 px y calidad 0,7, igual que en la ficha de la incidencia)
+const archivoIncidenciaDataUrl = (file) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onerror = reject;
+  if (!String(file.type || "").startsWith("image/")) { r.onload = () => resolve(r.result); r.readAsDataURL(file); return; }
+  r.onload = (e) => { const img = new Image(); img.onerror = reject; img.onload = () => { const max = 1000; let { width, height } = img; if (width > height && width > max) { height = Math.round(height * (max / width)); width = max; } else if (height > max) { width = Math.round(width * (max / height)); height = max; } const c = document.createElement("canvas"); c.width = width; c.height = height; c.getContext("2d").drawImage(img, 0, 0, width, height); resolve(c.toDataURL("image/jpeg", 0.7)); }; img.src = e.target.result; };
+  r.readAsDataURL(file);
+});
 function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [], onFechaGarantia = null }) {
+  // FOTOS Y DOCUMENTOS desde el alta: lo que tenga que ver el que va a hacer la reparación
+  const [adjuntos, setAdjuntos] = useState([]);
+  const [subiendoAdj, setSubiendoAdj] = useState(false);
+  const [errorAdj, setErrorAdj] = useState("");
+  const anadirAdjuntos = async (files) => {
+    setSubiendoAdj(true); setErrorAdj(""); const nuevos = []; const grandes = [];
+    for (const file of Array.from(files || [])) {
+      try { const dataUrl = await archivoIncidenciaDataUrl(file); if (dataUrl.length > 900000) { grandes.push(file.name); continue; } nuevos.push({ id: uid(), nombre: file.name, tipo: String(file.type || "").startsWith("image/") ? "imagen" : "documento", dataUrl, fecha: new Date().toISOString() }); }
+      catch (e) { grandes.push(file.name); }
+    }
+    if (grandes.length) setErrorAdj(`No se han podido añadir (demasiado grandes o no se leen): ${grandes.join(", ")}. Prueba con una foto más sencilla o un PDF más corto.`);
+    setAdjuntos((a) => [...a, ...nuevos]); setSubiendoAdj(false);
+  };
   const [f, setF] = useState(
     initial || {
       id: null, proyectoId: proyectos[0]?.id || "", fecha: new Date().toISOString().slice(0, 10),
@@ -30943,7 +30964,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       return;
     }
     setErrorMsg("");
-    onSave(f);
+    onSave(adjuntos.length ? { ...f, archivos: [...adjuntos, ...toArray(f.archivos)] } : f);
   };
 
   return (
@@ -30975,7 +30996,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           </div>
         )}
         {proyectoSel && <AvisoGarantia proyecto={proyectoSel} fecha={f.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyectoSel.id, v) : null} />}
-        {!initial && <div className="text-xs text-slate-500">📷 Las fotos se suben nada más guardar: se abre la incidencia en «Fotos y documentos».</div>}
+
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="Fecha"><TextInput type="date" value={f.fecha} onChange={set("fecha")} /></Field>
@@ -30993,6 +31014,25 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           <TextArea rows={3} value={f.especificaciones} onChange={set("especificaciones")} required />
         </Field>
         <Field label="Observaciones"><TextArea rows={2} value={f.observaciones} onChange={set("observaciones")} /></Field>
+
+        <Field label={`Fotos y documentos para el que hace la reparación${toArray(f.archivos).length ? ` (ya tiene ${toArray(f.archivos).length})` : ""}`}>
+          <label className={`inline-flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border-2 border-dashed cursor-pointer ${subiendoAdj ? "border-slate-300 text-slate-400" : "border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"}`}>
+            <ImageIcon size={15} /> {subiendoAdj ? "Preparando…" : "📷 Añadir fotos, PDF o archivos"}
+            <input type="file" multiple accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" disabled={subiendoAdj} onChange={(e) => { anadirAdjuntos(e.target.files); e.target.value = ""; }} />
+          </label>
+          {errorAdj && <div className="mt-1 text-xs font-semibold text-rose-700">⚠ {errorAdj}</div>}
+          {adjuntos.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {adjuntos.map((x) => (
+                <div key={x.id} className="relative w-24">
+                  {x.tipo === "imagen" ? <img src={x.dataUrl} alt={x.nombre} className="w-24 h-20 object-cover rounded border border-slate-200" /> : <div className="w-24 h-20 flex items-center justify-center rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 text-center p-1 break-all">📄 {x.nombre}</div>}
+                  <button type="button" onClick={() => setAdjuntos((a) => a.filter((y) => y.id !== x.id))} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-600 text-white text-xs leading-5" title="Quitar">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-1 text-[11px] text-slate-500">Se guardan con la incidencia al pulsar «Guardar». En el móvil puedes hacer la foto directamente. Luego se pueden añadir más en «Fotos y documentos».</div>
+        </Field>
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Estado del trabajo">
