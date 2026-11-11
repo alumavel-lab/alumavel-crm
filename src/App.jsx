@@ -5624,6 +5624,8 @@ export default function App() {
     const hoy = new Date().toISOString().slice(0, 10);
     const p = proyectos.find((x) => x.id === proyectoId);
     if (!p) return;
+    // Sin aceptar: NO se frena (si puede salir, sale), solo se avisa
+    if ((p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && !["Pendiente de aceptación", "En proceso", "Cancelado"].includes(estado)) showToast(`⚠ #${p.numero} no estaba aceptada: pasa igualmente a «${estado}»`);
     const patch = { ...extra, estadoTrabajo: estado };
     if (estado === "Listo para reparto/recogida") patch.fechaTerminadoFabrica = hoy;
     if (estado === "Entregado") patch.fechaEntregado = hoy;
@@ -24733,6 +24735,8 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
 }
 
 // Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
+// De momento NO se bloquea firmar la carga sin cita confirmada (que salga el material). Poner a true para exigirla.
+const BLOQUEAR_FIRMA_SIN_CITA = false;
 const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
 // ¿OBRA TERMINADA? No se fía solo del estado: si TODAS las ventanas de sus etiquetas están ya en un palet (o salieron), está terminada → aviso a Albaranes
 const normPosPal = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
@@ -24789,13 +24793,23 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const estCita = (p) => (citaOk(p) ? "ok" : !fechaCitaDe(p) ? "sinfecha" : listoP(p) ? "llamar" : "aprox");
   const [fCita, setFCita] = useEstadoLocal("crm_alb_fcita", "todas"); // todas | sinfecha | aprox | llamar | ok
   const [selCita, setSelCita] = useState({}); const [fechaLote, setFechaLote] = useState("");
+  // FECHA DEL PLANNING de Fábrica: día en que termina de fabricarse → la salida propuesta es el siguiente día laborable
+  const planFA = useObjetoFb("planFabrica");
+  const planDe = (p) => {
+    const obras = (planFA && planFA.obras) || {}; const dias = (planFA && planFA.dias) || {};
+    const ks = [`proyecto-${p.id}`, p.uxcarExpedienteId ? `uxcar-${p.uxcarExpedienteId}` : ""].filter(Boolean).map((k) => k.replace(/[.#$/[\]]/g, "_"));
+    let fin = ""; ks.forEach((k) => { const o = obras[k]; if (o && o.fin && o.fin > fin) fin = o.fin; Object.keys(dias).forEach((d) => { if (dias[d] && dias[d][k] && d > fin) fin = d; }); });
+    if (!fin) return null;
+    let salida = ""; try { salida = sigLaborable(fin); } catch (e) { salida = fin; }
+    return { fin, salida };
+  };
   const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
   const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
   const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
   const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
     .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
   // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
-  const fijarFechaObra = (p, fecha, hora, confirmar) => {
+  const fijarFechaObra = (p, fecha, hora, confirmar, extraCita = {}) => {
     if (!onGuardarCita) return;
     const t = tipoSalida(p); const ant = p.citaSalida || {}; const ahora = new Date().toISOString(); const yo = nombreYo || "—";
     const fAnt = fechaCitaDe(p); const hNueva = hora == null ? ant.hora || "" : hora;
@@ -24803,7 +24817,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     const conf = confirmar ? { por: yo, ts: ahora } : cambia ? false : ant.contactadoCliente || false;
     const rep = confirmar && t === "reparto" ? { por: yo, ts: ahora } : cambia ? false : ant.avisadoRepartidor || false;
     const cita = { ...ant, tipo: t, fecha: fecha || "", hora: hNueva, contactadoCliente: conf, avisadoRepartidor: rep, por: yo, ts: ahora,
-      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10) };
+      historial: [...toArray(ant.historial), ...(fAnt && cambia ? [{ fecha: fAnt, hora: ant.hora || "", cambiadaPor: yo, ts: ahora }] : [])].slice(-10), ...extraCita };
     onGuardarCita(p.id, { [t === "instalacion" ? "fechaMontaje" : "fechaReparto"]: fecha || "", citaSalida: cita });
   };
   const confirmarDesdeLista = (p) => {
@@ -24830,11 +24844,18 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     setCitaB({ fecha: fechaCitaDe(p), hora: c.hora || "", cliente: !!c.contactadoCliente, repartidor: !!c.avisadoRepartidor, nota: c.nota || "" });
     setAbiertoId(p.id);
   };
-  const guardarCita = () => {
+  // aprox = no he podido contactar con el cliente: se guarda la fecha que creo, como APROXIMADA (no deja firmar la carga hasta confirmarla)
+  const guardarCita = (aprox = false) => {
     if (!abierto || !citaB) return;
     const t = tipoSalida(abierto);
     if (!citaB.fecha) { alert(`Pon la FECHA de ${t === "instalacion" ? "instalación" : t}: es obligatoria.`); return; }
-    if (!citaB.cliente) { alert("Marca que has LLAMADO AL CLIENTE y quedado con él: es obligatorio."); return; }
+    if (aprox) {
+      const ant = abierto.citaSalida || {};
+      fijarFechaObra(abierto, citaB.fecha, citaB.hora || "", false, { nota: citaB.nota || "", contactadoCliente: false, avisadoRepartidor: false, intentos: [...toArray(ant.intentos), { por: nombreYo || "—", ts: new Date().toISOString() }].slice(-10) });
+      setCitaB({ ...citaB, cliente: false, repartidor: false });
+      return;
+    }
+    if (!citaB.cliente) { alert("Para CONFIRMAR marca que has llamado al cliente. Si no has podido contactar, usa «Guardar fecha aproximada»."); return; }
     if (t === "reparto" && !citaB.repartidor) { alert("Marca que has AVISADO AL REPARTIDOR: es obligatorio en los repartos."); return; }
     const ant = abierto.citaSalida || {}; const ahora = new Date().toISOString();
     const marca = (si, prev) => (si ? (prev && prev.por ? prev : { por: nombreYo || "—", ts: ahora }) : false);
@@ -24861,21 +24882,32 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           <h2 className="text-xl font-extrabold text-slate-900">#{abierto.numero} — {abierto.nombre}</h2>
           <div className="text-sm text-slate-600 mt-1">{cli ? cli.nombre : "—"}{cli && (cli.movil || cli.telefono) ? <> · <a href={`tel:${cli.movil || cli.telefono}`} className="text-[#2E8B57] font-semibold">{cli.movil || cli.telefono}</a></> : null}</div>
           <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
-          <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · Reparto {fmtDate(abierto.fechaReparto) || "sin fecha"}</div>
+          <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · {tipoSalida(abierto) === "recogida" ? "Recogida" : tipoSalida(abierto) === "instalacion" ? "Instalación" : "Reparto"} {fmtDate(fechaCitaDe(abierto)) || "sin fecha"}{abierto.citaSalida && abierto.citaSalida.hora ? ` ${abierto.citaSalida.hora}` : ""}</div>
         </div>
         {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
           <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
-            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
-            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."} Sin esto no se puede firmar la carga.</div>}
+            <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : fechaCitaDe(abierto) ? `Fecha aproximada ${fmtDate(fechaCitaDe(abierto))} · sin confirmar` : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
+            {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."}{BLOQUEAR_FIRMA_SIN_CITA ? " Sin esto no se puede firmar la carga." : ""}</div>}
             <div className="flex flex-wrap items-end gap-2">
               <label className="text-xs text-slate-600">Fecha<br /><input type="date" value={citaB.fecha} onChange={(e) => setCitaB({ ...citaB, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
               <label className="text-xs text-slate-600">Hora<br /><input type="time" value={citaB.hora} onChange={(e) => setCitaB({ ...citaB, hora: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
               {tel && <a href={`tel:${tel}`} className="text-sm font-semibold text-[#2E8B57] underline pb-1.5">📞 Llamar {tel}</a>}
             </div>
+            {(() => { const pl = planDe(abierto); if (!pl) return <div className="text-[11px] text-slate-500">Esta obra no está en el planning de Fábrica.</div>; return (
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-white border border-slate-200 rounded px-2 py-1.5">
+                <span>📅 Planning: termina en fábrica el <b>{fmtDate(pl.fin)}</b> → salida propuesta <b>{fmtDate(pl.salida)}</b></span>
+                <button type="button" onClick={() => { if (!window.confirm(`¿Guardar el ${fmtDate(pl.salida)} como fecha APROXIMADA (sin llamar)?`)) return; fijarFechaObra(abierto, pl.salida, citaB.hora || "", false); setCitaB({ ...citaB, fecha: pl.salida, cliente: false, repartidor: false }); }} className="px-2 py-1 rounded bg-amber-500 text-white font-semibold">Usar como aproximada</button>
+                <button type="button" onClick={() => { const t = tipoSalida(abierto); if (!window.confirm(`¿Has LLAMADO AL CLIENTE${t === "reparto" ? " y AVISADO AL REPARTIDOR" : ""} y queda el ${fmtDate(pl.salida)}${citaB.hora ? " a las " + citaB.hora : ""}?`)) return; fijarFechaObra(abierto, pl.salida, citaB.hora || "", true, { nota: citaB.nota || "" }); setCitaB({ ...citaB, fecha: pl.salida, cliente: true, repartidor: t === "reparto" }); }} className="px-2 py-1 rounded bg-[#2E8B57] text-white font-semibold">✓ Confirmar esta fecha</button>
+              </div>
+            ); })()}
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.cliente} onChange={(e) => setCitaB({ ...citaB, cliente: e.target.checked })} /> He llamado al cliente y está de acuerdo con la fecha{c.contactadoCliente && c.contactadoCliente.por ? <span className="text-xs text-slate-500">({c.contactadoCliente.por}, {new Date(c.contactadoCliente.ts).toLocaleString("es-ES")})</span> : null}</label>
             {t === "reparto" && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={citaB.repartidor} onChange={(e) => setCitaB({ ...citaB, repartidor: e.target.checked })} /> He avisado al repartidor{c.avisadoRepartidor && c.avisadoRepartidor.por ? <span className="text-xs text-slate-500">({c.avisadoRepartidor.por})</span> : null}</label>}
             <input value={citaB.nota} onChange={(e) => setCitaB({ ...citaB, nota: e.target.value })} placeholder="Nota (quién recoge, furgoneta, llamar antes…)" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
-            <button type="button" onClick={guardarCita} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">Guardar cita (sale en el calendario)</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => guardarCita(false)} className="px-4 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">✓ Guardar cita confirmada</button>
+              <button type="button" onClick={() => guardarCita(true)} className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-bold">Guardar fecha aproximada (no he podido contactar)</button>
+            </div>
+            <div className="text-[11px] text-slate-500">Las dos salen en el calendario. La aproximada queda en ámbar «sin llamar».{BLOQUEAR_FIRMA_SIN_CITA ? " No deja firmar la carga hasta confirmarla." : ""}{toArray(c.intentos).length ? ` Intentos sin contactar: ${toArray(c.intentos).length} (último ${new Date(toArray(c.intentos).slice(-1)[0].ts).toLocaleString("es-ES")}, ${toArray(c.intentos).slice(-1)[0].por}).` : ""}</div>
             {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
           </div>
         ); })()}
@@ -24924,6 +24956,25 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           </div>
           <button onClick={() => guardar()} className="text-xs font-semibold text-slate-600 hover:underline">Guardar cambios</button>
         </div>
+        {/* GUÍA: qué toca ahora, para quien no sepa seguir */}
+        {(() => {
+          const rec = esRecogidaFabrica(abierto); const foto = toArray(a.fotosCarga).length > 0;
+          const pasos = [
+            { ok: foto, txt: "Haz la FOTO DE LA CARGA (botón «Foto de la carga» del paso 1). Que se vea el material cargado." },
+            { ok: !!a.firmaCarga, txt: rec ? "Firma QUIEN ENTREGA en fábrica (botón verde del paso 1)." : "Firma el CHÓFER al cargar (botón verde del paso 1)." },
+            { ok: !!a.firmaCliente, txt: rec ? "Firma QUIEN RECOGE (paso 2). Si no está el cliente, firma el responsable de la carga." : "Firma el CLIENTE al entregar (paso 2)." },
+          ];
+          const sig = pasos.findIndex((x) => !x.ok);
+          return (
+            <div className={`rounded-lg border-2 p-3 ${sig === -1 ? "border-emerald-400 bg-emerald-50" : "border-sky-500 bg-sky-50"}`}>
+              <div className="text-sm font-extrabold text-slate-900">{sig === -1 ? "✓ Albarán completo: no falta nada." : `👉 Ahora toca el paso ${sig + 1} de 3`}</div>
+              <ol className="mt-1 space-y-0.5 text-sm">
+                {pasos.map((x, i) => <li key={i} className={x.ok ? "text-emerald-700 line-through" : i === sig ? "font-bold text-sky-900" : "text-slate-500"}>{x.ok ? "✓" : i === sig ? "👉" : "○"} {i + 1}. {x.txt}</li>)}
+              </ol>
+              {sig !== -1 && <div className="mt-1 text-[11px] text-slate-600">¿No te deja seguir? Sin foto no se puede firmar, y el cliente firma después de la carga. Si la foto no sube (sin cobertura), espera a tener señal o avisa a la oficina; no se lleve el material sin apuntarlo en «Notas».</div>}
+            </div>
+          );
+        })()}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "1. Salida de fábrica (foto + firma de quien entrega)" : "1. Carga (chófer)"}</div>
@@ -24942,7 +24993,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               </label>
             </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => { if (!citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (BLOQUEAR_FIRMA_SIN_CITA && !citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Falta la FOTO DE LA CARGA.\n\nQué hacer: pulsa «Foto de la carga» (paso 1), haz la foto del material cargado y luego vuelve a pulsar firmar.\n\nSi no sube (sin cobertura), espera a tener señal o avisa a la oficina."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
@@ -25045,6 +25096,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button type="button" onClick={ponerFechaLote} className="px-3 py-1 rounded bg-[#2E8B57] text-white font-semibold">Poner fecha a {Object.values(selCita).filter(Boolean).length} marcada(s)</button>
             <button type="button" onClick={() => setSelCita(Object.fromEntries(repartos.filter((p) => !fechaCitaDe(p)).map((p) => [p.id, true])))} className="text-xs underline text-slate-600">marcar las sin fecha</button>
             {Object.values(selCita).some(Boolean) && <button type="button" onClick={() => setSelCita({})} className="text-xs underline text-slate-500">desmarcar</button>}
+            {(() => { const con = repartos.filter((p) => !fechaCitaDe(p) && planDe(p)); return con.length ? <button type="button" onClick={() => { if (!window.confirm(`¿Poner a ${con.length} obra(s) sin fecha la salida que sale del planning de Fábrica (día siguiente a terminar)? Quedan como APROXIMADAS.`)) return; con.forEach((p) => fijarFechaObra(p, planDe(p).salida, null, false)); }} className="px-3 py-1 rounded bg-amber-500 text-white font-semibold">📅 Fecha del planning a {con.length} sin fecha</button> : null; })()}
           </div>
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
@@ -25058,6 +25110,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
+                  {(p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && <Badge className="bg-rose-50 text-rose-700 ring-rose-300">⚠ Sin aceptar</Badge>}
                   {(() => { const r = paletDeObra(p, idxPalet); return r && r.n > 0 ? <Badge className={r.completa ? "bg-emerald-600 text-white ring-emerald-600" : "bg-slate-50 text-slate-600 ring-slate-200"}>{r.completa ? `🟢 Todas en palet (${r.total})` : `${r.n}/${r.total} en palet`}</Badge> : null; })()}
                   {ec === "ok" ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Cita confirmada {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge>
                     : ec === "llamar" ? <Badge className="bg-rose-600 text-white ring-rose-600">📞 Carga terminada: LLAMA AL CLIENTE</Badge>
@@ -25077,6 +25130,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                 <span className="text-slate-500">{tipoSalida(p) === "instalacion" ? "Instalación" : tipoSalida(p) === "recogida" ? "Recogida" : "Reparto"}:</span>
                 <input type="date" value={fechaCitaDe(p)} onChange={(e) => { const v = e.target.value; if (citaOk(p) && !window.confirm("Esta cita ya estaba CONFIRMADA con el cliente. Si la cambias, hay que volver a llamarle. ¿Cambiar?")) return; fijarFechaObra(p, v, null, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
                 <input type="time" value={(p.citaSalida && p.citaSalida.hora) || ""} onChange={(e) => { if (!fechaCitaDe(p)) { alert("Primero la fecha."); return; } fijarFechaObra(p, fechaCitaDe(p), e.target.value, false); }} className="border border-slate-300 rounded px-1.5 py-1" />
+                {(() => { const pl = !fechaCitaDe(p) && planDe(p); return pl ? <button type="button" onClick={() => fijarFechaObra(p, pl.salida, null, false)} title={`Termina en fábrica el ${fmtDate(pl.fin)}`} className="px-2.5 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300 font-semibold">📅 Usar planning: {fmtDate(pl.salida)}</button> : null; })()}
                 {ec !== "ok" && fechaCitaDe(p) && <button type="button" onClick={() => confirmarDesdeLista(p)} className={`px-2.5 py-1 rounded font-semibold ${ec === "llamar" ? "bg-rose-600 text-white" : "bg-white border border-slate-300 text-slate-700"}`}>📞 Llamado: confirmar</button>}
                 {(() => { const c = clienteDe(p); const tel = c && (c.movil || c.telefono); return tel ? <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">{tel}</a> : null; })()}
                 {toArray(p.citaSalida && p.citaSalida.historial).length > 0 && <span className="text-slate-400">cambiada {toArray(p.citaSalida.historial).length}×</span>}
