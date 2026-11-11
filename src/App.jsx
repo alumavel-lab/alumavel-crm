@@ -2305,6 +2305,7 @@ export default function App() {
       registroHoras: [], gastos: [], materialFurgoneta: [], notas: data.notas || "",
       fechaMontaje: data.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
       tipoTrabajo: data.tipoTrabajo || "Montaje", horasMontaje: parseFloat(data.horasMontaje) || null, direccion: data.direccion || "", incidenciaId: data.incidenciaId || "",
+      telefono: data.telefono || "", archivos: toArray(data.archivos),
     };
     saveInstalaciones([nueva, ...instalaciones]);
     showToast("Instalación creada");
@@ -25678,8 +25679,41 @@ function FurgonetaModulo({ instalaciones, proyectos, onCiclo, onVerInstalacion, 
   );
 }
 
+// Selector de FOTOS / PDF / ARCHIVOS (se guardan como dataUrl, fotos reducidas). lista + onCambiar(lista)
+function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o archivos" }) {
+  const [subiendo, setSubiendo] = useState(false); const [err, setErr] = useState("");
+  const anadir = async (files) => {
+    setSubiendo(true); setErr(""); const nuevos = []; const malos = [];
+    for (const file of Array.from(files || [])) {
+      try { const dataUrl = await archivoIncidenciaDataUrl(file); if (dataUrl.length > 900000) { malos.push(file.name); continue; } nuevos.push({ id: uid(), nombre: file.name, tipo: String(file.type || "").startsWith("image/") ? "imagen" : "documento", dataUrl, fecha: new Date().toISOString() }); } catch (e) { malos.push(file.name); }
+    }
+    if (malos.length) setErr(`No se han podido añadir (demasiado grandes o no se leen): ${malos.join(", ")}.`);
+    onCambiar([...nuevos, ...toArray(lista)]); setSubiendo(false);
+  };
+  return (
+    <div>
+      <label className={`inline-flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border-2 border-dashed cursor-pointer ${subiendo ? "border-slate-300 text-slate-400" : "border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"}`}>
+        <ImageIcon size={15} /> {subiendo ? "Preparando…" : titulo}
+        <input type="file" multiple accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" disabled={subiendo} onChange={(e) => { anadir(e.target.files); e.target.value = ""; }} />
+      </label>
+      {err && <div className="mt-1 text-xs font-semibold text-rose-700">⚠ {err}</div>}
+      {toArray(lista).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {toArray(lista).map((x) => (
+            <div key={x.id} className="relative w-24">
+              <a href={x.dataUrl} download={x.nombre} target="_blank" rel="noreferrer" title={x.nombre}>
+                {x.tipo === "imagen" ? <img src={x.dataUrl} alt={x.nombre} className="w-24 h-20 object-cover rounded border border-slate-200" /> : <div className="w-24 h-20 flex items-center justify-center rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 text-center p-1 break-all">📄 {x.nombre}</div>}
+              </a>
+              <button type="button" onClick={() => { if (window.confirm(`¿Quitar «${x.nombre}»?`)) onCambiar(toArray(lista).filter((y) => y.id !== x.id)); }} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-600 text-white text-xs leading-5" title="Quitar">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
-  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", presupuestoInstalacion: "", notas: "" });
+  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [] });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
@@ -25690,6 +25724,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
       setErrorMsg("Si no eliges un proyecto, tienes que ponerle un nombre a la instalación (es obligatorio).");
       return;
     }
+    if (!f.proyectoId && !f.direccion.trim() && !window.confirm("No has puesto DIRECCIÓN y no hay proyecto: el montador no sabrá dónde ir. ¿Crearla igualmente?")) return;
     setErrorMsg("");
     onSave(f);
   };
@@ -25727,6 +25762,11 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
             </Field>
           </div>
         )}
+        {/* DIRECCIÓN Y TELÉFONO: obligatorios en la práctica si no hay cliente ni proyecto, para que el montador sepa dónde ir */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2"><Field label={f.proyectoId ? "Dirección (si es otra distinta de la de la obra)" : "Dirección"}><TextInput value={f.direccion} onChange={set("direccion")} placeholder="Calle, número, población" /></Field></div>
+          <Field label="Teléfono de contacto"><TextInput value={f.telefono} onChange={set("telefono")} placeholder="Opcional" /></Field>
+        </div>
 
         <Field label="Presupuesto de instalación (€)">
           <TextInput type="number" step="0.01" value={f.presupuestoInstalacion} onChange={set("presupuestoInstalacion")} />
@@ -25734,6 +25774,10 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
 
         <Field label="Notas">
           <TextArea rows={2} value={f.notas} onChange={set("notas")} />
+        </Field>
+
+        <Field label="Fotos, planos y documentos para el montador">
+          <AdjuntosPicker lista={f.archivos} onCambiar={(l) => setF({ ...f, archivos: l })} />
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
@@ -25854,6 +25898,16 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
           {!proyecto && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Sin proyecto</Badge>}
         </div>
         <p className="text-sm text-slate-500">{cliente?.nombre || instalacion.clienteNombre || "—"}</p>
+        {(() => { const dir = instalacion.direccion || (proyecto && proyecto.ubicacion) || (cliente && cliente.direccion) || ""; const tel = instalacion.telefono || (cliente && (cliente.movil || cliente.telefono)) || ""; return (
+          <p className="text-sm text-slate-700 mt-1 flex flex-wrap gap-x-3">
+            {dir ? <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dir)}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold underline">📍 {dir}</a> : <span className="text-amber-700 font-semibold">⚠ Sin dirección</span>}
+            {tel && <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">📞 {tel}</a>}
+          </p>
+        ); })()}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+        <h2 className="font-display font-bold text-slate-800 mb-2">Fotos, planos y documentos ({toArray(instalacion.archivos).length})</h2>
+        <AdjuntosPicker lista={instalacion.archivos} onCambiar={(l) => onUpdate({ archivos: l })} titulo="📷 Añadir más" />
       </div>
 
       <div className="flex gap-2 mb-6">
