@@ -433,6 +433,16 @@ const renombrarFotoCamara = (file) => {
 };
 // Desplegable "Asignar el trabajo a (oficina)" para las llamadas. Solo salen los usuarios marcados como
 // "Oficina" en Usuarios; mientras no haya nadie marcado, salen todos (con un aviso).
+// Se puede asignar a CUALQUIER usuario: primero los de «Oficina» y luego el resto (Fábrica, Montaje…)
+const opcionesAsignarTrabajo = (usuarios) => {
+  const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {})).filter((u) => u && u.id && !u.desactivado && !u.bloqueado);
+  const nom = (u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || "—";
+  const ofi = todos.filter((u) => u.areas && u.areas.oficina).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const resto = todos.filter((u) => !(u.areas && u.areas.oficina)).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const op = (u) => <option key={u.id} value={u.id}>{nom(u)}</option>;
+  if (!ofi.length) return resto.map(op);
+  return [<optgroup key="ofi" label="Oficina">{ofi.map(op)}</optgroup>, ...(resto.length ? [<optgroup key="resto" label="Resto del equipo">{resto.map(op)}</optgroup>] : [])];
+};
 function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
   const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {}));
   const hayOficinaMarcada = todos.some((u) => u.areas && u.areas.oficina);
@@ -443,10 +453,9 @@ function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
         <Field label="Asignar el trabajo a (oficina)">
           <Select value={valor || ""} onChange={(e) => onValor(e.target.value)}>
             <option value="">Sin asignar</option>
-            {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+            {opcionesAsignarTrabajo(usuarios)}
           </Select>
         </Field>
-        {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos.</p>}
       </div>
       <Field label="Para el día (opcional)"><TextInput type="date" value={fecha || ""} onChange={(e) => onFecha(e.target.value)} /></Field>
       {valor && <p className="sm:col-span-3 text-[11px] text-slate-500">Al registrar la llamada se le crea una tarea con las notas, que verá en Tareas.</p>}
@@ -9319,10 +9328,9 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
               <Field label="Asignar el trabajo a (oficina)">
                 <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })}>
                   <option value="">Sin asignar</option>
-                  {personalOficina.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+                  {opcionesAsignarTrabajo(usuarios)}
                 </Select>
               </Field>
-              {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos. Márcalos en cada usuario para que aquí solo salga la oficina.</p>}
             </div>
             <Field label="Para el día (opcional)"><TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} /></Field>
             {acc.tareaPara && <p className="sm:col-span-3 text-[11px] text-slate-500">Al guardar la llamada se le crea una tarea con el motivo y las notas, que verá en Tareas.</p>}
