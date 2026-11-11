@@ -24940,6 +24940,40 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             {toArray(c.historial).length > 0 && <div className="text-[11px] text-slate-500">Cambiada {toArray(c.historial).length} vez/veces · antes: {toArray(c.historial).map((h) => `${fmtDate(h.fecha)}${h.hora ? " " + h.hora : ""}`).join(", ")}</div>}
           </div>
         ); })()}
+        {/* DÓNDE ESTÁ: almacén de destino de la obra y sus palets (almacén, fila/hueco); se puede cambiar desde aquí */}
+        {(() => {
+          const alms = toArray(_almacenesDestino); const nomA = (id) => ((alms.find((x) => x.id === id) || {}).nombre) || (id ? id : "Fábrica");
+          const misV = new Set(); toArray(abierto.etiquetasFab).forEach((l) => toArray(l && l.ventanas).forEach((v) => { if (v && v.id) misV.add(String(v.id)); }));
+          const suyos = toArray(caballetes).filter((c) => c && ((c.obra && (c.obra.proyectoId === abierto.id || (abierto.uxcarExpedienteId && c.obra.key === `u-${abierto.uxcarExpedienteId}`))) || (c.reserva && c.reserva.proyectoId === abierto.id) || toArray(c.ventanas).some((w) => w && misV.has(String(w.id)))));
+          const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion, por: nombreYo || "" }];
+          const mover = (c, almId) => { if (!onGuardarCaballete || !almId || almId === c.almacenId) return; const sit = sitioParaPalet(c, almId, alms, caballetes); if (sit.lleno && !window.confirm(`El almacén ${nomA(almId)} está LLENO (no queda hueco). ¿Moverlo igualmente sin hueco?`)) return; onGuardarCaballete({ ...c, almacenId: almId, sitioAlm: sit.sitioAlm || null, ubicacion: sit.ubicacion || "", historial: hist(c, `Cambiado a ${nomA(almId)}${sit.ubicacion ? " · " + sit.ubicacion : ""} desde Albaranes`) }); };
+          const dentro = suyos.filter((c) => (c.estado || "libre") !== "fuera");
+          return (
+            <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-2">
+              <div className="text-sm font-bold text-slate-800">📍 Dónde está</div>
+              {alms.length > 0 && <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-slate-600">Almacén de destino de la obra:</span>
+                <select value={abierto.almacenDestinoId || ""} onChange={(e) => onGuardarCita && onGuardarCita(abierto.id, { almacenDestinoId: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-sm">
+                  <option value="">— sin elegir —</option>
+                  {alms.map((x) => <option key={x.id} value={x.id}>{x.nombre}{x.ciudad ? ` · ${x.ciudad}` : ""}</option>)}
+                </select>
+              </div>}
+              {suyos.length === 0 ? <div className="text-xs text-slate-500">Todavía no tiene ningún palet (ni reservado ni cargado).</div> : (
+                <ul className="space-y-1.5">
+                  {suyos.map((c) => { const fuera = (c.estado || "libre") === "fuera"; const nV = toArray(c.ventanas).filter((w) => w && (!misV.size || misV.has(String(w.id)))).length; return (
+                    <li key={c.id} className="flex flex-wrap items-center gap-2 text-sm border-t border-slate-100 pt-1.5">
+                      <b>Palet {c.numero || "—"}</b>
+                      <span className="text-xs text-slate-500">{fuera ? `fuera desde ${fmtDate(c.salida && c.salida.fecha) || "—"}` : (c.estado || "libre") === "cargado" ? "cargado" : "reservado"}{nV ? ` · ${nV} ventana${nV === 1 ? "" : "s"}` : ""}</span>
+                      {!fuera && <span className="text-xs font-semibold text-sky-800">{nomA(c.almacenId)}{c.sitioAlm && c.sitioAlm.f ? ` · ${textoSitioPalet(c.sitioAlm)}` : c.ubicacion ? ` · ${c.ubicacion}` : " · sin hueco asignado"}</span>}
+                      {!fuera && alms.length > 1 && <select value="" onChange={(e) => mover(c, e.target.value)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs"><option value="">Cambiar de almacén…</option>{alms.filter((x) => x.id !== c.almacenId).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select>}
+                    </li>
+                  ); })}
+                </ul>
+              )}
+              {dentro.length > 1 && alms.length > 1 && <div className="flex items-center gap-2 text-xs"><span className="text-slate-600">Mover los {dentro.length} palets a:</span><select value="" onChange={(e) => { const id = e.target.value; if (id && window.confirm(`¿Mover los ${dentro.length} palets a ${nomA(id)}?`)) { let lista = [...toArray(caballetes)]; dentro.forEach((c) => { if (c.almacenId === id) return; const sit = sitioParaPalet(c, id, alms, lista); const nc = { ...c, almacenId: id, sitioAlm: sit.sitioAlm || null, ubicacion: sit.ubicacion || "", historial: hist(c, `Cambiado a ${nomA(id)}${sit.ubicacion ? " · " + sit.ubicacion : ""} desde Albaranes`) }; lista = lista.map((x) => (x.id === c.id ? nc : x)); onGuardarCaballete && onGuardarCaballete(nc); }); } }} className="border border-slate-300 rounded px-1.5 py-0.5"><option value="">elige almacén…</option>{alms.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select></div>}
+            </div>
+          );
+        })()}
         {abierto.documentoEntrega ? (
           <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
             <FileText size={15} className="text-[#2E8B57]" />
