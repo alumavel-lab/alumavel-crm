@@ -433,6 +433,16 @@ const renombrarFotoCamara = (file) => {
 };
 // Desplegable "Asignar el trabajo a (oficina)" para las llamadas. Solo salen los usuarios marcados como
 // "Oficina" en Usuarios; mientras no haya nadie marcado, salen todos (con un aviso).
+// Se puede asignar a CUALQUIER usuario: primero los de «Oficina» y luego el resto (Fábrica, Montaje…)
+const opcionesAsignarTrabajo = (usuarios) => {
+  const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {})).filter((u) => u && u.id && !u.desactivado && !u.bloqueado);
+  const nom = (u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || "—";
+  const ofi = todos.filter((u) => u.areas && u.areas.oficina).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const resto = todos.filter((u) => !(u.areas && u.areas.oficina)).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const op = (u) => <option key={u.id} value={u.id}>{nom(u)}</option>;
+  if (!ofi.length) return resto.map(op);
+  return [<optgroup key="ofi" label="Oficina">{ofi.map(op)}</optgroup>, ...(resto.length ? [<optgroup key="resto" label="Resto del equipo">{resto.map(op)}</optgroup>] : [])];
+};
 function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
   const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {}));
   const hayOficinaMarcada = todos.some((u) => u.areas && u.areas.oficina);
@@ -443,10 +453,9 @@ function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
         <Field label="Asignar el trabajo a (oficina)">
           <Select value={valor || ""} onChange={(e) => onValor(e.target.value)}>
             <option value="">Sin asignar</option>
-            {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+            {opcionesAsignarTrabajo(usuarios)}
           </Select>
         </Field>
-        {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos.</p>}
       </div>
       <Field label="Para el día (opcional)"><TextInput type="date" value={fecha || ""} onChange={(e) => onFecha(e.target.value)} /></Field>
       {valor && <p className="sm:col-span-3 text-[11px] text-slate-500">Al registrar la llamada se le crea una tarea con las notas, que verá en Tareas.</p>}
@@ -5164,35 +5173,20 @@ export default function App() {
       }
     });
   }, [uxExpedientes, proyectos, pedidos, currentUser?.id, loading]);
-  // OBRA «PENDIENTE DE ACEPTACIÓN» QUE YA ESTÁ EN EL PLANNING DE FÁBRICA (o en Control del día, o con ventanas en palet):
-  // en cuanto llega al plan está en fabricación → pasa sola a «En proceso». NO descuenta stock: queda marcada «enProcesoAuto» para revisarlo.
-  const planFabApp = useObjetoFb("planFabrica"); const manualCDApp = useObjetoFb("controlDiaObras");
+  // REPARACIÓN (11/11/2026): durante unas horas las obras «Pendiente de aceptación» que estaban en el planning o con ventanas en palet
+  // se pasaban SOLAS a «En proceso». Eso cambiaba su clave en el planning (de «uxcar-…» a «proyecto-…»), perdían su día y se
+  // descolgaban de la Línea y de Control del día. Se ha quitado y aquí se devuelven a como estaban (solo las que cambió aquello).
   useEffect(() => {
     if (!currentUser || loading) return;
-    const limpiaK = (t) => String(t || "").replace(/[.#$/[\]]/g, "_");
-    const enPlan = new Map(); // proyectoId -> primer día
-    const apunta = (pid, d) => { if (pid && (!enPlan.has(pid) || d < enPlan.get(pid))) enPlan.set(pid, d); };
-    const porUx = new Map(toArray(proyectos).filter((p) => p && p.uxcarExpedienteId).map((p) => [limpiaK(`uxcar-${p.uxcarExpedienteId}`), p.id]));
-    const porUxM = new Map(toArray(proyectos).filter((p) => p && p.uxcarExpedienteId).map((p) => [limpiaK(`u-${p.uxcarExpedienteId}`), p.id]));
-    const porPr = new Map(toArray(proyectos).filter(Boolean).map((p) => [limpiaK(`proyecto-${p.id}`), p.id]));
-    const porPrM = new Map(toArray(proyectos).filter(Boolean).map((p) => [limpiaK(`p-${p.id}`), p.id]));
-    Object.entries((planFabApp && planFabApp.dias) || {}).forEach(([d, obs]) => Object.keys(obs || {}).forEach((k) => apunta(porPr.get(k) || porUx.get(k), d)));
-    const enManual = new Map(); // proyectoId -> [días puestos a mano en Control del día]
-    Object.entries(manualCDApp || {}).forEach(([d, obs]) => Object.entries(obs || {}).forEach(([k, si]) => { const pid = si && (porPrM.get(k) || porUxM.get(k)); if (pid) enManual.set(pid, [...(enManual.get(pid) || []), d]); }));
-    const idx = toArray(caballetesVentanas).length ? indicePaletVentanas(caballetesVentanas) : null;
     toArray(proyectos).forEach((pr) => {
-      if (!pr || (pr.estadoTrabajo || "Pendiente de aceptación") !== "Pendiente de aceptación") return;
-      // si se devolvió al planning virtual DESPUÉS de publicarse este planning, el planning aún no lo sabe: no cuenta
-      const planViejo = pr.vueltaVirtual && !(planFabApp && planFabApp.en > pr.vueltaVirtual);
-      const desdeV = pr.vueltaVirtual ? new Date(pr.vueltaVirtual).toISOString().slice(0, 10) : "";
-      const diaMan = (enManual.get(pr.id) || []).filter((d) => !desdeV || d > desdeV).sort()[0] || null;
-      const dia = (planViejo ? null : enPlan.get(pr.id)) || diaMan; const r = idx ? paletDeObra(pr, idx) : null;
-      if (!dia && !(r && r.n)) return;
-      const motivo = dia ? `en el planning de Fábrica (${dia})` : `${r.n} de ${r.total} ventanas ya en palet`;
-      updateProyectoInline(pr.id, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(dia && !pr.fechaFabricacion ? { fechaFabricacion: dia } : {}), enProcesoAuto: { fecha: new Date().toISOString().slice(0, 10), motivo, stockSinDescontar: !pr.stockDescontado } });
-      showToast(`#${pr.numero}: ${motivo} → pasa a «En proceso»${pr.stockDescontado ? "" : " (stock SIN descontar)"}`);
+      if (!pr || !pr.enProcesoAuto) return;
+      const m = /\((\d{4}-\d{2}-\d{2})\)/.exec(String(pr.enProcesoAuto.motivo || ""));
+      const patch = { enProcesoAuto: null, reparadoEnProcesoAuto: { fecha: new Date().toISOString().slice(0, 10), antes: pr.enProcesoAuto } };
+      const aceptadaDeVerdad = pr.enProcesoAuto.stockSinDescontar && pr.stockDescontado; // después alguien la aceptó bien (descontó stock): se respeta
+      if (pr.estadoTrabajo === "En proceso" && !aceptadaDeVerdad) { patch.estadoTrabajo = "Pendiente de aceptación"; patch.fechaEnProceso = 0; if (m && pr.fechaFabricacion === m[1]) patch.fechaFabricacion = ""; }
+      updateProyectoInline(pr.id, patch);
     });
-  }, [planFabApp, manualCDApp, caballetesVentanas, proyectos, currentUser?.id, loading]);
+  }, [proyectos, currentUser?.id, loading]);
   // Vista para Uxcar (solo de SUS expedientes, solo consulta): estado en Fábrica, dónde están sus cristales y persianas y sus discrepancias.
   // Se escribe en portalUxcar/vistaFabrica/{expedienteId} cuando cambia; el portal solo la lee.
   const vistaFabUxRef = useRef("");
@@ -9334,10 +9328,9 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
               <Field label="Asignar el trabajo a (oficina)">
                 <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })}>
                   <option value="">Sin asignar</option>
-                  {personalOficina.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+                  {opcionesAsignarTrabajo(usuarios)}
                 </Select>
               </Field>
-              {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos. Márcalos en cada usuario para que aquí solo salga la oficina.</p>}
             </div>
             <Field label="Para el día (opcional)"><TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} /></Field>
             {acc.tareaPara && <p className="sm:col-span-3 text-[11px] text-slate-500">Al guardar la llamada se le crea una tarea con el motivo y las notas, que verá en Tareas.</p>}
@@ -57953,6 +57946,20 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   // «✓ Hecha · sacar la siguiente» (lo mismo que leer con la pistola la última pegatina)
   const confirmarYSiguiente = () => { if (cadena && cadena.ultimo) buscarCodigo(cadena.ultimo); };
+  // TIRADA AUTOMÁTICA: con la cadena en marcha, sale sola la siguiente pegatina cada X segundos (sin leerla con la pistola).
+  // Las que salen así NO quedan confirmadas: se confirman después al pasarles la pistola (o en «Comprobar»).
+  const [autoSeg, setAutoSeg] = useEstadoLocal("auxAutoSeg", 0);
+  const [autoPausa, setAutoPausa] = useState(false);
+  const autoOcupado = useRef(false);
+  useEffect(() => {
+    if (!cadena || !cadena.ultimo || !autoSeg || autoPausa) return undefined;
+    const t = setTimeout(async () => {
+      if (autoOcupado.current) return; autoOcupado.current = true;
+      try { const sig = siguienteDeCadena(cadena); if (sig) { setMsg(`▶ Automático: sale ${sig.nombre} ${auxMed(sig.lCorte)} mm · Ppto ${pptoBonito(sig.ppto)}`); await cortar(sig, cadena); } else { setMsg("✓ Tirada automática terminada: no queda nada más en esta tanda."); setCadena(null); } }
+      finally { autoOcupado.current = false; }
+    }, Math.max(2, autoSeg) * 1000);
+    return () => clearTimeout(t);
+  }, [cadena && cadena.ultimo, autoSeg, autoPausa]);
   const buscarCodigo = (t) => {
     const c = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, "");
     setCodigo("");
@@ -58143,6 +58150,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           <span className="text-lg">🔫</span>
           <span className="flex-1 text-sm font-bold">En cadena: corta «{cadena.nombre}» ({cadena.ultimo}), pégale la etiqueta y pásale la pistola → queda confirmada y sale la siguiente{cadena.tipo === "ref" ? " de esta referencia" : cadena.tipo === "obra" ? ` de la obra ${pptoBonito(cadena.ppto)}` : " del planning"}.</span>
           <button type="button" onClick={confirmarYSiguiente} className="text-sm font-extrabold px-3 py-2 rounded-lg bg-emerald-500 text-white">✓ Hecha · sacar la siguiente</button>
+          <span className="flex items-center gap-1 text-xs font-bold bg-white/10 rounded-lg px-2 py-1">▶ Automático:
+            {[0, 2, 5, 10].map((n) => <button key={n} type="button" onClick={() => { setAutoSeg(n); setAutoPausa(false); }} className={`px-2 py-1 rounded ${autoSeg === n ? "bg-amber-400 text-slate-900" : "bg-white/15"}`}>{n ? `${n} s` : "no"}</button>)}
+            {autoSeg > 0 && <button type="button" onClick={() => setAutoPausa(!autoPausa)} className={`px-2 py-1 rounded ${autoPausa ? "bg-emerald-500" : "bg-rose-600"}`}>{autoPausa ? "▶ Seguir" : "⏸ Pausa"}</button>}
+          </span>
           <button type="button" onClick={() => { if (codigoRef.current) codigoRef.current.focus(); }} className="text-xs font-bold px-2 py-1 rounded bg-white/15">Poner el cursor en la pistola</button>
           <button type="button" onClick={() => { setCadena(null); codsTanda.current = new Set(); }} className="text-xs font-bold px-2 py-1 rounded bg-rose-600">Parar cadena</button>
           <span className="w-full text-xs text-slate-300">Esperando la lectura de <b className="text-white">{cadena.ultimo}</b> · Última lectura de la pistola: {ultLectura ? <b className={String(ultLectura.cod) === String(cadena.ultimo).toUpperCase() ? "text-emerald-300" : "text-amber-300"}>{ultLectura.cod} ({Math.max(0, Math.round((Date.now() - ultLectura.at) / 1000))} s)</b> : <b className="text-rose-300">ninguna todavía (si pitas y no cambia, la lectura no está llegando al CRM)</b>}</span>
