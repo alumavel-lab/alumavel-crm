@@ -5164,6 +5164,18 @@ export default function App() {
       }
     });
   }, [uxExpedientes, proyectos, pedidos, currentUser?.id, loading]);
+  // OBRA YA FABRICADA PERO «PENDIENTE DE ACEPTACIÓN»: si tiene ventanas en un palet, se ha fabricado → pasa sola a «En proceso».
+  // NO descuenta stock (eso lo hace aceptar desde el planning): queda marcada «enProcesoAuto» para revisarlo.
+  useEffect(() => {
+    if (!currentUser || loading || !toArray(caballetesVentanas).length) return;
+    const idx = indicePaletVentanas(caballetesVentanas);
+    toArray(proyectos).forEach((pr) => {
+      if (!pr || (pr.estadoTrabajo || "Pendiente de aceptación") !== "Pendiente de aceptación") return;
+      const r = paletDeObra(pr, idx); if (!r || !r.n) return;
+      updateProyectoInline(pr.id, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), enProcesoAuto: { fecha: new Date().toISOString().slice(0, 10), motivo: `${r.n} de ${r.total} ventanas ya en palet`, stockSinDescontar: !pr.stockDescontado } });
+      showToast(`#${pr.numero}: ya tiene ${r.n}/${r.total} ventanas en palet → pasa a «En proceso»${pr.stockDescontado ? "" : " (stock SIN descontar)"}`);
+    });
+  }, [caballetesVentanas, proyectos, currentUser?.id, loading]);
   // Vista para Uxcar (solo de SUS expedientes, solo consulta): estado en Fábrica, dónde están sus cristales y persianas y sus discrepancias.
   // Se escribe en portalUxcar/vistaFabrica/{expedienteId} cuando cambia; el portal solo la lee.
   const vistaFabUxRef = useRef("");
