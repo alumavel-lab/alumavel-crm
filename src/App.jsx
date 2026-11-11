@@ -5624,11 +5624,8 @@ export default function App() {
     const hoy = new Date().toISOString().slice(0, 10);
     const p = proyectos.find((x) => x.id === proyectoId);
     if (!p) return;
-    // SIN ACEPTAR NO SE SALTA DE FASE: de «Pendiente de aceptación» solo se puede ir a «En proceso» (aceptarla) o «Cancelado»
-    if ((p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && !["Pendiente de aceptación", "En proceso", "Cancelado"].includes(estado)) {
-      window.alert(`#${p.numero} ${p.nombre || ""}\n\nEsta obra está PENDIENTE DE ACEPTACIÓN: no puede pasar a «${estado}».\n\nPrimero hay que aceptarla (pasarla a «En proceso»).`);
-      return;
-    }
+    // Sin aceptar: NO se frena (si puede salir, sale), solo se avisa
+    if ((p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && !["Pendiente de aceptación", "En proceso", "Cancelado"].includes(estado)) showToast(`⚠ #${p.numero} no estaba aceptada: pasa igualmente a «${estado}»`);
     const patch = { ...extra, estadoTrabajo: estado };
     if (estado === "Listo para reparto/recogida") patch.fechaTerminadoFabrica = hoy;
     if (estado === "Entregado") patch.fechaEntregado = hoy;
@@ -5738,10 +5735,8 @@ export default function App() {
     if (!(await uxActualizar(exp, patch))) return;
     const p = exp.proyectoId && proyectos.find((x) => x.id === exp.proyectoId);
     if (p) {
-      const sinAceptar = (p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación";
-      if (sinAceptar && ["terminado", "entregado"].includes(estado)) window.alert(`Uxcar ${exp.numero}: el expediente cambia, pero la obra #${p.numero} sigue PENDIENTE DE ACEPTACIÓN y no avanza. Acéptala primero (pásala a «En proceso»).`);
-      else if (estado === "terminado") updateProyectoInline(p.id, { estadoTrabajo: "Listo para reparto/recogida", fechaTerminadoFabrica: hoy });
-      else if (estado === "entregado") updateProyectoInline(p.id, { estadoTrabajo: "Entregado", fechaEntregado: hoy });
+      if (estado === "terminado") updateProyectoInline(p.id, { estadoTrabajo: "Listo para reparto/recogida", fechaTerminadoFabrica: hoy });
+      if (estado === "entregado") updateProyectoInline(p.id, { estadoTrabajo: "Entregado", fechaEntregado: hoy });
       if (estado === "virtual") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación" });
     }
     showToast(`${exp.numero}: ${UX_ESTADOS[estado].label}`);
@@ -6512,7 +6507,7 @@ export default function App() {
           if (!currentUser || modulo === "albaranes" || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
           // terminadas = estado «Listo» o TODAS sus ventanas ya en palet (aunque nadie haya cambiado el estado)
           const idxP = indicePaletVentanas(caballetesVentanas);
-          const listas = proyectos.filter((p) => !["Entregado", "Cancelado", "Albarán de carga firmado", "Pendiente de aceptación", ""].includes(p.estadoTrabajo || "") && obraTerminadaSalida(p, idxP) && !citaSalidaOk(p));
+          const listas = proyectos.filter((p) => !["Entregado", "Cancelado", "Albarán de carga firmado"].includes(p.estadoTrabajo) && obraTerminadaSalida(p, idxP) && !citaSalidaOk(p));
           if (!listas.length) return null;
           const sinProg = listas.filter((p) => !p.fechaReparto && !p.fechaMontaje);
           const nomL = (p) => { const pp = presupuestoDeObra(p); return pp ? `Ppto ${pp}` : (p.nombre || "obra"); };
@@ -8888,7 +8883,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={p.estadoTrabajo}
-                      onChange={(e) => { const nv = e.target.value; if ((p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && !["Pendiente de aceptación", "En proceso", "Cancelado"].includes(nv)) { window.alert(`#${p.numero}: está PENDIENTE DE ACEPTACIÓN. No puede pasar a «${nv}»: primero acéptala (pásala a «En proceso»).`); return; } onUpsert({ ...p, estadoTrabajo: nv }); }}
+                      onChange={(e) => onUpsert({ ...p, estadoTrabajo: e.target.value })}
                       className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}`}
                     >
                       {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e}</option>)}
@@ -24786,8 +24781,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   // TIPO de salida y ORIGEN (Uxcar o mías) de cada obra, para separarlas con los botones
   const tipoSalida = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
   const esDeUxcar = (p) => p.origen === "portalUxcar" || !!p.uxcarExpedienteId || /uxcar/i.test(`${(clienteDe(p) || {}).nombre || ""} ${p.nombre || ""}`);
-  // las que están PENDIENTES DE ACEPTACIÓN no pasan a Albaranes (primero hay que aceptarlas)
-  const repartosBase = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p) || p.llevaInstalacion) && !["Entregado", "Cancelado", "Pendiente de aceptación", ""].includes(p.estadoTrabajo || "") && casaQ(p));
+  const repartosBase = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p) || p.llevaInstalacion) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p));
   const cuentaTipo = (t) => repartosBase.filter((p) => tipoSalida(p) === t && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p))).length;
   const cuentaOrigen = (o) => repartosBase.filter((p) => (o === "uxcar") === esDeUxcar(p) && (fTipo === "todos" || tipoSalida(p) === fTipo)).length;
   // CITA OBLIGATORIA: fecha de reparto / recogida / instalación + haber llamado al cliente (y avisado al repartidor si es reparto)
@@ -25097,6 +25091,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
                   {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
                   {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
+                  {(p.estadoTrabajo || "Pendiente de aceptación") === "Pendiente de aceptación" && <Badge className="bg-rose-50 text-rose-700 ring-rose-300">⚠ Sin aceptar</Badge>}
                   {(() => { const r = paletDeObra(p, idxPalet); return r && r.n > 0 ? <Badge className={r.completa ? "bg-emerald-600 text-white ring-emerald-600" : "bg-slate-50 text-slate-600 ring-slate-200"}>{r.completa ? `🟢 Todas en palet (${r.total})` : `${r.n}/${r.total} en palet`}</Badge> : null; })()}
                   {ec === "ok" ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Cita confirmada {fmtDate(fechaCitaDe(p))}{p.citaSalida && p.citaSalida.hora ? ` ${p.citaSalida.hora}` : ""}</Badge>
                     : ec === "llamar" ? <Badge className="bg-rose-600 text-white ring-rose-600">📞 Carga terminada: LLAMA AL CLIENTE</Badge>
@@ -46180,7 +46175,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             const pr = proyectos.find((x) => x.id === c.obra.proyectoId);
             const nec = necesariosObra(c.obra);
             const cargados = toArray(caballetes).filter((x) => x.id !== c.id && x.estado === "cargado" && x.obra && x.obra.proyectoId === c.obra.proyectoId).length + 1;
-            if (onMoverEstado && pr && nec > 0 && cargados >= nec && pr.estadoTrabajo === "En proceso") {
+            if (onMoverEstado && pr && nec > 0 && cargados >= nec && ["Pendiente de aceptación", "En proceso"].includes(pr.estadoTrabajo)) {
               onMoverEstado(pr.id, "Listo para reparto/recogida");
               alert(`Cargados los ${nec} caballete${nec === 1 ? "" : "s"} de ${c.obra.nombre}: la obra pasa a Reparto.`);
             }
