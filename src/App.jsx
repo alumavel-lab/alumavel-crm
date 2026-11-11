@@ -57946,6 +57946,20 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   // «✓ Hecha · sacar la siguiente» (lo mismo que leer con la pistola la última pegatina)
   const confirmarYSiguiente = () => { if (cadena && cadena.ultimo) buscarCodigo(cadena.ultimo); };
+  // TIRADA AUTOMÁTICA: con la cadena en marcha, sale sola la siguiente pegatina cada X segundos (sin leerla con la pistola).
+  // Las que salen así NO quedan confirmadas: se confirman después al pasarles la pistola (o en «Comprobar»).
+  const [autoSeg, setAutoSeg] = useEstadoLocal("auxAutoSeg", 0);
+  const [autoPausa, setAutoPausa] = useState(false);
+  const autoOcupado = useRef(false);
+  useEffect(() => {
+    if (!cadena || !cadena.ultimo || !autoSeg || autoPausa) return undefined;
+    const t = setTimeout(async () => {
+      if (autoOcupado.current) return; autoOcupado.current = true;
+      try { const sig = siguienteDeCadena(cadena); if (sig) { setMsg(`▶ Automático: sale ${sig.nombre} ${auxMed(sig.lCorte)} mm · Ppto ${pptoBonito(sig.ppto)}`); await cortar(sig, cadena); } else { setMsg("✓ Tirada automática terminada: no queda nada más en esta tanda."); setCadena(null); } }
+      finally { autoOcupado.current = false; }
+    }, Math.max(2, autoSeg) * 1000);
+    return () => clearTimeout(t);
+  }, [cadena && cadena.ultimo, autoSeg, autoPausa]);
   const buscarCodigo = (t) => {
     const c = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, "");
     setCodigo("");
@@ -58136,6 +58150,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           <span className="text-lg">🔫</span>
           <span className="flex-1 text-sm font-bold">En cadena: corta «{cadena.nombre}» ({cadena.ultimo}), pégale la etiqueta y pásale la pistola → queda confirmada y sale la siguiente{cadena.tipo === "ref" ? " de esta referencia" : cadena.tipo === "obra" ? ` de la obra ${pptoBonito(cadena.ppto)}` : " del planning"}.</span>
           <button type="button" onClick={confirmarYSiguiente} className="text-sm font-extrabold px-3 py-2 rounded-lg bg-emerald-500 text-white">✓ Hecha · sacar la siguiente</button>
+          <span className="flex items-center gap-1 text-xs font-bold bg-white/10 rounded-lg px-2 py-1">▶ Automático:
+            {[0, 2, 5, 10].map((n) => <button key={n} type="button" onClick={() => { setAutoSeg(n); setAutoPausa(false); }} className={`px-2 py-1 rounded ${autoSeg === n ? "bg-amber-400 text-slate-900" : "bg-white/15"}`}>{n ? `${n} s` : "no"}</button>)}
+            {autoSeg > 0 && <button type="button" onClick={() => setAutoPausa(!autoPausa)} className={`px-2 py-1 rounded ${autoPausa ? "bg-emerald-500" : "bg-rose-600"}`}>{autoPausa ? "▶ Seguir" : "⏸ Pausa"}</button>}
+          </span>
           <button type="button" onClick={() => { if (codigoRef.current) codigoRef.current.focus(); }} className="text-xs font-bold px-2 py-1 rounded bg-white/15">Poner el cursor en la pistola</button>
           <button type="button" onClick={() => { setCadena(null); codsTanda.current = new Set(); }} className="text-xs font-bold px-2 py-1 rounded bg-rose-600">Parar cadena</button>
           <span className="w-full text-xs text-slate-300">Esperando la lectura de <b className="text-white">{cadena.ultimo}</b> · Última lectura de la pistola: {ultLectura ? <b className={String(ultLectura.cod) === String(cadena.ultimo).toUpperCase() ? "text-emerald-300" : "text-amber-300"}>{ultLectura.cod} ({Math.max(0, Math.round((Date.now() - ultLectura.at) / 1000))} s)</b> : <b className="text-rose-300">ninguna todavía (si pitas y no cambia, la lectura no está llegando al CRM)</b>}</span>
