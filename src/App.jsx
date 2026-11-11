@@ -6809,7 +6809,9 @@ export default function App() {
           // proyecto, o ya en proyecto pero con material sin pedir. Lo ve también la oficina.
           if (!currentUser || !(isAdmin || tieneAcceso("presupuestos") || tieneAcceso("proyectos"))) return null;
           const firmados = presupuestos.filter((p) => p.firma?.estado === "firmado" && p.estado !== "Rechazado");
-          const sinProyecto = firmados.filter((p) => !p.proyectoCreadoId);
+          // los que se han QUITADO DEL AVISO a mano (antiguos que ya no van) no salen; se pueden volver a mostrar
+          const sinProyectoTodos = firmados.filter((p) => !p.proyectoCreadoId);
+          const sinProyecto = sinProyectoTodos.filter((p) => !p.avisoFirmadoQuitado);
           const obrasSinPedir = [];
           const vistas = new Set();
           firmados.forEach((p) => {
@@ -6820,6 +6822,13 @@ export default function App() {
             const faltan = materialSinPedirObra(obra, pedidos);
             if (faltan.length) obrasSinPedir.push({ obra, faltan });
           });
+          const obrasQuitadas = obrasSinPedir.filter((x) => x.obra.avisoMaterialQuitado);
+          const presQuitados = sinProyectoTodos.filter((p) => p.avisoFirmadoQuitado);
+          for (let i = obrasSinPedir.length - 1; i >= 0; i--) if (obrasSinPedir[i].obra.avisoMaterialQuitado) obrasSinPedir.splice(i, 1);
+          const marcaQuitar = { por: currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "", fecha: new Date().toISOString().slice(0, 10) };
+          const quitarPres = (p) => { if (!window.confirm(`¿Quitar el presupuesto ${p.numero} de este aviso?\n\nNo se borra nada: solo deja de salir aquí.`)) return; savePresupuestos(presupuestos.map((x) => (x.id === p.id ? { ...x, avisoFirmadoQuitado: marcaQuitar } : x))); };
+          const quitarObra = (o) => { if (!window.confirm(`¿Quitar la obra ${o.numero} de «material sin pedir»?\n\nNo se borra nada ni se cancela ningún pedido: solo deja de salir aquí.`)) return; updateProyectoInline(o.id, { avisoMaterialQuitado: marcaQuitar }); };
+          const volverAMostrar = () => { presQuitados.length && savePresupuestos(presupuestos.map((x) => (presQuitados.some((q) => q.id === x.id) ? { ...x, avisoFirmadoQuitado: null } : x))); obrasQuitadas.forEach(({ obra }) => updateProyectoInline(obra.id, { avisoMaterialQuitado: null })); };
           if (sinProyecto.length === 0 && obrasSinPedir.length === 0) return null;
           const abrirPresupuesto = (id) => { setModulo("presupuestos"); setPresupuestoDetailId(id); setPresupuestoView("detail"); };
           const abrirObra = (id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); };
@@ -6838,17 +6847,24 @@ export default function App() {
               {avisoFirmadosAbierto && (
                 <div className="px-6 pb-3 space-y-1.5 text-sm">
                   {sinProyecto.map((p) => (
-                    <button key={p.id} onClick={() => abrirPresupuesto(p.id)} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
-                      <span className="font-semibold">Presupuesto {p.numero}</span> — {p.clienteNombre || "sin cliente"}
-                      <span className="block text-xs text-violet-600">Firmado el {p.firma?.firmadoEn ? new Date(p.firma.firmadoEn).toLocaleDateString("es-ES") : "—"} · falta crear el proyecto. Toca para abrirlo →</span>
-                    </button>
+                    <div key={p.id} className="flex items-stretch gap-1.5">
+                      <button onClick={() => abrirPresupuesto(p.id)} className="block flex-1 text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
+                        <span className="font-semibold">Presupuesto {p.numero}</span> — {p.clienteNombre || "sin cliente"}
+                        <span className="block text-xs text-violet-600">Firmado el {p.firma?.firmadoEn ? new Date(p.firma.firmadoEn).toLocaleDateString("es-ES") : "—"} · falta crear el proyecto. Toca para abrirlo →</span>
+                      </button>
+                      <button type="button" onClick={() => quitarPres(p)} title="Es antiguo / ya no va: quitarlo de este aviso (no se borra)" className="px-2.5 rounded-md bg-white border border-violet-200 text-xs font-semibold text-slate-500 hover:text-rose-700 hover:border-rose-300">✕ Quitar</button>
+                    </div>
                   ))}
                   {obrasSinPedir.map(({ obra, faltan }) => (
-                    <button key={obra.id} onClick={() => abrirObra(obra.id)} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
-                      <span className="font-semibold">Obra {obra.numero}</span> — {obra.nombre || ""}
-                      <span className="block text-xs text-violet-600">{faltan.slice(0, 4).join(" · ")}{faltan.length > 4 ? ` · y ${faltan.length - 4} más` : ""}. Toca para abrirla →</span>
-                    </button>
+                    <div key={obra.id} className="flex items-stretch gap-1.5">
+                      <button onClick={() => abrirObra(obra.id)} className="block flex-1 text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
+                        <span className="font-semibold">Obra {obra.numero}</span> — {obra.nombre || ""}
+                        <span className="block text-xs text-violet-600">{faltan.slice(0, 4).join(" · ")}{faltan.length > 4 ? ` · y ${faltan.length - 4} más` : ""}. Toca para abrirla →</span>
+                      </button>
+                      <button type="button" onClick={() => quitarObra(obra)} title="Es antigua / ya no hace falta pedir: quitarla de este aviso (no se borra)" className="px-2.5 rounded-md bg-white border border-violet-200 text-xs font-semibold text-slate-500 hover:text-rose-700 hover:border-rose-300">✕ Quitar</button>
+                    </div>
                   ))}
+                  {(presQuitados.length + obrasQuitadas.length) > 0 && <button type="button" onClick={volverAMostrar} className="text-xs underline text-violet-700">{presQuitados.length + obrasQuitadas.length} quitado(s) de este aviso · volver a mostrarlos</button>}
                 </div>
               )}
             </div>
