@@ -56527,6 +56527,7 @@ const auxCfgDe = (c) => {
   };
 };
 const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+const auxFechaCorte = (ts) => (ts ? new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "");
 const auxMed = (n) => (n == null ? "?" : String(Math.round(n * 10) / 10).replace(".", ","));
 const auxEjesDe = (r) => {
   let I = String((r && r.ejeI) || ""), D = String((r && r.ejeD) || "");
@@ -57911,7 +57912,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                         // RESUMEN PARA REVISAR: por obra, lo cortado (por perfil) y lo que falta
                         const pps = [...new Set([...gs.map((g) => String(g.ppto)), ...piezas.filter((p) => diaDe(p.ppto) === d).map((p) => String(p.ppto))])];
                         if (!pps.length) return null;
-                        const filas = pps.map((pp) => { const todas = piezas.filter((p) => String(p.ppto) === pp); const cort = todas.filter((p) => est && est[p.id] && est[p.id].cortada); const porNom = {}; cort.forEach((p) => { porNom[p.nombre] = (porNom[p.nombre] || 0) + 1; }); const faltaNom = {}; todas.filter((p) => !(est && est[p.id] && est[p.id].cortada)).forEach((p) => { faltaNom[p.nombre] = (faltaNom[p.nombre] || 0) + 1; }); return { pp, total: todas.length, cort: cort.length, porNom, faltaNom }; });
+                        const filas = pps.map((pp) => { const todas = piezas.filter((p) => String(p.ppto) === pp); const cort = todas.filter((p) => est && est[p.id] && est[p.id].cortada); const porNom = {}; cort.forEach((p) => { porNom[p.nombre] = (porNom[p.nombre] || 0) + 1; }); const faltaNom = {}; todas.filter((p) => !(est && est[p.id] && est[p.id].cortada)).forEach((p) => { faltaNom[p.nombre] = (faltaNom[p.nombre] || 0) + 1; }); const ts = cort.map((p) => (est[p.id] && est[p.id].cortadaAt) || 0).filter(Boolean); return { pp, total: todas.length, cort: cort.length, porNom, faltaNom, desde: ts.length ? Math.min(...ts) : 0, hasta: ts.length ? Math.max(...ts) : 0 }; });
                         const tc = filas.reduce((t, x) => t + x.cort, 0), tt = filas.reduce((t, x) => t + x.total, 0);
                         return (
                           <details className="mb-2 rounded-lg border-2 border-emerald-300 bg-emerald-50/50 px-2 py-1">
@@ -57920,7 +57921,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                               {filas.map((x) => (
                                 <div key={x.pp} className={`rounded border px-2 py-1 text-sm ${x.cort === x.total ? "border-emerald-300 bg-white" : "border-amber-300 bg-amber-50"}`}>
                                   <div className="flex flex-wrap items-center gap-2"><b>Ppto {pptoBonito(x.pp)}</b><span className={`text-xs font-bold ${x.cort === x.total ? "text-emerald-700" : "text-amber-800"}`}>{x.cort === x.total ? `✓ todo cortado (${x.total})` : `✂ ${x.cort} de ${x.total} cortadas · faltan ${x.total - x.cort}`}</span></div>
-                                  {x.cort > 0 && <div className="text-xs text-emerald-800">Cortadas: {Object.entries(x.porNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
+                                  {x.cort > 0 && <div className="text-xs text-emerald-800">Cortadas: {Object.entries(x.porNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}{x.desde ? ` · ✂ ${auxFechaCorte(x.desde)}${auxFechaCorte(x.hasta) !== auxFechaCorte(x.desde) ? ` → ${auxFechaCorte(x.hasta)}` : ""}` : ""}</div>}
                                   {x.cort < x.total && <div className="text-xs text-amber-900">Faltan: {Object.entries(x.faltaNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
                                 </div>
                               ))}
@@ -58124,6 +58125,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 <span className="text-sm font-semibold text-slate-800">{e.nombre}{e.n > 1 ? ` ${e.k}/${e.n}` : ""}</span>
                 <span className="text-sm font-bold">{auxMed(e.lCorte)} mm</span>
                 <span className="text-xs text-slate-500">{[auxVent(e), e.grupo, e.cliente].filter(Boolean).join(" · ")}</span>
+                <span className="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">✂ cortada {e.cortadaAt ? auxFechaCorte(e.cortadaAt) : "(sin fecha guardada)"}{e.por ? ` · ${e.por}` : ""}</span>
                 <span className="ml-auto flex items-center gap-2">
                   <Badge className="bg-violet-50 text-violet-800 ring-violet-200">{e.carroNombre} · hueco {e.hueco}</Badge>
                   {lista && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ terminada</Badge>}
