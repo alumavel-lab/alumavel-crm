@@ -7112,6 +7112,7 @@ export default function App() {
         {modulo === "incidencias" && (
           <IncidenciasModulo
             usuarios={usuarios}
+            onFechaGarantia={(pid, v) => { updateProyectoInline(pid, { fechaGarantia: v || "" }); showToast(v ? "Fecha de entrega para la garantía guardada en la obra" : "Fecha de garantía quitada"); }}
             onMandarMontadores={(inc) => {
               const pr = proyectos.find((x) => x.id === inc.proyectoId);
               const cl = pr && clientes.find((c) => c.id === pr.clienteId);
@@ -30688,7 +30689,7 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -30740,6 +30741,7 @@ function IncidenciasModulo({ usuarios = [], onMandarMontadores, incidencias, pro
         clientes={clientes}
         nextNumero={nextNumero}
         usuarios={usuarios}
+        onFechaGarantia={onFechaGarantia}
         onCancel={() => setView(editId ? "detail" : "list")}
         onSave={onUpsert}
       />
@@ -30750,7 +30752,7 @@ function IncidenciasModulo({ usuarios = [], onMandarMontadores, incidencias, pro
     const incidencia = incidencias.find((i) => i.id === detailId);
     if (!incidencia) { setView("list"); return null; }
     return (
-      <IncidenciaDetail
+      <IncidenciaDetail onFechaGarantia={onFechaGarantia}
         incidencia={incidencia}
         proyecto={proyecto(incidencia.proyectoId)}
         cliente={clientes.find((c) => c.id === proyecto(incidencia.proyectoId)?.clienteId)}
@@ -30886,19 +30888,26 @@ function IncidenciasModulo({ usuarios = [], onMandarMontadores, incidencias, pro
 }
 
 // GARANTÍA de una incidencia: se cuenta desde que se entregó la obra (o, si no consta, desde la carga / fin de fábrica / aceptación)
-const GARANTIA_ANOS = 3;
+const GARANTIA_ANOS = 2;
 const garantiaObra = (p, fechaInc) => {
   if (!p) return null;
-  const base = [["entregada", p.fechaEntregado], ["cargada", p.fechaCarga], ["terminada en fábrica", p.fechaTerminadoFabrica], ["aceptada", p.fechaAceptado]].find(([, f]) => f && /^\d{4}-\d{2}-\d{2}/.test(String(f)));
+  const base = [["entregada (fecha puesta a mano)", p.fechaGarantia], ["entregada", p.fechaEntregado], ["cargada", p.fechaCarga], ["terminada en fábrica", p.fechaTerminadoFabrica], ["aceptada", p.fechaAceptado]].find(([, f]) => f && /^\d{4}-\d{2}-\d{2}/.test(String(f)));
   if (!base) return { sinFecha: true };
   const desde = String(base[1]).slice(0, 10); const d = new Date(desde + "T12:00:00"); d.setFullYear(d.getFullYear() + GARANTIA_ANOS);
   const hasta = d.toISOString().slice(0, 10); const ref0 = String(fechaInc || new Date().toISOString().slice(0, 10)).slice(0, 10);
   return { desde, hasta, porQue: base[0], dentro: ref0 <= hasta };
 };
-const AvisoGarantia = ({ proyecto, fecha }) => {
+// onFecha: guardar a mano la fecha de entrega de la obra (para la garantía) cuando no consta o no es la buena
+const AvisoGarantia = ({ proyecto, fecha, onFecha = null }) => {
   const g = garantiaObra(proyecto, fecha); if (!g) return null;
-  if (g.sinFecha) return <div className="px-3 py-2 rounded-md bg-slate-100 border border-slate-300 text-sm text-slate-700">🛡 Garantía: la obra no tiene fecha de entrega, no sé si está en garantía.</div>;
-  return <div className={`px-3 py-2 rounded-md border text-sm font-semibold ${g.dentro ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "bg-rose-50 border-rose-400 text-rose-800"}`}>🛡 {g.dentro ? "EN GARANTÍA" : "FUERA DE GARANTÍA"} · obra {g.porQue} el {fmtDate(g.desde)} · garantía de {GARANTIA_ANOS} años hasta el {fmtDate(g.hasta)}</div>;
+  const manual = onFecha && (
+    <label className="flex flex-wrap items-center gap-2 mt-1.5 text-xs font-normal text-slate-700">Fecha de entrega de la obra (a mano):
+      <input type="date" defaultValue={proyecto.fechaGarantia || ""} key={proyecto.id + (proyecto.fechaGarantia || "")} onBlur={(e) => { const v = e.target.value; if (v !== (proyecto.fechaGarantia || "")) onFecha(v); }} className="border border-slate-300 rounded px-1.5 py-0.5 bg-white" />
+      {proyecto.fechaGarantia && <button type="button" onClick={() => onFecha("")} className="underline text-slate-500">quitar</button>}
+    </label>
+  );
+  if (g.sinFecha) return <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-sm text-amber-900 font-semibold">🛡 Garantía: la obra no tiene fecha de entrega, no sé si está en garantía. Ponla a mano:{manual}</div>;
+  return <div className={`px-3 py-2 rounded-md border text-sm font-semibold ${g.dentro ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "bg-rose-50 border-rose-400 text-rose-800"}`}>🛡 {g.dentro ? "EN GARANTÍA" : "FUERA DE GARANTÍA"} · obra {g.porQue} el {fmtDate(g.desde)} · garantía de {GARANTIA_ANOS} años hasta el {fmtDate(g.hasta)}{manual}</div>;
 };
 // Asignar la incidencia a cualquier usuario: primero los de Montaje
 const opcionesAsignarIncidencia = (usuarios) => {
@@ -30909,7 +30918,7 @@ const opcionesAsignarIncidencia = (usuarios) => {
   const op = (u) => <option key={u.id} value={u.id}>{nom(u)}</option>;
   return mon.length ? [<optgroup key="m" label="Montadores">{mon.map(op)}</optgroup>, <optgroup key="r" label="Resto del equipo">{resto.map(op)}</optgroup>] : resto.map(op);
 };
-function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [] }) {
+function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [], onFechaGarantia = null }) {
   const [f, setF] = useState(
     initial || {
       id: null, proyectoId: proyectos[0]?.id || "", fecha: new Date().toISOString().slice(0, 10),
@@ -30965,7 +30974,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
             <InfoRow icon={<MapPin size={13} />} label="Dirección" value={proyectoSel.ubicacion || "—"} />
           </div>
         )}
-        {proyectoSel && <AvisoGarantia proyecto={proyectoSel} fecha={f.fecha} />}
+        {proyectoSel && <AvisoGarantia proyecto={proyectoSel} fecha={f.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyectoSel.id, v) : null} />}
         {!initial && <div className="text-xs text-slate-500">📷 Las fotos se suben nada más guardar: se abre la incidencia en «Fotos y documentos».</div>}
 
         <div className="grid grid-cols-3 gap-4">
@@ -31012,7 +31021,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
-function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function IncidenciaDetail({ onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
   const totalGastos = gastos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
@@ -31163,7 +31172,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
-          {proyecto && <div className="mb-4"><AvisoGarantia proyecto={proyecto} fecha={incidencia.fecha} /></div>}
+          {proyecto && <div className="mb-4"><AvisoGarantia proyecto={proyecto} fecha={incidencia.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyecto.id, v) : null} /></div>}
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Euro size={14} />} label="Importe presupuesto" value={money(proyecto?.importePresupuesto)} />
             <InfoRow icon={<MapPin size={14} />} label="Dirección" value={proyecto?.ubicacion || "—"} />
