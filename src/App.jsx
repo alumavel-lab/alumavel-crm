@@ -24956,6 +24956,25 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           </div>
           <button onClick={() => guardar()} className="text-xs font-semibold text-slate-600 hover:underline">Guardar cambios</button>
         </div>
+        {/* GUÍA: qué toca ahora, para quien no sepa seguir */}
+        {(() => {
+          const rec = esRecogidaFabrica(abierto); const foto = toArray(a.fotosCarga).length > 0;
+          const pasos = [
+            { ok: foto, txt: "Haz la FOTO DE LA CARGA (botón «Foto de la carga» del paso 1). Que se vea el material cargado." },
+            { ok: !!a.firmaCarga, txt: rec ? "Firma QUIEN ENTREGA en fábrica (botón verde del paso 1)." : "Firma el CHÓFER al cargar (botón verde del paso 1)." },
+            { ok: !!a.firmaCliente, txt: rec ? "Firma QUIEN RECOGE (paso 2). Si no está el cliente, firma el responsable de la carga." : "Firma el CLIENTE al entregar (paso 2)." },
+          ];
+          const sig = pasos.findIndex((x) => !x.ok);
+          return (
+            <div className={`rounded-lg border-2 p-3 ${sig === -1 ? "border-emerald-400 bg-emerald-50" : "border-sky-500 bg-sky-50"}`}>
+              <div className="text-sm font-extrabold text-slate-900">{sig === -1 ? "✓ Albarán completo: no falta nada." : `👉 Ahora toca el paso ${sig + 1} de 3`}</div>
+              <ol className="mt-1 space-y-0.5 text-sm">
+                {pasos.map((x, i) => <li key={i} className={x.ok ? "text-emerald-700 line-through" : i === sig ? "font-bold text-sky-900" : "text-slate-500"}>{x.ok ? "✓" : i === sig ? "👉" : "○"} {i + 1}. {x.txt}</li>)}
+              </ol>
+              {sig !== -1 && <div className="mt-1 text-[11px] text-slate-600">¿No te deja seguir? Sin foto no se puede firmar, y el cliente firma después de la carga. Si la foto no sube (sin cobertura), espera a tener señal o avisa a la oficina; no se lleve el material sin apuntarlo en «Notas».</div>}
+            </div>
+          );
+        })()}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "1. Salida de fábrica (foto + firma de quien entrega)" : "1. Carga (chófer)"}</div>
@@ -24974,7 +24993,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               </label>
             </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => { if (BLOQUEAR_FIRMA_SIN_CITA && !citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (BLOQUEAR_FIRMA_SIN_CITA && !citaOk(abierto) && !(isAdmin && window.confirm("Esta obra NO tiene la cita confirmada (fecha + llamada al cliente). ¿Firmar igualmente como administrador?"))) { if (!isAdmin) alert("Primero la CITA: fecha y llamada al cliente (recuadro rojo de arriba). Es obligatoria."); return; } if (!toArray(a.fotosCarga).length) { alert("Falta la FOTO DE LA CARGA.\n\nQué hacer: pulsa «Foto de la carga» (paso 1), haz la foto del material cargado y luego vuelve a pulsar firmar.\n\nSi no sube (sin cobertura), espera a tener señal o avisa a la oficina."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
