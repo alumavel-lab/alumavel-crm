@@ -3522,16 +3522,24 @@ export default function App() {
   };
 
   const upsertIncidencia = (data) => {
-    let next;
+    let next; let nuevaId = null; let numero = data.numero;
+    const antes = data.id ? incidencias.find((i) => i.id === data.id) : null;
     if (data.id) {
       next = incidencias.map((i) => (i.id === data.id ? { ...i, ...data } : i));
       showToast("Incidencia actualizada");
     } else {
-      next = [{ ...data, id: uid(), numero: nextNumeroIncidencia(), gastos: [] }, ...incidencias];
+      nuevaId = uid(); numero = nextNumeroIncidencia();
+      next = [{ ...data, id: nuevaId, numero, gastos: [] }, ...incidencias];
       showToast("Incidencia dada de alta");
     }
     saveIncidencias(next);
-    setIncidenciaView("list");
+    // ASIGNADA A ALGUIEN (nueva o cambiada): se le crea una tarea para que la vea en Tareas
+    if (data.responsableActualId && (!antes || antes.responsableActualId !== data.responsableActualId)) {
+      const pr = proyectos.find((x) => x.id === data.proyectoId);
+      try { crearTarea({ titulo: `Incidencia #${numero || ""}${pr ? ` — #${pr.numero} ${pr.nombre || ""}` : ""}`.trim(), descripcion: `${data.especificaciones || ""}${data.observaciones ? `\n${data.observaciones}` : ""}`, asignadoA: data.responsableActualId, asignadoANombre: data.responsableActual || "", fechaLimite: data.fechaEntregaPrevista || "" }); } catch (e) { /* la incidencia ya está guardada */ }
+    }
+    // nueva: se abre su ficha para subir las fotos
+    if (nuevaId) { setIncidenciaDetailId(nuevaId); setIncidenciaView("detail"); } else setIncidenciaView("list");
   };
 
   const deleteIncidencia = (id) => {
@@ -7103,6 +7111,7 @@ export default function App() {
         )}
         {modulo === "incidencias" && (
           <IncidenciasModulo
+            usuarios={usuarios}
             onMandarMontadores={(inc) => {
               const pr = proyectos.find((x) => x.id === inc.proyectoId);
               const cl = pr && clientes.find((c) => c.id === pr.clienteId);
@@ -30679,7 +30688,7 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -30730,6 +30739,7 @@ function IncidenciasModulo({ onMandarMontadores, incidencias, proyectos, cliente
         proyectos={proyectos}
         clientes={clientes}
         nextNumero={nextNumero}
+        usuarios={usuarios}
         onCancel={() => setView(editId ? "detail" : "list")}
         onSave={onUpsert}
       />
@@ -30875,7 +30885,31 @@ function IncidenciasModulo({ onMandarMontadores, incidencias, proyectos, cliente
   );
 }
 
-function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave }) {
+// GARANTÍA de una incidencia: se cuenta desde que se entregó la obra (o, si no consta, desde la carga / fin de fábrica / aceptación)
+const GARANTIA_ANOS = 3;
+const garantiaObra = (p, fechaInc) => {
+  if (!p) return null;
+  const base = [["entregada", p.fechaEntregado], ["cargada", p.fechaCarga], ["terminada en fábrica", p.fechaTerminadoFabrica], ["aceptada", p.fechaAceptado]].find(([, f]) => f && /^\d{4}-\d{2}-\d{2}/.test(String(f)));
+  if (!base) return { sinFecha: true };
+  const desde = String(base[1]).slice(0, 10); const d = new Date(desde + "T12:00:00"); d.setFullYear(d.getFullYear() + GARANTIA_ANOS);
+  const hasta = d.toISOString().slice(0, 10); const ref0 = String(fechaInc || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  return { desde, hasta, porQue: base[0], dentro: ref0 <= hasta };
+};
+const AvisoGarantia = ({ proyecto, fecha }) => {
+  const g = garantiaObra(proyecto, fecha); if (!g) return null;
+  if (g.sinFecha) return <div className="px-3 py-2 rounded-md bg-slate-100 border border-slate-300 text-sm text-slate-700">🛡 Garantía: la obra no tiene fecha de entrega, no sé si está en garantía.</div>;
+  return <div className={`px-3 py-2 rounded-md border text-sm font-semibold ${g.dentro ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "bg-rose-50 border-rose-400 text-rose-800"}`}>🛡 {g.dentro ? "EN GARANTÍA" : "FUERA DE GARANTÍA"} · obra {g.porQue} el {fmtDate(g.desde)} · garantía de {GARANTIA_ANOS} años hasta el {fmtDate(g.hasta)}</div>;
+};
+// Asignar la incidencia a cualquier usuario: primero los de Montaje
+const opcionesAsignarIncidencia = (usuarios) => {
+  const todos = toArray(usuarios).filter((u) => u && u.id);
+  const nom = (u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || "—";
+  const mon = todos.filter((u) => u.areas && u.areas.montaje).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const resto = todos.filter((u) => !(u.areas && u.areas.montaje)).sort((a, b) => nom(a).localeCompare(nom(b), "es"));
+  const op = (u) => <option key={u.id} value={u.id}>{nom(u)}</option>;
+  return mon.length ? [<optgroup key="m" label="Montadores">{mon.map(op)}</optgroup>, <optgroup key="r" label="Resto del equipo">{resto.map(op)}</optgroup>] : resto.map(op);
+};
+function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [] }) {
   const [f, setF] = useState(
     initial || {
       id: null, proyectoId: proyectos[0]?.id || "", fecha: new Date().toISOString().slice(0, 10),
@@ -30931,11 +30965,18 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
             <InfoRow icon={<MapPin size={13} />} label="Dirección" value={proyectoSel.ubicacion || "—"} />
           </div>
         )}
+        {proyectoSel && <AvisoGarantia proyecto={proyectoSel} fecha={f.fecha} />}
+        {!initial && <div className="text-xs text-slate-500">📷 Las fotos se suben nada más guardar: se abre la incidencia en «Fotos y documentos».</div>}
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="Fecha"><TextInput type="date" value={f.fecha} onChange={set("fecha")} /></Field>
           <Field label="Responsable inicial del proyecto"><TextInput value={f.responsableInicial} onChange={set("responsableInicial")} /></Field>
-          <Field label="Responsable actual"><TextInput value={f.responsableActual} onChange={set("responsableActual")} /></Field>
+          <Field label="Asignada a (responsable actual)">
+            <Select value={f.responsableActualId || ""} onChange={(e) => { const u = toArray(usuarios).find((x) => x.id === e.target.value); setF({ ...f, responsableActualId: e.target.value, responsableActual: u ? `${u.nombre || ""} ${u.apellidos || ""}`.trim() : (e.target.value ? f.responsableActual : "") }); }}>
+              <option value="">{f.responsableActual && !f.responsableActualId ? `${f.responsableActual} (escrito a mano)` : "Sin asignar (la ven todos los montadores)"}</option>
+              {opcionesAsignarIncidencia(usuarios)}
+            </Select>
+          </Field>
         </div>
         <Field label="Comercial asociado"><TextInput value={f.comercialAsociado} onChange={set("comercialAsociado")} /></Field>
 
@@ -31122,11 +31163,12 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
+          {proyecto && <div className="mb-4"><AvisoGarantia proyecto={proyecto} fecha={incidencia.fecha} /></div>}
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Euro size={14} />} label="Importe presupuesto" value={money(proyecto?.importePresupuesto)} />
             <InfoRow icon={<MapPin size={14} />} label="Dirección" value={proyecto?.ubicacion || "—"} />
             <InfoRow icon={<Users size={14} />} label="Responsable inicial" value={incidencia.responsableInicial || "—"} />
-            <InfoRow icon={<Users size={14} />} label="Responsable actual" value={incidencia.responsableActual || "—"} />
+            <InfoRow icon={<Users size={14} />} label="Asignada a" value={incidencia.responsableActual || "Sin asignar (la ven todos los montadores)"} />
             <InfoRow icon={<Users size={14} />} label="Comercial asociado" value={incidencia.comercialAsociado || "—"} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista / entregado" value={`${fmtDate(incidencia.fechaEntregaPrevista)} / ${fmtDate(incidencia.fechaEntregado)}`} />
           </div>
