@@ -5164,6 +5164,35 @@ export default function App() {
       }
     });
   }, [uxExpedientes, proyectos, pedidos, currentUser?.id, loading]);
+  // OBRA «PENDIENTE DE ACEPTACIÓN» QUE YA ESTÁ EN EL PLANNING DE FÁBRICA (o en Control del día, o con ventanas en palet):
+  // en cuanto llega al plan está en fabricación → pasa sola a «En proceso». NO descuenta stock: queda marcada «enProcesoAuto» para revisarlo.
+  const planFabApp = useObjetoFb("planFabrica"); const manualCDApp = useObjetoFb("controlDiaObras");
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const limpiaK = (t) => String(t || "").replace(/[.#$/[\]]/g, "_");
+    const enPlan = new Map(); // proyectoId -> primer día
+    const apunta = (pid, d) => { if (pid && (!enPlan.has(pid) || d < enPlan.get(pid))) enPlan.set(pid, d); };
+    const porUx = new Map(toArray(proyectos).filter((p) => p && p.uxcarExpedienteId).map((p) => [limpiaK(`uxcar-${p.uxcarExpedienteId}`), p.id]));
+    const porUxM = new Map(toArray(proyectos).filter((p) => p && p.uxcarExpedienteId).map((p) => [limpiaK(`u-${p.uxcarExpedienteId}`), p.id]));
+    const porPr = new Map(toArray(proyectos).filter(Boolean).map((p) => [limpiaK(`proyecto-${p.id}`), p.id]));
+    const porPrM = new Map(toArray(proyectos).filter(Boolean).map((p) => [limpiaK(`p-${p.id}`), p.id]));
+    Object.entries((planFabApp && planFabApp.dias) || {}).forEach(([d, obs]) => Object.keys(obs || {}).forEach((k) => apunta(porPr.get(k) || porUx.get(k), d)));
+    const enManual = new Map(); // proyectoId -> [días puestos a mano en Control del día]
+    Object.entries(manualCDApp || {}).forEach(([d, obs]) => Object.entries(obs || {}).forEach(([k, si]) => { const pid = si && (porPrM.get(k) || porUxM.get(k)); if (pid) enManual.set(pid, [...(enManual.get(pid) || []), d]); }));
+    const idx = toArray(caballetesVentanas).length ? indicePaletVentanas(caballetesVentanas) : null;
+    toArray(proyectos).forEach((pr) => {
+      if (!pr || (pr.estadoTrabajo || "Pendiente de aceptación") !== "Pendiente de aceptación") return;
+      // si se devolvió al planning virtual DESPUÉS de publicarse este planning, el planning aún no lo sabe: no cuenta
+      const planViejo = pr.vueltaVirtual && !(planFabApp && planFabApp.en > pr.vueltaVirtual);
+      const desdeV = pr.vueltaVirtual ? new Date(pr.vueltaVirtual).toISOString().slice(0, 10) : "";
+      const diaMan = (enManual.get(pr.id) || []).filter((d) => !desdeV || d > desdeV).sort()[0] || null;
+      const dia = (planViejo ? null : enPlan.get(pr.id)) || diaMan; const r = idx ? paletDeObra(pr, idx) : null;
+      if (!dia && !(r && r.n)) return;
+      const motivo = dia ? `en el planning de Fábrica (${dia})` : `${r.n} de ${r.total} ventanas ya en palet`;
+      updateProyectoInline(pr.id, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(dia && !pr.fechaFabricacion ? { fechaFabricacion: dia } : {}), enProcesoAuto: { fecha: new Date().toISOString().slice(0, 10), motivo, stockSinDescontar: !pr.stockDescontado } });
+      showToast(`#${pr.numero}: ${motivo} → pasa a «En proceso»${pr.stockDescontado ? "" : " (stock SIN descontar)"}`);
+    });
+  }, [planFabApp, manualCDApp, caballetesVentanas, proyectos, currentUser?.id, loading]);
   // Vista para Uxcar (solo de SUS expedientes, solo consulta): estado en Fábrica, dónde están sus cristales y persianas y sus discrepancias.
   // Se escribe en portalUxcar/vistaFabrica/{expedienteId} cuando cambia; el portal solo la lee.
   const vistaFabUxRef = useRef("");
@@ -5644,7 +5673,7 @@ export default function App() {
     const exp0 = refO.tipo === "uxcar" ? uxExpedientes.find((e) => e.id === refO.id) : null;
     const p = refO.tipo === "proyecto" ? proyectos.find((x) => x.id === refO.id) : exp0 ? proyectos.find((x) => x.id === exp0.proyectoId || x.uxcarExpedienteId === exp0.id) : null;
     const exp = exp0 || (p && p.uxcarExpedienteId ? uxExpedientes.find((e) => e.id === p.uxcarExpedienteId) : null);
-    if (p && p.estadoTrabajo === "En proceso") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación", fechaEnProceso: 0 });
+    if (p && p.estadoTrabajo === "En proceso") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación", fechaEnProceso: 0, vueltaVirtual: Date.now() });
     if (exp && exp.estado === "produccion") uxActualizar(exp, { estado: "virtual" });
     showToast(`${p ? `#${p.numero}` : exp ? `Uxcar ${exp.numero}` : "Obra"}: vuelve al planning virtual${p && p.stockDescontado ? " (el stock que se descontó al empezar NO se ha devuelto)" : ""}`);
   };
