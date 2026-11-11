@@ -7387,6 +7387,7 @@ export default function App() {
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
             onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
+            soloChofer={!isAdmin && !tieneAcceso("proyectos") && !tieneAcceso("presupuestos") && !tieneAcceso("fabrica")}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />}
             proyectos={proyectos}
@@ -7555,6 +7556,7 @@ export default function App() {
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
             onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
+            soloChofer={!isAdmin && !tieneAcceso("proyectos") && !tieneAcceso("presupuestos") && !tieneAcceso("fabrica")}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
@@ -24793,7 +24795,7 @@ const obraTerminadaSalida = (p, idx) => ["Listo para reparto/recogida", "Albará
 const tipoSalidaObra = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
 const citaSalidaOk = (p) => { const c = p.citaSalida || {}; const t = tipoSalidaObra(p); const f = t === "instalacion" ? p.fechaMontaje : p.fechaReparto; return !!(f && c.contactadoCliente && (t !== "reparto" || c.avisadoRepartidor)); };
 
-function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
+function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio, soloChofer = false }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
@@ -24922,7 +24924,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
           <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · {tipoSalida(abierto) === "recogida" ? "Recogida" : tipoSalida(abierto) === "instalacion" ? "Instalación" : "Reparto"} {fmtDate(fechaCitaDe(abierto)) || "sin fecha"}{abierto.citaSalida && abierto.citaSalida.hora ? ` ${abierto.citaSalida.hora}` : ""}</div>
         </div>
-        {citaB && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
+        {citaB && !soloChofer && (() => { const t = tipoSalida(abierto); const ok = citaOk(abierto); const c = abierto.citaSalida || {}; const tel = cli && (cli.movil || cli.telefono); return (
           <div className={`rounded-lg border-2 p-4 space-y-2 ${ok ? "border-emerald-400 bg-emerald-50" : "border-rose-500 bg-rose-50"}`}>
             <div className="text-sm font-extrabold text-slate-900">{ok ? "✓ Cita confirmada" : fechaCitaDe(abierto) ? `Fecha aproximada ${fmtDate(fechaCitaDe(abierto))} · sin confirmar` : "⚠ CITA OBLIGATORIA"} — {t === "recogida" ? "recogida en fábrica" : t === "instalacion" ? "instalación" : "reparto"}</div>
             {!ok && <div className="text-xs text-rose-800">{t === "recogida" ? "Llama al cliente, queda el día y la hora en que viene a recoger y apúntalo aquí." : t === "reparto" ? "Llama al cliente y al repartidor, queda el día y la hora y apúntalo aquí." : "Llama al cliente, queda el día de la instalación y apúntalo aquí."}{BLOQUEAR_FIRMA_SIN_CITA ? " Sin esto no se puede firmar la carga." : ""}</div>}
@@ -24960,7 +24962,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           return (
             <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-2">
               <div className="text-sm font-bold text-slate-800">📍 Dónde está</div>
-              {alms.length > 0 && <div className="flex flex-wrap items-center gap-2 text-sm">
+              {alms.length > 0 && !soloChofer && <div className="flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-slate-600">Almacén de destino de la obra:</span>
                 <select value={abierto.almacenDestinoId || ""} onChange={(e) => onGuardarCita && onGuardarCita(abierto.id, { almacenDestinoId: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-sm">
                   <option value="">— sin elegir —</option>
@@ -24974,12 +24976,12 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                       <b>Palet {c.numero || "—"}</b>
                       <span className="text-xs text-slate-500">{fuera ? `fuera desde ${fmtDate(c.salida && c.salida.fecha) || "—"}` : (c.estado || "libre") === "cargado" ? "cargado" : "reservado"}{nV ? ` · ${nV} ventana${nV === 1 ? "" : "s"}` : ""}</span>
                       {!fuera && <span className="text-xs font-semibold text-sky-800">{nomA(c.almacenId)}{c.sitioAlm && c.sitioAlm.f ? ` · ${textoSitioPalet(c.sitioAlm)}` : c.ubicacion ? ` · ${c.ubicacion}` : " · sin hueco asignado"}</span>}
-                      {!fuera && alms.length > 1 && <select value="" onChange={(e) => mover(c, e.target.value)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs"><option value="">Cambiar de almacén…</option>{alms.filter((x) => x.id !== c.almacenId).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select>}
+                      {!fuera && alms.length > 1 && !soloChofer && <select value="" onChange={(e) => mover(c, e.target.value)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs"><option value="">Cambiar de almacén…</option>{alms.filter((x) => x.id !== c.almacenId).map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select>}
                     </li>
                   ); })}
                 </ul>
               )}
-              {dentro.length > 1 && alms.length > 1 && <div className="flex items-center gap-2 text-xs"><span className="text-slate-600">Mover los {dentro.length} palets a:</span><select value="" onChange={(e) => { const id = e.target.value; if (id && window.confirm(`¿Mover los ${dentro.length} palets a ${nomA(id)}?`)) { let lista = [...toArray(caballetes)]; dentro.forEach((c) => { if (c.almacenId === id) return; const sit = sitioParaPalet(c, id, alms, lista); const nc = { ...c, almacenId: id, sitioAlm: sit.sitioAlm || null, ubicacion: sit.ubicacion || "", historial: hist(c, `Cambiado a ${nomA(id)}${sit.ubicacion ? " · " + sit.ubicacion : ""} desde Albaranes`) }; lista = lista.map((x) => (x.id === c.id ? nc : x)); onGuardarCaballete && onGuardarCaballete(nc); }); } }} className="border border-slate-300 rounded px-1.5 py-0.5"><option value="">elige almacén…</option>{alms.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select></div>}
+              {dentro.length > 1 && alms.length > 1 && !soloChofer && <div className="flex items-center gap-2 text-xs"><span className="text-slate-600">Mover los {dentro.length} palets a:</span><select value="" onChange={(e) => { const id = e.target.value; if (id && window.confirm(`¿Mover los ${dentro.length} palets a ${nomA(id)}?`)) { let lista = [...toArray(caballetes)]; dentro.forEach((c) => { if (c.almacenId === id) return; const sit = sitioParaPalet(c, id, alms, lista); const nc = { ...c, almacenId: id, sitioAlm: sit.sitioAlm || null, ubicacion: sit.ubicacion || "", historial: hist(c, `Cambiado a ${nomA(id)}${sit.ubicacion ? " · " + sit.ubicacion : ""} desde Albaranes`) }; lista = lista.map((x) => (x.id === c.id ? nc : x)); onGuardarCaballete && onGuardarCaballete(nc); }); } }} className="border border-slate-300 rounded px-1.5 py-0.5"><option value="">elige almacén…</option>{alms.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select></div>}
             </div>
           );
         })()}
@@ -25114,6 +25116,16 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     );
   }
 
+  // PANTALLA DEL CHÓFER: solo lo suyo (cargas de hoy y próximas), sin listados, filtros ni citas. Toca una obra para abrir su albarán y firmar.
+  if (soloChofer) return (
+    <div className="p-4 sm:p-6 max-w-3xl space-y-3">
+      <div>
+        <h1 className="text-2xl font-extrabold text-slate-900 flex items-center gap-2"><Truck size={22} /> Mis cargas</h1>
+        <p className="text-sm text-slate-600">1) Toca cada cosa al cargarla. 2) Pulsa <b>«Abrir albarán para firmar»</b>: foto de la carga, tu firma y la del cliente.</p>
+      </div>
+      <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} onAbrir={(p) => { setTab("repartos"); abrir(p); }} />
+    </div>
+  );
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
@@ -61309,7 +61321,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
 }
 
 // Cargas de hoy: todos los albaranes de entrega/recogida del día abiertos en una sola pantalla; se toca cada cosa al cargarla y se pone en verde (se comparte entre pantallas)
-function CargasDelDia({ proyectos, clientes, caballetes, quien }) {
+function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null }) {
   const hoy = new Date().toISOString().slice(0, 10);
   const marcas = useObjetoFb("cargasHoy");
   const [verOtros, setVerOtros] = useState(false);
@@ -61341,7 +61353,8 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien }) {
           <span className={`ml-auto text-sm font-extrabold ${completa ? "text-emerald-700" : "text-amber-700"}`}>{completa ? "✓ CARGADO" : `${n} de ${its.length}`}</span>
         </div>
         <div className="text-xs text-slate-500 mb-2">{esRecogidaFabrica(p) ? "Recogida en fábrica" : "Reparto en camión"}{dir ? ` · ${dir}` : ""}{p.albaranEntrega && p.albaranEntrega.chofer ? ` · ${p.albaranEntrega.chofer}` : ""}{doc && doc.url ? <> · <a href={doc.url} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57]">tipo plano</a></> : null}</div>
-        {its.length === 0 ? <div className="text-sm text-slate-500">Este albarán no tiene contenido ni caballetes: ábrelo en Albaranes y rellena «Material que se entrega».</div> : (
+        {onAbrir && <button type="button" onClick={() => onAbrir(p)} className="mb-2 px-4 py-2.5 rounded-lg bg-[#2E8B57] text-white text-sm font-extrabold">📝 Abrir albarán para firmar{p.albaranEntrega && p.albaranEntrega.firmaCliente ? " (ya firmado)" : p.albaranEntrega && p.albaranEntrega.firmaCarga ? " · falta la firma del cliente" : ""}</button>}
+        {its.length === 0 ? <div className="text-sm text-slate-500">{onAbrir ? "No tiene lista de material: abre el albarán y mira «Material que se entrega»." : "Este albarán no tiene contenido ni caballetes: ábrelo en Albaranes y rellena «Material que se entrega»."}</div> : (
           <div className="flex flex-wrap gap-2">
             {its.map((it) => { const hecho = !!m[it.k]; return (
               <button key={it.k} type="button" onClick={() => toca(p, it, hecho)} className={`text-left px-3 py-2.5 rounded-md border-2 text-sm font-semibold min-w-[8rem] ${hecho ? "bg-emerald-600 border-emerald-800 text-white" : "bg-white border-slate-300 text-slate-800 hover:bg-slate-50"}`}>{hecho ? "✓ " : ""}{it.t}</button>
