@@ -2597,6 +2597,16 @@ export default function App() {
   };
 
   const saveProveedores = (next) => { setProveedores(next); persist("proveedores", next); };
+  // Alta rápida de un SITIO NUEVO (taller, almacén, proveedor…) desde el albarán de salida: nombre + dirección; queda en Proveedores
+  const crearProveedorRapido = (d) => {
+    const nombre = String((d && d.nombre) || "").trim(); if (!nombre) return "";
+    const ya = toArray(proveedores).find((x) => x && String(x.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
+    if (ya) { showToast(`«${ya.nombre}» ya existía: lo elijo`); return ya.id; }
+    const nuevo = { id: uid(), nombre, direccion: String(d.direccion || "").trim(), provincia: String(d.provincia || "").trim(), telefono: String(d.telefono || "").trim(), tipo: "Taller / proceso externo", historico: [], creadoDesde: "albaran de salida" };
+    saveProveedores([nuevo, ...toArray(proveedores)]);
+    showToast(`Sitio «${nombre}» creado (está en Proveedores)`);
+    return nuevo.id;
+  };
   const saveMateriales = (next) => { setMateriales(next); persist("materiales", next); };
   // Cambiar dónde está un material en el almacén (lo usa el puesto de Preparación de material). No toca cantidades.
   const conUbicacionNueva = (x, almacen, estanteria) => {
@@ -7387,6 +7397,7 @@ export default function App() {
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
             onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
+            onCrearProveedor={crearProveedorRapido}
             soloChofer={!isAdmin && !tieneAcceso("proyectos") && !tieneAcceso("presupuestos") && !tieneAcceso("fabrica")}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />}
@@ -7556,6 +7567,7 @@ export default function App() {
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
             onGuardarCita={(id, campos) => { updateProyectoInline(id, JSON.parse(JSON.stringify(campos))); showToast("Cita guardada"); }}
+            onCrearProveedor={crearProveedorRapido}
             soloChofer={!isAdmin && !tieneAcceso("proyectos") && !tieneAcceso("presupuestos") && !tieneAcceso("fabrica")}
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
@@ -24412,7 +24424,8 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
   );
 }
 
-function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios, onUpsert, onMarcarRecogido, onDelete }) {
+function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios, onUpsert, onMarcarRecogido, onDelete, onCrearProveedor = null }) {
+  const [nuevoSitio, setNuevoSitio] = useState(null); // { nombre, direccion, provincia, telefono } mientras se da de alta un sitio nuevo
   const blank = { descripcion: "", cantidad: "", proveedorId: "", proyectoId: "", responsableId: "", chofer: "", matricula: "", fechaSalida: new Date().toISOString().slice(0, 10), fechaPrevistaRecogida: "", notas: "" };
   const [f, setF] = useState(blank);
   const [firmando, setFirmando] = useState(null); // { envio, quien: "chofer" | "entrega" }
@@ -24472,8 +24485,24 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
           <Field label="Taller / proveedor destino">
             <Select value={f.proveedorId} onChange={set("proveedorId")}>
               <option value="">Selecciona...</option>
-              {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}{p.direccion ? ` · ${p.direccion}` : ""}</option>)}
             </Select>
+            {onCrearProveedor && !nuevoSitio && <button type="button" onClick={() => setNuevoSitio({ nombre: "", direccion: "", provincia: "", telefono: "" })} className="mt-1 text-xs font-semibold text-[#2E8B57] underline">+ Sitio nuevo (no está en la lista)</button>}
+            {onCrearProveedor && nuevoSitio && (
+              <div className="mt-2 p-2 rounded-md border border-emerald-300 bg-emerald-50 space-y-1.5">
+                <div className="text-xs font-bold text-emerald-900">Sitio nuevo</div>
+                <TextInput value={nuevoSitio.nombre} onChange={(e) => setNuevoSitio({ ...nuevoSitio, nombre: e.target.value })} placeholder="Nombre (ej. Alumed Alicante)" />
+                <TextInput value={nuevoSitio.direccion} onChange={(e) => setNuevoSitio({ ...nuevoSitio, direccion: e.target.value })} placeholder="Dirección" />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <TextInput value={nuevoSitio.provincia} onChange={(e) => setNuevoSitio({ ...nuevoSitio, provincia: e.target.value })} placeholder="Población / provincia" />
+                  <TextInput value={nuevoSitio.telefono} onChange={(e) => setNuevoSitio({ ...nuevoSitio, telefono: e.target.value })} placeholder="Teléfono (opcional)" />
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { if (!nuevoSitio.nombre.trim()) { alert("Pon al menos el nombre del sitio."); return; } const id = onCrearProveedor(nuevoSitio); if (id) { setF({ ...f, proveedorId: id }); setNuevoSitio(null); } }} className="px-3 py-1.5 rounded bg-[#2E8B57] text-white text-xs font-bold">Crear y elegir</button>
+                  <button type="button" onClick={() => setNuevoSitio(null)} className="px-3 py-1.5 rounded border border-slate-300 text-xs font-semibold text-slate-600">Cancelar</button>
+                </div>
+              </div>
+            )}
           </Field>
           <Field label="Obra / proyecto (opcional)">
             <Select value={f.proyectoId} onChange={set("proyectoId")}>
@@ -24795,7 +24824,7 @@ const obraTerminadaSalida = (p, idx) => ["Listo para reparto/recogida", "Albará
 const tipoSalidaObra = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
 const citaSalidaOk = (p) => { const c = p.citaSalida || {}; const t = tipoSalidaObra(p); const f = t === "instalacion" ? p.fechaMontaje : p.fechaReparto; return !!(f && c.contactadoCliente && (t !== "reparto" || c.avisadoRepartidor)); };
 
-function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio, soloChofer = false }) {
+function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio, soloChofer = false, onCrearProveedor = null }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
@@ -25225,7 +25254,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         </div>
       )}
       {tab === "salida" && (
-        <ProcesoExternoTab envios={envios} proyectos={proyectos} proveedores={proveedores} clientes={clientes} usuarios={usuarios}
+        <ProcesoExternoTab envios={envios} proyectos={proyectos} proveedores={proveedores} clientes={clientes} usuarios={usuarios} onCrearProveedor={onCrearProveedor}
           onUpsert={onUpsertEnvio} onMarcarRecogido={onMarcarRecogido}
           onDelete={(id) => { if (isAdmin) onDeleteEnvio(id); else alert("Solo un administrador puede borrar albaranes."); }} />
       )}
