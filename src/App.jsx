@@ -24291,17 +24291,18 @@ function imprimirAlbaranSalida(e, { proveedor, proyecto, responsable }) {
       ${f && f.imagen ? `<img src="${f.imagen}" style="max-height:80px;max-width:100%;display:block" />` : `<div style="height:80px"></div>`}
       <div style="font-size:11px;border-top:1px solid #999;padding-top:4px">Nombre: ${esc(f?.nombre || "")} ${f?.dni ? ` · DNI: ${esc(f.dni)}` : ""}<br/>Fecha: ${f?.fecha ? new Date(f.fecha).toLocaleString("es-ES") : ""}</div>
     </div>`;
-  const html = `<html><head><meta charset="utf-8"><title>Albarán de salida ${esc(e.numeroAlbaran || "")}</title></head>
+  const esRec = e.tipo === "recogida";
+  const html = `<html><head><meta charset="utf-8"><title>${esRec ? "Albarán de recogida" : "Albarán de salida"} ${esc(e.numeroAlbaran || "")}</title></head>
   <body style="font-family:Arial;font-size:13px;padding:24px;color:#111">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
       <div style="background:#333645;border-radius:8px;padding:10px 14px;-webkit-print-color-adjust:exact;print-color-adjust:exact"><img src="${LOGO_ECOWIN}" style="height:28px;display:block" /></div>
-      <div style="text-align:right"><div style="font-size:20px;font-weight:bold">ALBARÁN DE SALIDA</div><div style="font-size:15px">Nº ${esc(e.numeroAlbaran || "—")}</div><div>Fecha: ${fmtDate(e.fechaSalida)}</div></div>
+      <div style="text-align:right"><div style="font-size:20px;font-weight:bold">${esRec ? "ALBARÁN DE RECOGIDA" : "ALBARÁN DE SALIDA"}</div><div style="font-size:15px">Nº ${esc(e.numeroAlbaran || "—")}</div><div>Fecha: ${fmtDate(esRec ? (e.fechaPrevistaRecogida || e.fechaSalida) : e.fechaSalida)}</div></div>
     </div>
     <table style="width:100%;margin-top:18px;border-collapse:collapse">
-      <tr><td style="padding:4px 0;width:150px"><b>Destino</b></td><td>${esc(proveedor?.nombre || "—")}${proveedor?.direccion ? `<br/>${esc(proveedor.direccion)}` : ""}</td></tr>
+      <tr><td style="padding:4px 0;width:150px"><b>${esRec ? "Se recoge en" : "Destino"}</b></td><td>${esc(proveedor?.nombre || "—")}${proveedor?.direccion ? `<br/>${esc(proveedor.direccion)}` : ""}</td></tr>
       <tr><td style="padding:4px 0"><b>Obra</b></td><td>${esc(proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Material general")}</td></tr>
       <tr><td style="padding:4px 0"><b>Chófer / transportista</b></td><td>${esc(e.chofer || "")}${e.matricula ? ` · Matrícula ${esc(e.matricula)}` : ""}</td></tr>
-      <tr><td style="padding:4px 0"><b>Recogida prevista</b></td><td>${fmtDate(e.fechaPrevistaRecogida)}${responsable ? ` · Responsable: ${esc(responsable)}` : ""}</td></tr>
+      <tr><td style="padding:4px 0"><b>${esRec ? "Fecha de recogida" : "Recogida prevista"}</b></td><td>${fmtDate(e.fechaPrevistaRecogida)}${responsable ? ` · Responsable: ${esc(responsable)}` : ""}</td></tr>
     </table>
     <table style="width:100%;margin-top:18px;border-collapse:collapse">
       <tr><th style="border:1px solid #333;padding:6px;text-align:left;background:#f1f5f9">Material</th><th style="border:1px solid #333;padding:6px;width:120px;background:#f1f5f9">Cantidad</th></tr>
@@ -24334,12 +24335,12 @@ async function generarPdfAlbaranSalida(e, { proveedor, proyecto, responsable }) 
     p.drawRectangle({ x: M, y: 770, width: w + 20, height: h + 16, color: rgb(0.2, 0.21, 0.27) });
     p.drawImage(logo, { x: M + 10, y: 778, width: w, height: h });
   } catch (err) { txt("ECOWIN PVC", M, 785, 16, fb); }
-  txt("ALBARÁN DE SALIDA", 330, 795, 18, fb);
+  txt(e.tipo === "recogida" ? "ALBARÁN DE RECOGIDA" : "ALBARÁN DE SALIDA", 330, 795, 18, fb);
   txt(`Nº ${e.numeroAlbaran || "—"}`, 330, 775, 13, fb);
   txt(`Fecha: ${fmtDate(e.fechaSalida)}`, 330, 758);
   let y = 715;
   const fila = (k, v) => { txt(k, M, y, 11, fb); txt(v, M + 150, y); y -= 20; };
-  fila("Destino:", proveedor?.nombre || "—");
+  fila(e.tipo === "recogida" ? "Se recoge en:" : "Destino:", proveedor?.nombre || "—");
   if (proveedor?.direccion) fila("", proveedor.direccion);
   fila("Obra:", proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Material general");
   fila("Chófer / transportista:", `${e.chofer || ""}${e.matricula ? `  ·  Matrícula ${e.matricula}` : ""}`);
@@ -24391,7 +24392,7 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
     const blob = await obtenerPdf();
     const file = new File([blob], nombreArchivo, { type: "application/pdf" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: `Albarán de salida ${envio.numeroAlbaran}` }); } catch (err) { /* cancelado */ }
+      try { await navigator.share({ files: [file], title: `${envio.tipo === "recogida" ? "Albarán de recogida" : "Albarán de salida"} ${envio.numeroAlbaran}` }); } catch (err) { /* cancelado */ }
     } else { await descargar(); setMsg("Este navegador no deja compartir directamente: se ha descargado el PDF para que lo adjuntes tú."); }
   };
   const enviarEmail = async () => {
@@ -24400,7 +24401,7 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
     try {
       const dataUrl = await aDataUrl(await obtenerPdf());
       const r = await fetch("/.netlify/functions/enviar-email", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cc: emailUsuarioActual, destinatario: email, asunto: `Albarán de salida ${envio.numeroAlbaran || ""} — Ecowin PVC`,
+        body: JSON.stringify({ cc: emailUsuarioActual, destinatario: email, asunto: `${envio.tipo === "recogida" ? "Albarán de recogida" : "Albarán de salida"} ${envio.numeroAlbaran || ""} — Ecowin PVC`,
           cuerpo: `Buenos días,\n\nLe adjuntamos el albarán de salida ${envio.numeroAlbaran || ""} del ${fmtDate(envio.fechaSalida)}${envio.firmaChofer ? `, firmado por ${envio.firmaChofer.nombre}` : ""}.\n\nMaterial: ${envio.descripcion}${envio.cantidad ? ` (${envio.cantidad})` : ""}\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`,
           adjuntos: [{ nombre: nombreArchivo, dataUrl }] }) });
       const j = await r.json().catch(() => ({}));
@@ -24426,7 +24427,7 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
 
 function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios, onUpsert, onMarcarRecogido, onDelete, onCrearProveedor = null }) {
   const [nuevoSitio, setNuevoSitio] = useState(null); // { nombre, direccion, provincia, telefono } mientras se da de alta un sitio nuevo
-  const blank = { descripcion: "", cantidad: "", proveedorId: "", proyectoId: "", responsableId: "", chofer: "", matricula: "", fechaSalida: new Date().toISOString().slice(0, 10), fechaPrevistaRecogida: "", notas: "" };
+  const blank = { tipo: "salida", descripcion: "", cantidad: "", proveedorId: "", proyectoId: "", responsableId: "", chofer: "", matricula: "", fechaSalida: new Date().toISOString().slice(0, 10), fechaPrevistaRecogida: "", notas: "" };
   const [f, setF] = useState(blank);
   const [firmando, setFirmando] = useState(null); // { envio, quien: "chofer" | "entrega" }
   const [enviandoAlb, setEnviandoAlb] = useState(null);
@@ -24436,12 +24437,15 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
     const cli = pr ? (clientes || []).find((c) => c.id === pr.clienteId) : null;
     return cli?.email || proveedores.find((p) => p.id === e.proveedorId)?.email || "";
   };
-  const siguienteNumero = () => {
-    const max = envios.reduce((m, x) => Math.max(m, parseInt(String(x.numeroAlbaran || "").replace(/\D/g, "")) || 0), 0);
-    return `AS-${String(max + 1).padStart(4, "0")}`;
+  // SALIDA (llevamos material a un taller: AS-…) o RECOGIDA (vamos a recoger material a un sitio: AR-…), cada una con su numeración
+  const siguienteNumero = (tipo = "salida") => {
+    const pre = tipo === "recogida" ? "AR-" : "AS-";
+    const max = envios.filter((x) => String(x.numeroAlbaran || "").startsWith(pre) || (!x.numeroAlbaran ? false : pre === "AS-" && !/^AR-/.test(x.numeroAlbaran))).reduce((m, x) => Math.max(m, parseInt(String(x.numeroAlbaran || "").replace(/\D/g, "")) || 0), 0);
+    return `${pre}${String(max + 1).padStart(4, "0")}`;
   };
+  const esRecE = (e) => e && e.tipo === "recogida";
   // los registros antiguos no tienen número: se les asigna al imprimir o firmar
-  const conNumero = (e) => (e.numeroAlbaran ? e : { ...e, numeroAlbaran: siguienteNumero() });
+  const conNumero = (e) => (e.numeroAlbaran ? e : { ...e, numeroAlbaran: siguienteNumero(e.tipo) });
   const imprimir = (e0) => {
     const e = conNumero(e0);
     if (!e0.numeroAlbaran) onUpsert({ id: e.id, numeroAlbaran: e.numeroAlbaran });
@@ -24453,10 +24457,10 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
   const submit = (e) => {
     e.preventDefault();
     if (!f.descripcion.trim()) { setErrorMsg("Describe qué material sale."); return; }
-    if (!f.proveedorId) { setErrorMsg("Indica a qué taller/proveedor va."); return; }
-    if (!f.fechaPrevistaRecogida) { setErrorMsg("Falta la fecha prevista de recogida."); return; }
+    if (!f.proveedorId) { setErrorMsg(f.tipo === "recogida" ? "Indica dónde se recoge." : "Indica a qué taller/proveedor va."); return; }
+    if (!f.fechaPrevistaRecogida) { setErrorMsg(f.tipo === "recogida" ? "Falta la fecha en que se va a recoger." : "Falta la fecha prevista de recogida."); return; }
     setErrorMsg("");
-    onUpsert({ ...f, numeroAlbaran: siguienteNumero() });
+    onUpsert({ ...f, ...(f.tipo === "recogida" ? { fechaSalida: f.fechaPrevistaRecogida } : {}), numeroAlbaran: siguienteNumero(f.tipo) });
     setF(blank);
   };
 
@@ -24474,15 +24478,22 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
       </div>
 
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-4 mb-6 space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {[["salida", "📤 Salida", "llevamos material a un taller (lacar, anodizar…)"], ["recogida", "📥 Recogida", "vamos a recoger material a un sitio"]].map(([k, l, d]) => (
+            <button key={k} type="button" onClick={() => setF({ ...f, tipo: k })} className={`flex-1 min-w-[12rem] text-left px-3 py-2 rounded-lg border-2 ${f.tipo === k ? "border-[#2E8B57] bg-emerald-50" : "border-slate-200 bg-white"}`}>
+              <div className="text-sm font-extrabold text-slate-900">{l}</div><div className="text-xs text-slate-500">{d}</div>
+            </button>
+          ))}
+        </div>
         {errorMsg && (
           <div className="px-3 py-2.5 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorMsg}</div>
         )}
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Qué se envía"><TextInput value={f.descripcion} onChange={set("descripcion")} placeholder="Ej. 12 perfiles ventana salón" /></Field>
+          <Field label={f.tipo === "recogida" ? "Qué se recoge" : "Qué se envía"}><TextInput value={f.descripcion} onChange={set("descripcion")} placeholder="Ej. 12 perfiles ventana salón" /></Field>
           <Field label="Cantidad"><TextInput value={f.cantidad} onChange={set("cantidad")} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Taller / proveedor destino">
+          <Field label={f.tipo === "recogida" ? "Dónde se recoge" : "Taller / proveedor destino"}>
             <Select value={f.proveedorId} onChange={set("proveedorId")}>
               <option value="">Selecciona...</option>
               {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}{p.direccion ? ` · ${p.direccion}` : ""}</option>)}
@@ -24512,8 +24523,8 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Fecha de salida"><TextInput type="date" value={f.fechaSalida} onChange={set("fechaSalida")} /></Field>
-          <Field label="Fecha prevista de recogida"><TextInput type="date" value={f.fechaPrevistaRecogida} onChange={set("fechaPrevistaRecogida")} /></Field>
+          {f.tipo !== "recogida" && <Field label="Fecha de salida"><TextInput type="date" value={f.fechaSalida} onChange={set("fechaSalida")} /></Field>}
+          <Field label={f.tipo === "recogida" ? "Fecha en que se va a recoger" : "Fecha prevista de recogida"}><TextInput type="date" value={f.fechaPrevistaRecogida} onChange={set("fechaPrevistaRecogida")} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Chófer / transportista"><TextInput value={f.chofer} onChange={set("chofer")} placeholder="Nombre de quien se lo lleva" /></Field>
@@ -24527,24 +24538,24 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
         </Field>
         <Field label="Notas"><TextArea rows={2} value={f.notas} onChange={set("notas")} /></Field>
         <div className="flex justify-end">
-          <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar salida</button>
+          <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> {f.tipo === "recogida" ? "Registrar recogida" : "Registrar salida"}</button>
         </div>
       </form>
 
-      <h3 className="font-display font-bold text-slate-800 mb-3">Fuera, pendiente de volver ({fuera.length})</h3>
+      <h3 className="font-display font-bold text-slate-800 mb-3">Pendientes: material fuera y recogidas por hacer ({fuera.length})</h3>
       <div className="space-y-2 mb-8">
-        {fuera.length === 0 && <p className="text-sm text-slate-400">No hay material fuera ahora mismo.</p>}
+        {fuera.length === 0 && <p className="text-sm text-slate-400">No hay material fuera ni recogidas pendientes.</p>}
         {fuera.map((e) => {
           const vencido = envioProcesoVencido(e);
           return (
             <div key={e.id} className={`flex flex-wrap items-center justify-between gap-3 border rounded-lg p-3 ${vencido ? "bg-rose-50 border-rose-300" : "bg-white border-slate-200"}`}>
               <div className="text-sm">
-                <div className="font-semibold text-slate-800">{e.descripcion}{e.cantidad ? ` (${e.cantidad})` : ""}</div>
+                <div className="font-semibold text-slate-800"><span className={`mr-1.5 text-[11px] font-bold px-1.5 py-0.5 rounded ${esRecE(e) ? "bg-sky-100 text-sky-800" : "bg-amber-100 text-amber-800"}`}>{esRecE(e) ? "📥 RECOGIDA" : "📤 SALIDA"}</span>{e.descripcion}{e.cantidad ? ` (${e.cantidad})` : ""}</div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   {proveedorNombre(e.proveedorId)}{proyectoNombre(e.proyectoId) ? ` · ${proyectoNombre(e.proyectoId)}` : " · Material general"}{responsableNombre(e.responsableId) ? ` · Responsable: ${responsableNombre(e.responsableId)}` : ""}
                 </div>
                 <div className={`text-xs mt-1 font-semibold ${vencido ? "text-rose-600" : "text-slate-500"}`}>
-                  {e.numeroAlbaran ? `${e.numeroAlbaran} · ` : ""}Salió {fmtDate(e.fechaSalida)} · Previsto recoger {fmtDate(e.fechaPrevistaRecogida)}{vencido ? " · VENCIDO" : ""}
+                  {e.numeroAlbaran ? `${e.numeroAlbaran} · ` : ""}{esRecE(e) ? `Ir a recoger el ${fmtDate(e.fechaPrevistaRecogida)}` : `Salió ${fmtDate(e.fechaSalida)} · Previsto recoger ${fmtDate(e.fechaPrevistaRecogida)}`}{vencido ? " · VENCIDO" : ""}
                 </div>
                 {e.firmaChofer
                   ? <div className="text-xs text-emerald-700 mt-1 font-semibold">✓ Firmado por {e.firmaChofer.nombre} el {new Date(e.firmaChofer.fecha).toLocaleString("es-ES")}</div>
@@ -24554,7 +24565,7 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
                 <button onClick={() => imprimir(e)} className="flex items-center gap-1 text-sm font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir albarán</button>
                 <button onClick={() => setFirmando({ envio: conNumero(e), quien: "chofer" })} className="text-sm font-semibold text-sky-700 border border-sky-300 px-3 py-2 rounded-md hover:bg-sky-50">{e.firmaChofer ? "Volver a firmar" : "Firmar aquí"}</button>
                 <button onClick={() => { const x = conNumero(e); if (!e.numeroAlbaran) onUpsert({ id: e.id, numeroAlbaran: x.numeroAlbaran }); setEnviandoAlb(x); }} className="text-sm font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">PDF / Enviar</button>
-                <button onClick={() => onMarcarRecogido(e.id)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Marcar recogido</button>
+                <button onClick={() => onMarcarRecogido(e.id)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">{esRecE(e) ? "✓ Recogido (ya está aquí)" : "Marcar recogido"}</button>
                 <button onClick={() => { if (confirm("¿Eliminar este registro?")) onDelete(e.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={16} /></button>
               </div>
             </div>
@@ -24569,7 +24580,7 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
             {recogidos.map((e) => (
               <div key={e.id} className="flex flex-wrap items-center justify-between gap-3 border border-slate-200 rounded-lg p-3 bg-white opacity-70">
                 <div className="text-sm">
-                  <div className="font-semibold text-slate-700">{e.descripcion}{e.cantidad ? ` (${e.cantidad})` : ""}</div>
+                  <div className="font-semibold text-slate-700">{esRecE(e) ? "📥 " : "📤 "}{e.descripcion}{e.cantidad ? ` (${e.cantidad})` : ""}</div>
                   <div className="text-xs text-slate-500 mt-0.5">{e.numeroAlbaran ? `${e.numeroAlbaran} · ` : ""}{e.firmaChofer ? "✓ firmado · " : ""}{proveedorNombre(e.proveedorId)}{proyectoNombre(e.proyectoId) ? ` · ${proyectoNombre(e.proyectoId)}` : " · Material general"} · Recogido {fmtDate(e.fechaRecogida)}</div>
                 </div>
                 <div className="flex items-center gap-2">
