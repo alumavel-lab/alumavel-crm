@@ -58027,8 +58027,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const diaManual = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; const id = String(ko).slice(2); const set = new Set();
     const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
-    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (pr) { add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } } }
-    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
+    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (pr) { add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } } }
+    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     set.forEach((b) => { if (b && !diaFab[b] && (!diaManual[b] || f < diaManual[b])) diaManual[b] = f; }); }); });
   Object.keys(diaManual).forEach((b) => { diaPlan[b] = diaManual[b]; });
   const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
@@ -58046,15 +58046,21 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const _koMin = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; if (_koMin[ko] && _koMin[ko].dia <= f) return; const id = String(ko).slice(2); const set = new Set(); let nombre = ko;
     const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
-    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (!pr) return; nombre = `#${pr.numero} ${pr.nombre || ""}`.trim(); add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
-    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (!e) return; nombre = `Uxcar exp. ${e.numero}`; add(e.presupuesto); add(e.presupuestoNumero); }
+    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (!pr) return; nombre = `#${pr.numero} ${pr.nombre || ""}`.trim(); add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
+    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (!e) return; nombre = `Uxcar exp. ${e.numero}`; add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); }
     else return;
     if ([...set].some((b) => diaFab[b])) return; // Fábrica manda
     _koMin[ko] = { k: ko, nombre, dia: f, pres: set }; }); });
   Object.values(_koMin).forEach((x) => planObras.push(x));
   planObras.forEach((o) => {
     // si la ficha no trae presupuesto, se lee del nombre (p. ej. «#4287 Uxcar · 6.553-1 · 13 ventanas») y de la hoja que se subió a mano para esta obra
-    if (!o.pres.size) { for (const m of String(o.nombre || "").matchAll(/(^|[^#\d.])(\d{1,2}\.\d{3}(?:-\d+)?)/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); } }
+    // también sin punto: «Uxcar · 6710-1 · 5 ventanas» (número con versión), o el número suelto si la obra es de Uxcar o dice «presupuesto»
+    if (!o.pres.size) {
+      const nomO = String(o.nombre || "");
+      for (const m of nomO.matchAll(/(^|[^#\d.])(\d{1,2}\.\d{3}(?:-\d+)?)/g)) { const b = digitosPresu(m[2].split("-")[0]); if (b) o.pres.add(b); }
+      for (const m of nomO.matchAll(/(^|[^#\d.,])(\d{4,5})-\d{1,2}(?![\d.])/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); }
+      if (!o.pres.size && /uxcar|presupuesto/i.test(nomO)) for (const m of nomO.matchAll(/(^|[^#\d.,])(\d{4,5})(?!\d|[.,]\d)/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); }
+    }
     if (ovPres && ovPres[o.k]) o.pres.add(digitosPresu(ovPres[o.k]));
     // «6384.2» guardado sin el punto (63842) junto al bueno (6384): el de la cifra de más es la versión pegada, se quita
     [...o.pres].forEach((x) => { if ([...o.pres].some((y) => y !== x && x.length === y.length + 1 && x.startsWith(y))) o.pres.delete(x); });
