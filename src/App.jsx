@@ -25163,14 +25163,14 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         <h1 className="text-2xl font-extrabold text-slate-900 flex items-center gap-2"><Truck size={22} /> Mis cargas</h1>
         <p className="text-sm text-slate-600">1) Toca cada cosa al cargarla. 2) Pulsa <b>«Abrir albarán para firmar»</b>: foto de la carga, tu firma y la del cliente.</p>
       </div>
-      <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} onAbrir={(p) => { setTab("repartos"); abrir(p); }} />
+      <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} onAbrir={(p) => { setTab("repartos"); abrir(p); }} envios={envios} proveedores={proveedores} onMarcarRecogido={onMarcarRecogido} />
     </div>
   );
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
-        {tabBtn("cargas", "Cargas de hoy", repartosBase.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length)}
+        {tabBtn("cargas", "Cargas de hoy", repartosBase.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length + toArray(envios).filter((e) => { const h = new Date().toISOString().slice(0, 10); return e && e.estado === "Fuera" && ((e.tipo !== "recogida" && e.fechaSalida === h) || (e.fechaPrevistaRecogida && e.fechaPrevistaRecogida <= h)); }).length)}
         {tabBtn("repartos", "Repartos, recogidas e instalaciones", repartosBase.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length + proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
@@ -25200,7 +25200,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           {qAlb && <span className="text-xs text-slate-500">{tab === "repartos" ? repartos.length : firmados.length} encontrado{(tab === "repartos" ? repartos.length : firmados.length) === 1 ? "" : "s"}</span>}
         </div>
       )}
-      {tab === "cargas" && <div className="p-4"><CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} /></div>}
+      {tab === "cargas" && <div className="p-4"><CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} envios={envios} proveedores={proveedores} onMarcarRecogido={onMarcarRecogido} /></div>}
       {tab === "repartos" && (
         <div className="space-y-2">
           {(() => { const porRevisar = proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado); return porRevisar.length > 0 && (
@@ -61361,7 +61361,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
 }
 
 // Cargas de hoy: todos los albaranes de entrega/recogida del día abiertos en una sola pantalla; se toca cada cosa al cargarla y se pone en verde (se comparte entre pantallas)
-function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null }) {
+function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null, envios = [], proveedores = [], onMarcarRecogido = null }) {
   const hoy = new Date().toISOString().slice(0, 10);
   const marcas = useObjetoFb("cargasHoy");
   const [verOtros, setVerOtros] = useState(false);
@@ -61404,8 +61404,34 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null }
       </div>
     );
   };
+  // SALIDAS Y RECOGIDAS DE MATERIAL (albaranes AS/AR): hoy toca llevar material a un taller (salida de hoy) o ir a recogerlo
+  // (recogida, o la vuelta de una salida, prevista para hoy). Las atrasadas también salen, en rojo.
+  const sitioDe = (e) => toArray(proveedores).find((x) => x && x.id === e.proveedorId) || null;
+  const envHoy = []; const envOtros = [];
+  toArray(envios).forEach((e) => {
+    if (!e || e.estado !== "Fuera") return;
+    const rec = e.tipo === "recogida";
+    if (!rec && e.fechaSalida === hoy) envHoy.push({ e, que: "llevar" });
+    else if (e.fechaPrevistaRecogida && e.fechaPrevistaRecogida <= hoy) envHoy.push({ e, que: "recoger", atrasada: e.fechaPrevistaRecogida < hoy });
+    else if (e.fechaPrevistaRecogida) envOtros.push({ e, que: "recoger" });
+  });
+  const tarjetaEnvio = ({ e, que, atrasada }) => {
+    const sit = sitioDe(e); const dir = sit ? [sit.direccion, sit.provincia].filter(Boolean).join(", ") : "";
+    return (
+      <div key={e.id + que} className={`rounded-lg border-2 p-3 mb-2 ${atrasada ? "border-rose-500 bg-rose-50" : que === "llevar" ? "border-amber-400 bg-amber-50" : "border-sky-400 bg-sky-50"}`}>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <b className="text-base">{que === "llevar" ? "📤 LLEVAR a" : "📥 RECOGER en"} {sit ? sit.nombre : "—"}</b>
+          <span className="text-xs text-slate-500">{e.numeroAlbaran || ""}{atrasada ? ` · ATRASADA (era el ${fmtDate(e.fechaPrevistaRecogida)})` : ""}</span>
+        </div>
+        <div className="text-sm text-slate-800">{e.descripcion}{e.cantidad ? ` · ${e.cantidad}` : ""}</div>
+        <div className="text-xs text-slate-600">{dir ? <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dir)}`} target="_blank" rel="noreferrer" className="underline">📍 {dir}</a> : "Sin dirección"}{sit && sit.telefono ? <> · <a href={`tel:${sit.telefono}`} className="underline">{sit.telefono}</a></> : null}{e.notas ? ` · ${e.notas}` : ""}</div>
+        {que === "recoger" && onMarcarRecogido && <button type="button" onClick={() => { if (window.confirm(`¿Ya lo tienes? «${e.descripcion}» de ${sit ? sit.nombre : "—"}`)) onMarcarRecogido(e.id); }} className="mt-2 px-3 py-2 rounded-lg bg-[#2E8B57] text-white text-sm font-bold">✓ Recogido</button>}
+      </div>
+    );
+  };
   return (
     <div>
+      {envHoy.length > 0 && <div className="mb-3"><div className="text-sm font-bold text-slate-800 mb-2">Material que llevar o recoger hoy ({envHoy.length})</div>{envHoy.map(tarjetaEnvio)}</div>}
       <div className="text-sm font-bold text-slate-800 mb-2">Cargas de hoy ({deHoy.length}) · toca cada cosa al cargarla</div>
       {deHoy.length === 0 ? <p className="text-sm text-slate-500 mb-3">Ningún albarán con fecha de reparto o recogida hoy. Revisa la fecha en el proyecto.</p> : deHoy.map((p) => tarjeta(p, hoy))}
       {otras.length > 0 && (
@@ -61414,6 +61440,7 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null }
           {verOtros && <div className="mt-2">{otras.map((p) => <div key={p.id}><div className="text-xs font-bold text-slate-500 mb-1">{fmtDate(p.fechaReparto)}{p.fechaReparto < hoy ? " · ATRASADA" : ""}</div>{tarjeta(p, p.fechaReparto)}</div>)}</div>}
         </div>
       )}
+      {envOtros.length > 0 && <details className="mt-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600 underline">Próximas recogidas de material ({envOtros.length})</summary><div className="mt-2">{envOtros.sort((a, b) => String(a.e.fechaPrevistaRecogida).localeCompare(String(b.e.fechaPrevistaRecogida))).map((x) => <div key={x.e.id}><div className="text-xs font-bold text-slate-500 mb-1">{fmtDate(x.e.fechaPrevistaRecogida)}</div>{tarjetaEnvio(x)}</div>)}</div></details>}
     </div>
   );
 }
