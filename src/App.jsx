@@ -2298,6 +2298,30 @@ export default function App() {
     saveInstalaciones(instalaciones.map((i) => (i.id === id ? { ...i, ...patch } : i)));
   };
 
+  // PRESUPUESTO desde una instalación o una incidencia (reparación, extra, fuera de garantía…): abre el formulario ya relleno
+  const hacerPresupuestoDe = (tipo, obj) => {
+    if (!obj) return;
+    const pr = obj.proyectoId ? proyectos.find((x) => x.id === obj.proyectoId) : null;
+    const cl = pr ? clientes.find((c) => c.id === pr.clienteId) : clientes.find((c) => c.nombre && c.nombre === obj.clienteNombre);
+    const esInst = tipo === "instalacion";
+    const horas = esInst ? toArray(obj.registroHoras).reduce((a, r) => a + (parseFloat(r.horas) || 0), 0) : 0;
+    const gastos = esInst ? toArray(obj.gastos).reduce((a, g) => a + (parseFloat(g.importe) || 0), 0) : toArray(obj.gastos).reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+    const g = !esInst && pr ? garantiaObra(pr, obj.fecha) : null;
+    const desc = esInst
+      ? `${obj.tipoTrabajo || "Instalación"}: ${obj.nombre || (pr ? `#${pr.numero} ${pr.nombre}` : "")}${obj.notas ? `\n${obj.notas}` : ""}${horas ? `\nHoras empleadas: ${horas}` : ""}${gastos ? `\nGastos: ${gastos.toFixed(2)} €` : ""}`
+      : `Reparación — incidencia #${obj.numero || ""}${pr ? ` (obra #${pr.numero} ${pr.nombre})` : ""}\n${obj.especificaciones || ""}${obj.observaciones ? `\n${obj.observaciones}` : ""}${g && !g.sinFecha ? `\nGarantía: ${g.dentro ? "EN garantía" : "FUERA de garantía"} (hasta ${fmtDate(g.hasta)})` : ""}`;
+    setPresupuestoPrefill({
+      clienteNombre: (cl && cl.nombre) || obj.clienteNombre || "",
+      telefono: obj.telefono || (cl && (cl.movil || cl.telefono)) || "",
+      direccionEnvio: obj.direccion || (pr && pr.ubicacion) || (cl && cl.direccion) || "",
+      descripcion: desc,
+      comentarios: `Creado desde ${esInst ? "la instalación" : `la incidencia #${obj.numero || ""}`}. Revisa los datos y pon el importe antes de guardar.`,
+      extra: { ...(pr ? { proyectoId: pr.id } : {}), ...(esInst ? { origenInstalacionId: obj.id } : { origenIncidenciaId: obj.id }) },
+    });
+    if (esInst) updateInstalacion(obj.id, { presupuestoPedido: new Date().toISOString().slice(0, 10) });
+    else saveIncidencias(incidencias.map((x) => (x.id === obj.id ? { ...x, presupuestoPedido: new Date().toISOString().slice(0, 10) } : x)));
+    setModulo("presupuestos"); setPresupuestoEditId(null); setPresupuestoView("form");
+  };
   const crearInstalacionManual = (data) => {
     const nueva = {
       id: uid(), proyectoId: data.proyectoId || null, nombre: data.nombre || "", clienteNombre: data.clienteNombre || "",
@@ -2305,6 +2329,7 @@ export default function App() {
       registroHoras: [], gastos: [], materialFurgoneta: [], notas: data.notas || "",
       fechaMontaje: data.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
       tipoTrabajo: data.tipoTrabajo || "Montaje", horasMontaje: parseFloat(data.horasMontaje) || null, direccion: data.direccion || "", incidenciaId: data.incidenciaId || "",
+      telefono: data.telefono || "", archivos: toArray(data.archivos),
     };
     saveInstalaciones([nueva, ...instalaciones]);
     showToast("Instalación creada");
@@ -7113,6 +7138,7 @@ export default function App() {
           <IncidenciasModulo
             usuarios={usuarios}
             onFechaGarantia={(pid, v) => { updateProyectoInline(pid, { fechaGarantia: v || "" }); showToast(v ? "Fecha de entrega para la garantía guardada en la obra" : "Fecha de garantía quitada"); }}
+            onHacerPresupuesto={(inc) => hacerPresupuestoDe("incidencia", inc)}
             onMandarMontadores={(inc) => {
               const pr = proyectos.find((x) => x.id === inc.proyectoId);
               const cl = pr && clientes.find((c) => c.id === pr.clienteId);
@@ -7529,6 +7555,7 @@ export default function App() {
             setDetailId={setInstalacionDetailId}
             onUpdate={updateInstalacion}
             onCrearManual={crearInstalacionManual}
+            onHacerPresupuesto={(inst) => hacerPresupuestoDe("instalacion", inst)}
             onAddHora={addHoraInstalacion}
             onDeleteHora={deleteHoraInstalacion}
             onAddGasto={addGastoInstalacion}
@@ -25318,7 +25345,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, configMontaje, onSaveConfigMontaje, pedidosMontaje = [] }) {
+function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, configMontaje, onSaveConfigMontaje, pedidosMontaje = [] }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -25373,6 +25400,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         cliente={proyecto ? clientes.find((c) => c.id === proyecto.clienteId) : null}
         onBack={() => setView("list")}
         onUpdate={(patch) => onUpdate(instalacion.id, patch)}
+        onHacerPresupuesto={onHacerPresupuesto ? () => onHacerPresupuesto(instalacion) : null}
         onAddHora={(r) => onAddHora(instalacion.id, r)}
         onDeleteHora={(rid) => onDeleteHora(instalacion.id, rid)}
         onAddGasto={(g) => onAddGasto(instalacion.id, g)}
@@ -25678,8 +25706,41 @@ function FurgonetaModulo({ instalaciones, proyectos, onCiclo, onVerInstalacion, 
   );
 }
 
+// Selector de FOTOS / PDF / ARCHIVOS (se guardan como dataUrl, fotos reducidas). lista + onCambiar(lista)
+function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o archivos" }) {
+  const [subiendo, setSubiendo] = useState(false); const [err, setErr] = useState("");
+  const anadir = async (files) => {
+    setSubiendo(true); setErr(""); const nuevos = []; const malos = [];
+    for (const file of Array.from(files || [])) {
+      try { const dataUrl = await archivoIncidenciaDataUrl(file); if (dataUrl.length > 900000) { malos.push(file.name); continue; } nuevos.push({ id: uid(), nombre: file.name, tipo: String(file.type || "").startsWith("image/") ? "imagen" : "documento", dataUrl, fecha: new Date().toISOString() }); } catch (e) { malos.push(file.name); }
+    }
+    if (malos.length) setErr(`No se han podido añadir (demasiado grandes o no se leen): ${malos.join(", ")}.`);
+    onCambiar([...nuevos, ...toArray(lista)]); setSubiendo(false);
+  };
+  return (
+    <div>
+      <label className={`inline-flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border-2 border-dashed cursor-pointer ${subiendo ? "border-slate-300 text-slate-400" : "border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"}`}>
+        <ImageIcon size={15} /> {subiendo ? "Preparando…" : titulo}
+        <input type="file" multiple accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" disabled={subiendo} onChange={(e) => { anadir(e.target.files); e.target.value = ""; }} />
+      </label>
+      {err && <div className="mt-1 text-xs font-semibold text-rose-700">⚠ {err}</div>}
+      {toArray(lista).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {toArray(lista).map((x) => (
+            <div key={x.id} className="relative w-24">
+              <a href={x.dataUrl} download={x.nombre} target="_blank" rel="noreferrer" title={x.nombre}>
+                {x.tipo === "imagen" ? <img src={x.dataUrl} alt={x.nombre} className="w-24 h-20 object-cover rounded border border-slate-200" /> : <div className="w-24 h-20 flex items-center justify-center rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 text-center p-1 break-all">📄 {x.nombre}</div>}
+              </a>
+              <button type="button" onClick={() => { if (window.confirm(`¿Quitar «${x.nombre}»?`)) onCambiar(toArray(lista).filter((y) => y.id !== x.id)); }} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-600 text-white text-xs leading-5" title="Quitar">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
-  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", presupuestoInstalacion: "", notas: "" });
+  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [] });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
@@ -25690,6 +25751,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
       setErrorMsg("Si no eliges un proyecto, tienes que ponerle un nombre a la instalación (es obligatorio).");
       return;
     }
+    if (!f.proyectoId && !f.direccion.trim() && !window.confirm("No has puesto DIRECCIÓN y no hay proyecto: el montador no sabrá dónde ir. ¿Crearla igualmente?")) return;
     setErrorMsg("");
     onSave(f);
   };
@@ -25727,6 +25789,11 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
             </Field>
           </div>
         )}
+        {/* DIRECCIÓN Y TELÉFONO: obligatorios en la práctica si no hay cliente ni proyecto, para que el montador sepa dónde ir */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2"><Field label={f.proyectoId ? "Dirección (si es otra distinta de la de la obra)" : "Dirección"}><TextInput value={f.direccion} onChange={set("direccion")} placeholder="Calle, número, población" /></Field></div>
+          <Field label="Teléfono de contacto"><TextInput value={f.telefono} onChange={set("telefono")} placeholder="Opcional" /></Field>
+        </div>
 
         <Field label="Presupuesto de instalación (€)">
           <TextInput type="number" step="0.01" value={f.presupuestoInstalacion} onChange={set("presupuestoInstalacion")} />
@@ -25734,6 +25801,10 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
 
         <Field label="Notas">
           <TextArea rows={2} value={f.notas} onChange={set("notas")} />
+        </Field>
+
+        <Field label="Fotos, planos y documentos para el montador">
+          <AdjuntosPicker lista={f.archivos} onCambiar={(l) => setF({ ...f, archivos: l })} />
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
@@ -25745,7 +25816,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
+function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -25854,11 +25925,26 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
           {!proyecto && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Sin proyecto</Badge>}
         </div>
         <p className="text-sm text-slate-500">{cliente?.nombre || instalacion.clienteNombre || "—"}</p>
+        {(() => { const dir = instalacion.direccion || (proyecto && proyecto.ubicacion) || (cliente && cliente.direccion) || ""; const tel = instalacion.telefono || (cliente && (cliente.movil || cliente.telefono)) || ""; return (
+          <p className="text-sm text-slate-700 mt-1 flex flex-wrap gap-x-3">
+            {dir ? <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dir)}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold underline">📍 {dir}</a> : <span className="text-amber-700 font-semibold">⚠ Sin dirección</span>}
+            {tel && <a href={`tel:${tel}`} className="text-[#2E8B57] font-semibold underline">📞 {tel}</a>}
+          </p>
+        ); })()}
+      </div>
+      {onHacerPresupuesto && (
+        <button type="button" onClick={onHacerPresupuesto} className="w-full mb-4 flex items-center justify-center gap-2 border-2 border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold py-3 rounded-lg">
+          <FileText size={16} /> Hacer presupuesto de esta {String(instalacion.tipoTrabajo || "instalación").toLowerCase()}{instalacion.presupuestoPedido ? ` · ya se abrió uno el ${fmtDate(instalacion.presupuestoPedido)}` : ""}
+        </button>
+      )}
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+        <h2 className="font-display font-bold text-slate-800 mb-2">Fotos, planos y documentos ({toArray(instalacion.archivos).length})</h2>
+        <AdjuntosPicker lista={instalacion.archivos} onCambiar={(l) => onUpdate({ archivos: l })} titulo="📷 Añadir más" />
       </div>
 
       <div className="flex gap-2 mb-6">
         {ESTADO_INSTALACION.map((e) => (
-          <button key={e} onClick={() => onUpdate({ estado: e })}
+          <button key={e} onClick={() => { onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
             {e}
           </button>
@@ -30689,7 +30775,7 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -30761,6 +30847,7 @@ function IncidenciasModulo({ onFechaGarantia = null, usuarios = [], onMandarMont
         openPedido={openPedido}
         onPedirMateriales={() => onPedirMateriales(incidencia)}
         onMandarMontadores={onMandarMontadores ? () => onMandarMontadores(incidencia) : null}
+        onHacerPresupuesto={onHacerPresupuesto ? () => onHacerPresupuesto(incidencia) : null}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(incidencia.id); setView("form"); }}
         onDelete={() => onDelete(incidencia.id)}
@@ -31061,7 +31148,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
-function IncidenciaDetail({ onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
   const totalGastos = gastos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
@@ -31302,6 +31389,12 @@ function IncidenciaDetail({ onFechaGarantia = null, incidencia, proyecto, client
             <button onClick={onMandarMontadores} disabled={!!incidencia.enviadaMontadores}
               className="w-full flex items-center justify-center gap-2 border-2 border-violet-300 bg-violet-50 hover:bg-violet-100 text-violet-900 text-sm font-bold py-3 rounded-lg disabled:opacity-60">
               <Wrench size={16} /> {incidencia.enviadaMontadores ? `Mandada a los montadores el ${fmtDate(incidencia.enviadaMontadores)}` : "Mandar a los montadores (reparación)"}
+            </button>
+          )}
+          {onHacerPresupuesto && (
+            <button type="button" onClick={onHacerPresupuesto}
+              className="w-full flex items-center justify-center gap-2 border-2 border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold py-3 rounded-lg">
+              <FileText size={16} /> Pasar a presupuesto{incidencia.presupuestoPedido ? ` · ya se abrió uno el ${fmtDate(incidencia.presupuestoPedido)}` : ""}
             </button>
           )}
           <button
@@ -33409,13 +33502,14 @@ function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirP
     if (!prefill) return;
     setPrefillPresupuesto({
       id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
-      clienteNombre: prefill.clienteNombre || "", telefono: "", email: "",
+      clienteNombre: prefill.clienteNombre || "", telefono: prefill.telefono || "", email: "",
       descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, recoge: false, zona: "",
       techos: prefill.techos || [],
       persianas: prefill.persianas || [],
       ventanas: prefill.ventanas || [],
+      ...(prefill.extra || {}),
     });
     setEditId(null);
     setView("form");
@@ -57396,7 +57490,47 @@ function pptosConGuiaProveedor(ctx) {
   return set;
 }
 // Reparte las piezas en barras de largo L: cada pieza gasta su medida + lo que come la sierra; el despunte se resta a cada barra.
+// PIEZAS DE LA MISMA VENTANA SEGUIDAS: se empaquetan juntas (la ventana entera en la misma barra si cabe) y, dentro de cada barra,
+// van ordenadas por ventana. Si juntarlas gastara más de una barra de más que el reparto suelto, se usa el suelto (pero ordenado por ventana).
+// GUARDAR RETALES BLOQUEADO (12/11/2026, hasta nueva orden de Miguel): ni se guardan solos al acabar una barra ni a mano. Poner false para volver a activarlo.
+const RETALES_BLOQUEADOS = true;
+const auxVentanaDe = (x) => `${x.ppto || ""}|${x.ventanaPos || ""}|${x.modelo || ""}|${x.unidad || ""}`;
 function auxEmpaquetar(filas, L, sierra, despunte) {
+  const suelto = auxEmpaquetarSuelto(filas, L, sierra, despunte);
+  const cap = L - (despunte || 0); const k = sierra || 0;
+  const fuera = []; const grupos0 = new Map();
+  filas.forEach((p) => { const l = Number(p.lCorte) || 0; if (!(l > 0)) { fuera.push({ p, motivo: "sin medida" }); return; } if (l + k > cap) { fuera.push({ p, motivo: "más larga que la barra" }); return; } const g = auxVentanaDe(p); if (!grupos0.has(g)) grupos0.set(g, []); grupos0.get(g).push(p); });
+  const grupos = [...grupos0.values()].map((ps) => ps.sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)));
+  const tot = (ps) => ps.reduce((t, p) => t + (Number(p.lCorte) || 0) + k, 0);
+  // se prueban varios órdenes (por largo total, por la pieza más larga, por número de piezas) y se queda el que menos barras gasta
+  const probar = (orden) => {
+    const barras = [];
+    const meter = (ps) => { const need = tot(ps); let mejor = -1, hueco = Infinity; barras.forEach((b, i) => { const libre = cap - b.usado; if (libre >= need && libre - need < hueco) { hueco = libre - need; mejor = i; } }); if (mejor < 0) { if (need > cap) return false; barras.push({ piezas: [], usado: 0 }); mejor = barras.length - 1; } barras[mejor].piezas.push(...ps); barras[mejor].usado += need; return true; };
+    [...grupos].sort(orden).forEach((ps) => { if (!meter(ps)) ps.forEach((p) => meter([p])); }); // la ventana no cabe entera en una barra: sus piezas sueltas
+    return barras;
+  };
+  const ordenes = [(a, b) => tot(b) - tot(a), (a, b) => (b[0].lCorte || 0) - (a[0].lCorte || 0) || tot(b) - tot(a), (a, b) => b.length - a.length || tot(b) - tot(a), (a, b) => (b[0].lCorte || 0) * b.length - (a[0].lCorte || 0) * a.length];
+  let barras = null; ordenes.forEach((o) => { const r = probar(o); if (!barras || r.length < barras.length) barras = r; });
+  barras = barras || [];
+  barras.forEach((b) => { b.sobra = cap - b.usado; b.util = b.piezas.reduce((a, x) => a + (Number(x.lCorte) || 0), 0); });
+  if (barras.length > suelto.barras.length) {
+    // juntarlas gastaría más barras: reparto suelto, pero dentro de cada barra las piezas de la misma ventana seguidas
+    // y las barras en un orden en que la ventana partida acabe una barra y empiece la siguiente (así sale seguida al cortar)
+    const ven = (b) => new Set(b.piezas.map(auxVentanaDe)); const comun = (a, b) => { const sa = ven(a); return [...ven(b)].filter((g) => sa.has(g)); };
+    const resto = [...suelto.barras]; const orden = [resto.shift()].filter(Boolean);
+    while (resto.length) { const ult = orden[orden.length - 1]; let mi = 0, mx = -1; resto.forEach((b, i) => { const c = comun(ult, b).length; if (c > mx) { mx = c; mi = i; } }); orden.push(resto.splice(mi, 1)[0]); }
+    orden.forEach((b, i) => {
+      const P = new Set(i > 0 ? comun(orden[i - 1], b) : []); const N = new Set(i < orden.length - 1 ? comun(b, orden[i + 1]) : []);
+      const pos = new Map(); b.piezas.forEach((x, j) => { const g = auxVentanaDe(x); if (!pos.has(g)) pos.set(g, j); });
+      const nivel = (x) => { const g = auxVentanaDe(x); return P.has(g) ? 0 : N.has(g) ? 2 : 1; };
+      b.piezas.sort((x, y) => nivel(x) - nivel(y) || pos.get(auxVentanaDe(x)) - pos.get(auxVentanaDe(y)));
+    });
+    suelto.barras = orden; suelto.ventanasPartidas = true;
+    return suelto;
+  }
+  return { barras, fuera };
+}
+function auxEmpaquetarSuelto(filas, L, sierra, despunte) {
   const cap = L - (despunte || 0); const barras = []; const fuera = [];
   [...filas].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)).forEach((p) => {
     const l = Number(p.lCorte) || 0;
@@ -57830,6 +57964,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [perfilDia, setPerfilDia] = useState("");
   // DESPLEGABLES de «Falta por cortar»: semanas y días abiertos (se recuerdan en este ordenador) y días vistos por obra en vez de por perfil
   const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
+  // POR VIVIENDA: cada perfil se puede repartir en barras vivienda a vivienda (el solape, por defecto). Se recuerda en este ordenador.
+  const [porViviendaAux, setPorViviendaAux] = useEstadoLocal("auxPorVivienda", {});
   const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
   const [diasPorObra, setDiasPorObra] = useState([]);
   const [diasSel, setDiasSel] = useState([]);
@@ -58005,6 +58141,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   // Guarda el retal en el primer sitio libre del carro de retales, saca la etiqueta y avisa dónde dejarlo
   const guardarRetal = (inf, len) => {
+    if (RETALES_BLOQUEADOS) { alert("Guardar retales está BLOQUEADO de momento (orden de Miguel). No se ha guardado ni impreso nada."); return null; }
     const site = auxSitioRetal(auxRetalCfg(barraCfg), recortesFb, inf.ref);
     if (!site) { setRetalAviso({ error: true, txt: `El carro de retales está LLENO (${Math.round(len)} mm de ref. ${inf.ref} sin sitio). Amplía carros, lados o niveles en la barra azul.` }); return null; }
     const id = `r${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -58061,10 +58198,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         if (!inf && planBarrasRef.current[p.id]) { inf = planBarrasRef.current[p.id]; inf.ids.forEach((id) => { barraSnap.current[id] = inf; }); }
         if (inf && !inf.hecho && inf.ids.every((id) => id === p.id || recienCortadas.current.has(id) || (est && est[id] && est[id].cortada))) {
           inf.hecho = true;
-          if (inf.sobra >= inf.min) guardarRetal(inf, inf.sobra);
+          if (!RETALES_BLOQUEADOS && inf.sobra >= inf.min) guardarRetal(inf, inf.sobra);
         }
       } catch (er) { /* el retal se puede guardar a mano */ }
-      setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
+      setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, ultimoPieza: { ref: p.ref, ppto: p.ppto, ventanaPos: p.ventanaPos, modelo: p.modelo, unidad: p.unidad }, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
       if (!opt.sinImprimir) pitidoCRM(true);
@@ -58093,12 +58230,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   // Siguiente pieza de la misma tanda (la de la cadena)
   const siguienteDeCadena = (cd) => {
     const libres = sinCortar.filter((x) => !recienCortadas.current.has(x.id));
-    if (!cd || cd.tipo === "global") return orden === "perfil" ? [...libres].sort((a, b) => auxCmp(a.ref, b.ref) || (b.lCorte || 0) - (a.lCorte || 0))[0] || null
+    // por perfil: de la pieza que toca, primero las que quedan de SU MISMA VENTANA (1/2 → 2/2 seguidas)
+    if ((!cd || cd.tipo === "global") && orden === "perfil" && cd && cd.ultimoPieza) { const mismo = libres.find((x) => x.ref === cd.ultimoPieza.ref && auxVentanaDe(x) === auxVentanaDe(cd.ultimoPieza)); if (mismo) return mismo; }
+    if (!cd || cd.tipo === "global") return orden === "perfil" ? [...libres].sort((a, b) => auxCmp(a.ref, b.ref) || (b.lCorte || 0) - (a.lCorte || 0) || auxVentanaDe(a).localeCompare(auxVentanaDe(b)) || (a.k || 0) - (b.k || 0))[0] || null
       : [...libres].sort((a, b) => { const da = diaDe(a.ppto), db = diaDe(b.ppto); return (da ? 0 : 1) - (db ? 0 : 1) || String(da).localeCompare(String(db)) || auxCmp(a.ppto, b.ppto); })[0] || null;
     if (cd.tipo === "obra") return libres.find((x) => x.ppto === cd.ppto) || null;
     if (cd.tipo === "ref") {
       const enDias = (x) => !cd.dias ? true : cd.dias === "sin" ? !diaDe(x.ppto) : cd.dias.includes(diaDe(x.ppto));
       if (cd.plan && cd.plan.length) { const ids = new Set(libres.map((x) => x.id)); const idSig = cd.plan.find((id) => ids.has(id)); if (idSig) return libres.find((x) => x.id === idSig) || null; }
+      if (cd.ultimoPieza) { const mismo = libres.find((x) => `${x.ref}|${x.nombre}|${x.color || ""}` === cd.k && enDias(x) && auxVentanaDe(x) === auxVentanaDe(cd.ultimoPieza)); if (mismo) return mismo; }
       return libres.filter((x) => `${x.ref}|${x.nombre}|${x.color || ""}` === cd.k && enDias(x)).sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto))[0] || null;
     }
     return null;
@@ -58445,7 +58585,16 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 pend.slice().forEach((x) => { const l = Number(x.lCorte) || 0; if (l > 0 && l + KF <= libre) { dentro.push(x); libre -= l + KF; pend.splice(pend.indexOf(x), 1); } });
                 if (dentro.length) r.recUsados.push({ rc, piezas: dentro, sobra: libre });
               });
-              r.emp = auxEmpaquetar(pend, BL, KF, DP);
+              const porViv = porViviendaAux[r.k] != null ? !!porViviendaAux[r.k] : /solape/i.test(String(r.p.nombre || ""));
+              r.porViv = porViv;
+              const vivDe = (x) => `${pptoBonito(x.ppto)}${x.grupo ? ` · ${x.grupo}` : ""}`;
+              if (porViv && new Set(pend.map(vivDe)).size > 1) {
+                // cada vivienda (presupuesto + vivienda) en sus propias barras, una detrás de otra
+                const grupos = new Map(); pend.forEach((x) => { const g = vivDe(x); if (!grupos.has(g)) grupos.set(g, []); grupos.get(g).push(x); });
+                const barras = []; const fuera = [];
+                [...grupos.entries()].sort((a, b) => auxCmp(a[0], b[0])).forEach(([g, xs]) => { const e = auxEmpaquetar(xs, BL, KF, DP); e.barras.forEach((b) => { b.vivienda = g; barras.push(b); }); fuera.push(...e.fuera); });
+                r.emp = { barras, fuera }; r.barrasDeMas = barras.length - auxEmpaquetar(pend, BL, KF, DP).barras.length;
+              } else { r.emp = auxEmpaquetar(pend, BL, KF, DP); r.barrasDeMas = 0; }
               r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
             });
             // (no se vacía: con varios días abiertos a la vez, cada uno añade el plan de sus barras)
@@ -58455,7 +58604,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             const setRt = (campo, v) => { const n = parseInt(v, 10); fbSet(ref(fbDb, `auxiliaresBarra/retales/${campo}`), n >= 1 ? n : null).catch(() => {}); };
             const RTC = auxRetalCfg(barraCfg);
             const guardarRec = (e, r, mm) => {
-              e.preventDefault(); const fd = new FormData(e.target); const carro = String(fd.get("carro") || "").trim(); const pos = String(fd.get("pos") || "").trim(); const len = Number(fd.get("len")) || mm;
+              e.preventDefault(); if (RETALES_BLOQUEADOS) { alert("Guardar retales está BLOQUEADO de momento (orden de Miguel)."); return; } const fd = new FormData(e.target); const carro = String(fd.get("carro") || "").trim(); const pos = String(fd.get("pos") || "").trim(); const len = Number(fd.get("len")) || mm;
               if (!carro || !pos) { guardarRetal({ ref: String(r.p.ref), nombre: r.p.nombre, color: r.p.color }, len); e.target.reset(); return; }
               try { localStorage.setItem("auxRecLugar", JSON.stringify({ carro, pos })); } catch (er) { /* nada */ }
               const id = `r${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -58513,6 +58662,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
                     <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} por cortar</span>{(() => { const n = piezas.filter((p) => `${p.ref}|${p.nombre}|${p.color || ""}` === r.k && dias.includes(diaDe(p.ppto)) && est && est[p.id] && est[p.id].cortada).length; return n ? <span className="text-sm font-bold text-emerald-700">✂ {n} cortadas</span> : null; })()}<span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
                     <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                      <label className="flex items-center gap-1 text-xs font-bold text-violet-900 bg-violet-50 border border-violet-300 rounded px-2 py-0.5" title="Repartir las barras vivienda a vivienda (cada vivienda en sus barras)"><input type="checkbox" checked={!!r.porViv} onChange={(e) => setPorViviendaAux({ ...porViviendaAux, [r.k]: e.target.checked })} /> 🏠 Por vivienda{r.porViv && r.barrasDeMas > 0 ? ` (+${r.barrasDeMas} barra${r.barrasDeMas === 1 ? "" : "s"})` : ""}</label>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
@@ -58553,8 +58703,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     {r.emp.barras.map((b, bi) => (
                       <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
                         <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
-                          <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
-                          {b.sobra >= minDe(r.p.ref) && (
+                          <span>Barra {bi + 1} de {r.emp.barras.length}</span>{b.vivienda && <span className="text-violet-800">🏠 {b.vivienda}</span>}<span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
+                          {(() => { const sin = b.piezas.filter((x) => !(est && est[x.id] && est[x.id].cortada)); return sin.length > 1 ? <button type="button" onClick={() => { if (window.confirm(`¿Cortar la barra ${bi + 1} entera: ${sin.length} piezas y sus ${sin.length} etiquetas seguidas?`)) cortarVarias(sin, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} className="px-2 py-0.5 rounded bg-[#2E8B57] text-white font-bold">✂ Cortar toda la barra ({sin.length})</button> : null; })()}
+                          {!RETALES_BLOQUEADOS && b.sobra >= minDe(r.p.ref) && (
                             <form onSubmit={(e) => guardarRec(e, r, b.sobra)} className="ml-auto flex flex-wrap items-center gap-1 font-normal">
                               <span className="font-bold text-amber-900">💾 Guardar recorte</span>
                               <input name="len" type="number" defaultValue={Math.round(b.sobra)} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /><span>mm →</span>
@@ -58565,7 +58716,19 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           )}
                         </div>
                         <div className="flex h-2 bg-slate-200">{b.piezas.map((x, xi) => <div key={xi} title={`${auxMed(x.lCorte)} mm`} style={{ width: `${((Number(x.lCorte) + KF) / BL) * 100}%` }} className={`h-2 border-r border-white ${xi % 2 ? "bg-indigo-400" : "bg-indigo-600"}`} />)}</div>
-                        {b.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
+                        {(() => {
+                          // CORTAR DOS A LA VEZ: las piezas iguales seguidas de la misma ventana (1/2 y 2/2) se cortan juntas con sus 2 etiquetas
+                          const ctxB = { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }; const out = []; const ps = b.piezas;
+                          for (let i = 0; i < ps.length; i++) {
+                            const x = ps[i], y = ps[i + 1]; const sinC = (z) => z && !(est && est[z.id] && est[z.id].cortada);
+                            if (y && sinC(x) && sinC(y) && auxVentanaDe(x) === auxVentanaDe(y) && Math.abs((Number(x.lCorte) || 0) - (Number(y.lCorte) || 0)) < 0.5 && (x.angulo || "") === (y.angulo || "")) {
+                              out.push(<div key={`par-${x.id}`} className="border-l-4 border-violet-400 pl-1 my-1"><div className="flex items-center gap-2 text-xs font-bold text-violet-900">✌ Misma ventana y medida <button type="button" onClick={() => cortarVarias([x, y], ctxB)} className="px-2 py-0.5 rounded bg-violet-600 text-white">✂ Cortar las 2 a la vez</button></div>{fila(x, true, ctxB)}{fila(y, true, ctxB)}</div>);
+                              i++; continue;
+                            }
+                            out.push(fila(x, true, ctxB));
+                          }
+                          return out;
+                        })()}
                       </div>
                     ))}
                     {r.emp.fuera.length > 0 && (
