@@ -14570,16 +14570,27 @@ const tipoLineaRecepcion = (l, pedido) => {
   if (l.modo === "libre" && l.tarifaRef) return "stock";
   return "otro";
 };
+// Medida del albarán a mm: «2,245» / 2.245 (metros) → 2245; «1.445» (miles) → 1445; 970 → 970
+const medidaAlbaranMm = (v) => {
+  if (v == null || v === "") return 0;
+  let t = String(v).trim().toLowerCase().replace(/mm|\s/g, "");
+  if (t.includes(",") && t.includes(".")) t = t.replace(/\./g, "").replace(",", ".");
+  else if (t.includes(",")) t = t.replace(",", ".");
+  let n = parseFloat(t); if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n < 10) n = n * 1000; // metros
+  else if (/^\d{1,2}\.\d{3}$/.test(t)) n = parseFloat(t.replace(".", "")); // 1.445 = mil cuatrocientos
+  return Math.round(n);
+};
 async function leerAlbaranRecepcion(file) {
-  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","presupuesto":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "presupuesto" es el nº de presupuesto de NUESTRA obra (el que va en la cabecera como "Ref. Cli.", "Ref. Cliente", "Su referencia" u "Obra"; p. ej. en "Ref. Cli.: 5163-5 PVC ROMAN-" es "5163-5"): solo el número, con su guion y sufijo si lo lleva (5163-5, 6.740-1), sin el texto que le sigue; si no aparece, "". No lo confundas con el nº de pedido del proveedor (PV-…) ni con el nº de albarán. "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
+  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","presupuesto":"","referencia":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "presupuesto" es el nº de presupuesto de NUESTRA obra (el que va en la cabecera como "Ref. Cli.", "Ref. Cliente", "Su referencia" u "Obra"; p. ej. en "Ref. Cli.: 5163-5 PVC ROMAN-" es "5163-5"): solo el número, con su guion y sufijo si lo lleva (5163-5, 6.740-1), sin el texto que le sigue; si no aparece, "". No lo confundas con el nº de pedido del proveedor (PV-…, PD26-…) ni con el nº de albarán. "referencia" es el texto COMPLETO de la referencia de la cabecera ("Ref.:", "Referencia", "Ref. Cli.", "Su referencia", "Obra"), tal cual: puede ser un nombre de cliente u obra (p. ej. "ANGUSTIA", "AZIZ", "VENTANA PERDIDA", "REF. 5 TM SANTA MARÍA SEA - BLOQUE 9B", "4624-11 cristales freila"). OJO con las medidas: si las columnas dicen «Alto m.» / «Ancho m.» o vienen como «2,245» o «0,970», están en METROS: pásalas a milímetros (2245, 970). Si la medida viene como «1177 x 668» (Alto x Ancho), el primero es el alto. "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., «Referencia Cte.», «Notas:» bajo la línea; p. ej. V01.101, B7-V17, JFMV-01 DERECHA). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 16000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
   const trozo = limpio.slice(oi, of + 1);
   let o;
   try { o = JSON.parse(trozo); } catch (e) { o = JSON.parse(repararJsonIA(trozo)); }
   return {
-    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
-    lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), refObra: String(l.refObra || "").trim(), pedidoProv: String(l.pedidoProv || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
+    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(), referencia: String(o.referencia || "").trim(),
+    lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: medidaAlbaranMm(l.ancho), alto: medidaAlbaranMm(l.alto), cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), refObra: String(l.refObra || "").trim(), pedidoProv: String(l.pedidoProv || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
   };
 }
 // Cruza lo del albarán con las líneas del pedido que aún están pendientes
@@ -22995,7 +23006,16 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   // base del presupuesto sin puntos de miles ni versión: «4.624» = «4624» = «4624-11» = «4624.2»
   const basePpto = (t) => digitosPresu(String(t || "").split("/")[0]);
   const pptoOk = normPpto(pptoAlb).replace(/\D/g, "").length >= 3;
-  const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
+  const sinAcentosAlb = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const palabrasRefAlb = !lect ? [] : sinAcentosAlb(lect.referencia).replace(/[^a-z0-9ñ ]+/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !/^(ref|refe|referencia|bloque|cristales|cristal|pedido|obra|ventana|puerta|perdida|exp|expediente|freila|sedatec|persimaster)$/.test(w) && !/^\d+$/.test(w));
+  // OBRA POR LA REFERENCIA (cuando no viene el nº de presupuesto): «ANGUSTIA», «TM SANTA MARÍA SEA»… contra el nombre de las obras abiertas
+  const obraDeRef = !lect || !palabrasRefAlb.length ? null : (() => {
+    const vivas = toArray(ctxAlb.proyectos).filter((x) => x && !["Entregado", "Cancelado"].includes(x.estadoTrabajo));
+    const cand = vivas.map((x) => { const t = sinAcentosAlb(`${x.nombre || ""} ${x.clienteNombre || ""} ${x.ubicacion || ""}`); return { x, n: palabrasRefAlb.filter((w) => t.includes(w)).length }; }).filter((c) => c.n >= Math.min(2, palabrasRefAlb.length)).sort((a, b) => b.n - a.n);
+    return cand.length === 1 || (cand.length > 1 && cand[0].n > cand[1].n) ? cand[0].x : null;
+  })();
+  const obraDePpto0 = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
+  const obraDePpto = obraDePpto0 || obraDeRef;
   // los pedidos de la obra del presupuesto entran siempre (aunque ya consten como recibidos), para poder elegirlos
   const pedidosObraPpto = obraDePpto ? toArray(pedidos).filter((p) => p && p.proyectoId === obraDePpto.id) : [];
   const lista = !lect ? [] : toArray(pedidos).filter((p) => pendiente(p) || (obraDePpto && p && p.proyectoId === obraDePpto.id)).map((p) => {
@@ -23007,11 +23027,18 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     const porNumero = !!num && [p.numero, p.numeroPedidoProveedor].some((n) => normPedidoCristal(n) && normPedidoCristal(n) === num);
     const porProv = !!prov && !!nombre && (nombre.includes(prov) || prov.includes(nombre));
     const pp = pptoPed(p); const porPpto = pptoOk && ((!!pp && (normPpto(pp) === normPpto(pptoAlb) || basePpto(pp) === basePpto(pptoAlb))) || (!!obraDePpto && p.proyectoId === obraDePpto.id));
-    return { p, casadas, porNumero, porProv, porPpto, score: (porNumero ? 1000 : 0) + (porPpto ? 500 : 0) + (porProv ? 100 : 0) + casadas };
+    // REFERENCIA de la cabecera (nombre del cliente u obra: «ANGUSTIA», «TM SANTA MARÍA SEA - BLOQUE 9B»…) contra la obra y el pedido
+    const prP = p.proyectoId ? toArray(ctxAlb.proyectos).find((x) => x && x.id === p.proyectoId) : null;
+    const textoPed = sinAcentosAlb([prP && prP.nombre, prP && prP.ubicacion, prP && prP.clienteNombre, p.referencia, p.obra, p.comentarios, p.descripcion, toArray(p.lineas).map((l) => `${l.referencia || ""} ${l.descripcion || ""}`).join(" ")].filter(Boolean).join(" "));
+    const porRef = palabrasRefAlb.length > 0 && palabrasRefAlb.filter((w) => textoPed.includes(w)).length >= Math.min(2, palabrasRefAlb.length);
+    // las MEDIDAS: cuántas líneas a medida del albarán casan con este pedido (aunque ya estuvieran recibidas)
+    const medAlb = lect.lineas.filter((a) => a.ancho > 0 && a.alto > 0);
+    const porMedida = medAlb.filter((a) => toArray(p.lineas).some((l) => mismaMedidaCristal(l.ancho, l.alto, a.ancho, a.alto))).length;
+    return { p, casadas, porNumero, porProv, porPpto, porRef, porMedida, score: (porNumero ? 1000 : 0) + (porPpto ? 500 : 0) + (porRef ? 300 : 0) + (porProv ? 100 : 0) + casadas * 2 + porMedida * 5 };
   }).sort((a, b) => b.score - a.score);
   const buenos = lista.filter((c) => c.score > 0);
   const elegido = lect ? (lista.find((c) => c.p.id === selId) || buenos[0] || null) : null;
-  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porPpto ? "coincide el presupuesto" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
+  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porPpto ? "coincide el presupuesto" : "", c.porRef ? `coincide la referencia «${lect.referencia}»` : "", c.porMedida ? `${c.porMedida} medida${c.porMedida === 1 ? "" : "s"} iguales` : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
   const cerrarTodo = () => {
     const n = toArray(elegido.p.lineas).filter((l) => !l.confirmadoFabrica).length;
     if (window.confirm(`¿Dar por COMPLETO el pedido #${elegido.p.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} y desaparece de Materiales pendientes.\n\nHazlo solo si ya no falta nada: lo que no haya venido se da por recibido.`)) { onCerrarPedido(elegido.p.id); setLect(null); }
@@ -23040,8 +23067,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
               {pptoOk && lect.presupuesto && normPpto(lect.presupuesto) === normPpto(pptoAlb) && <span className="text-xs text-emerald-700">leído del albarán (Ref. Cli.)</span>}
             </div>
             {!pptoOk && <div className="text-xs text-slate-500">Si lo escribes, ayuda a encontrar el pedido de esa obra. No es obligatorio para recibir.</div>}
-            {pptoOk && (obraDePpto
-              ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b>{pedidosObraPpto.length
+            {lect.referencia && <div className="text-xs text-slate-600">Referencia del albarán: <b>{lect.referencia}</b></div>}
+            {(pptoOk || obraDeRef) && (obraDePpto
+              ? <div className="text-xs text-emerald-800">Obra{!obraDePpto0 ? " (por la referencia)" : ""}: <b>{obraDePpto.nombre || obraDePpto.numero}</b>{pedidosObraPpto.length
                   ? <> · sus pedidos: {pedidosObraPpto.map((p) => `#${p.numero} ${nombreProv(p)}${pendiente(p) ? "" : " (ya recibido)"}`).join(" · ")}</>
                   : <div className="mt-1 font-bold text-rose-700">⚠ Esta obra NO tiene ningún pedido en el CRM: por eso no casa el albarán. Crea el pedido en la ficha de la obra (pestaña Pedidos) y vuelve a subir el albarán.</div>}</div>
               : <div className="text-xs font-semibold text-amber-800">⚠ Ninguna obra del CRM tiene el presupuesto {pptoAlb}. Revisa el número; si es correcto, la obra aún no está dada de alta en Proyectos.</div>)}
