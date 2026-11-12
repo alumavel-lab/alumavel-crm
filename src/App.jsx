@@ -22996,7 +22996,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const basePpto = (t) => digitosPresu(String(t || "").split("/")[0]);
   const pptoOk = normPpto(pptoAlb).replace(/\D/g, "").length >= 3;
   const obraDePpto = pptoOk ? toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && normPpto(n) === normPpto(pptoAlb))) || toArray(ctxAlb.proyectos).find((x) => x && [presupuestoDeObra(x), x.presupuestoNumero].some((n) => n && basePpto(n) === basePpto(pptoAlb))) : null;
-  const lista = !lect ? [] : toArray(pedidos).filter(pendiente).map((p) => {
+  // los pedidos de la obra del presupuesto entran siempre (aunque ya consten como recibidos), para poder elegirlos
+  const pedidosObraPpto = obraDePpto ? toArray(pedidos).filter((p) => p && p.proyectoId === obraDePpto.id) : [];
+  const lista = !lect ? [] : toArray(pedidos).filter((p) => pendiente(p) || (obraDePpto && p && p.proyectoId === obraDePpto.id)).map((p) => {
     const num = normPedidoCristal(lect.numeroPedido);
     const prov = String(lect.proveedor || "").trim().toLowerCase();
     const nombre = nombreProv(p).toLowerCase();
@@ -23039,7 +23041,9 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
             </div>
             {!pptoOk && <div className="text-xs text-slate-500">Si lo escribes, ayuda a encontrar el pedido de esa obra. No es obligatorio para recibir.</div>}
             {pptoOk && (obraDePpto
-              ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b></div>
+              ? <div className="text-xs text-emerald-800">Obra: <b>{obraDePpto.nombre || obraDePpto.numero}</b>{pedidosObraPpto.length
+                  ? <> · sus pedidos: {pedidosObraPpto.map((p) => `#${p.numero} ${nombreProv(p)}${pendiente(p) ? "" : " (ya recibido)"}`).join(" · ")}</>
+                  : <div className="mt-1 font-bold text-rose-700">⚠ Esta obra NO tiene ningún pedido en el CRM: por eso no casa el albarán. Crea el pedido en la ficha de la obra (pestaña Pedidos) y vuelve a subir el albarán.</div>}</div>
               : <div className="text-xs font-semibold text-amber-800">⚠ Ninguna obra del CRM tiene el presupuesto {pptoAlb}. Revisa el número; si es correcto, la obra aún no está dada de alta en Proyectos.</div>)}
           </div>
           {lista.length === 0 ? (
