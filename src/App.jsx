@@ -58243,7 +58243,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     return { ppto: pp, obra: (sinCortar.find((p) => p.ppto === pp && p.obra) || {}).obra || "", pend: sinCortar.filter((p) => p.ppto === pp && esSolapePieza(p)).length,
       enHoja: piezas.some((p) => p.ppto === pp && esSolapePieza(p)) || sh.estado === "activo", desactivado: sh.estado === "desactivado", codigos: sh.codigos };
   }).filter((x) => x.pend > 0 || !x.enHoja);
-  const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
+  // lo CORTADO también por puesto: en Mosquiteras y postigos no salen las guías de persiana ni el resto de auxiliares (y al revés)
+  const esDeMiPuesto = (e) => !!e && auxPuestoDeRef(toArray(cfg.refs).find((r) => String(r.ref).trim() === String(e.ref).trim()), e.ref) === puestoCorte;
+  const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && esDeMiPuesto(e) && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
   const subir = async (files, esperado = "", claveObra = "") => {
@@ -58477,10 +58479,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     margenIzqMm: parseFloat(b.margenIzqMm) || 0, margenDerMm: parseFloat(b.margenDerMm) || 0, margenSupMm: parseFloat(b.margenSupMm) || 0, escalaEt: parseFloat(b.escalaEt) || 100, negativoEt: !!b.negativoEt, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
   }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); try { localStorage.removeItem("auxCfgBorrador"); } catch (e) { /* nada */ } return true; }).catch((e) => { alert(`No se pudo guardar la configuración: ${(e && e.message) || e}. Lo que escribiste NO se ha perdido, sigue en pantalla. Si pone "permission denied", hay que abrir las reglas de Firebase para auxiliaresConfig.`); return false; });
   // ---- COMPROBAR: revisar por obra que todas las piezas están y ticarlas (a mano o con la pistola) ----
-  const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(Boolean).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
+  const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(esDeMiPuesto).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
   const filasComp = obraComp ? [
     ...piezas.filter((p) => p.ppto === obraComp && !(est[p.id] && est[p.id].cortada)).map((p) => ({ ...p, sinCortar: true })),
-    ...Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && e.ppto === obraComp),
+    ...Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && e.ppto === obraComp && esDeMiPuesto(e)),
   ].sort((x, y) => auxCmp(auxVent(x), auxVent(y)) || auxCmp(x.ref, y.ref)) : [];
   const okComp = filasComp.filter((e) => !e.sinCortar && e.comprobada).length;
   const faltanComp = filasComp.filter((e) => e.sinCortar || !e.comprobada);
