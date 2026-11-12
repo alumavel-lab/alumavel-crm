@@ -57964,6 +57964,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [perfilDia, setPerfilDia] = useState("");
   // DESPLEGABLES de «Falta por cortar»: semanas y días abiertos (se recuerdan en este ordenador) y días vistos por obra en vez de por perfil
   const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
+  // POR VIVIENDA: cada perfil se puede repartir en barras vivienda a vivienda (el solape, por defecto). Se recuerda en este ordenador.
+  const [porViviendaAux, setPorViviendaAux] = useEstadoLocal("auxPorVivienda", {});
   const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
   const [diasPorObra, setDiasPorObra] = useState([]);
   const [diasSel, setDiasSel] = useState([]);
@@ -58583,7 +58585,16 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 pend.slice().forEach((x) => { const l = Number(x.lCorte) || 0; if (l > 0 && l + KF <= libre) { dentro.push(x); libre -= l + KF; pend.splice(pend.indexOf(x), 1); } });
                 if (dentro.length) r.recUsados.push({ rc, piezas: dentro, sobra: libre });
               });
-              r.emp = auxEmpaquetar(pend, BL, KF, DP);
+              const porViv = porViviendaAux[r.k] != null ? !!porViviendaAux[r.k] : /solape/i.test(String(r.p.nombre || ""));
+              r.porViv = porViv;
+              const vivDe = (x) => `${pptoBonito(x.ppto)}${x.grupo ? ` · ${x.grupo}` : ""}`;
+              if (porViv && new Set(pend.map(vivDe)).size > 1) {
+                // cada vivienda (presupuesto + vivienda) en sus propias barras, una detrás de otra
+                const grupos = new Map(); pend.forEach((x) => { const g = vivDe(x); if (!grupos.has(g)) grupos.set(g, []); grupos.get(g).push(x); });
+                const barras = []; const fuera = [];
+                [...grupos.entries()].sort((a, b) => auxCmp(a[0], b[0])).forEach(([g, xs]) => { const e = auxEmpaquetar(xs, BL, KF, DP); e.barras.forEach((b) => { b.vivienda = g; barras.push(b); }); fuera.push(...e.fuera); });
+                r.emp = { barras, fuera }; r.barrasDeMas = barras.length - auxEmpaquetar(pend, BL, KF, DP).barras.length;
+              } else { r.emp = auxEmpaquetar(pend, BL, KF, DP); r.barrasDeMas = 0; }
               r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
             });
             // (no se vacía: con varios días abiertos a la vez, cada uno añade el plan de sus barras)
@@ -58651,6 +58662,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
                     <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} por cortar</span>{(() => { const n = piezas.filter((p) => `${p.ref}|${p.nombre}|${p.color || ""}` === r.k && dias.includes(diaDe(p.ppto)) && est && est[p.id] && est[p.id].cortada).length; return n ? <span className="text-sm font-bold text-emerald-700">✂ {n} cortadas</span> : null; })()}<span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
                     <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                      <label className="flex items-center gap-1 text-xs font-bold text-violet-900 bg-violet-50 border border-violet-300 rounded px-2 py-0.5" title="Repartir las barras vivienda a vivienda (cada vivienda en sus barras)"><input type="checkbox" checked={!!r.porViv} onChange={(e) => setPorViviendaAux({ ...porViviendaAux, [r.k]: e.target.checked })} /> 🏠 Por vivienda{r.porViv && r.barrasDeMas > 0 ? ` (+${r.barrasDeMas} barra${r.barrasDeMas === 1 ? "" : "s"})` : ""}</label>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
@@ -58691,7 +58703,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     {r.emp.barras.map((b, bi) => (
                       <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
                         <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
-                          <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
+                          <span>Barra {bi + 1} de {r.emp.barras.length}</span>{b.vivienda && <span className="text-violet-800">🏠 {b.vivienda}</span>}<span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
+                          {(() => { const sin = b.piezas.filter((x) => !(est && est[x.id] && est[x.id].cortada)); return sin.length > 1 ? <button type="button" onClick={() => { if (window.confirm(`¿Cortar la barra ${bi + 1} entera: ${sin.length} piezas y sus ${sin.length} etiquetas seguidas?`)) cortarVarias(sin, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} className="px-2 py-0.5 rounded bg-[#2E8B57] text-white font-bold">✂ Cortar toda la barra ({sin.length})</button> : null; })()}
                           {!RETALES_BLOQUEADOS && b.sobra >= minDe(r.p.ref) && (
                             <form onSubmit={(e) => guardarRec(e, r, b.sobra)} className="ml-auto flex flex-wrap items-center gap-1 font-normal">
                               <span className="font-bold text-amber-900">💾 Guardar recorte</span>
@@ -58703,7 +58716,19 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           )}
                         </div>
                         <div className="flex h-2 bg-slate-200">{b.piezas.map((x, xi) => <div key={xi} title={`${auxMed(x.lCorte)} mm`} style={{ width: `${((Number(x.lCorte) + KF) / BL) * 100}%` }} className={`h-2 border-r border-white ${xi % 2 ? "bg-indigo-400" : "bg-indigo-600"}`} />)}</div>
-                        {b.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
+                        {(() => {
+                          // CORTAR DOS A LA VEZ: las piezas iguales seguidas de la misma ventana (1/2 y 2/2) se cortan juntas con sus 2 etiquetas
+                          const ctxB = { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }; const out = []; const ps = b.piezas;
+                          for (let i = 0; i < ps.length; i++) {
+                            const x = ps[i], y = ps[i + 1]; const sinC = (z) => z && !(est && est[z.id] && est[z.id].cortada);
+                            if (y && sinC(x) && sinC(y) && auxVentanaDe(x) === auxVentanaDe(y) && Math.abs((Number(x.lCorte) || 0) - (Number(y.lCorte) || 0)) < 0.5 && (x.angulo || "") === (y.angulo || "")) {
+                              out.push(<div key={`par-${x.id}`} className="border-l-4 border-violet-400 pl-1 my-1"><div className="flex items-center gap-2 text-xs font-bold text-violet-900">✌ Misma ventana y medida <button type="button" onClick={() => cortarVarias([x, y], ctxB)} className="px-2 py-0.5 rounded bg-violet-600 text-white">✂ Cortar las 2 a la vez</button></div>{fila(x, true, ctxB)}{fila(y, true, ctxB)}</div>);
+                              i++; continue;
+                            }
+                            out.push(fila(x, true, ctxB));
+                          }
+                          return out;
+                        })()}
                       </div>
                     ))}
                     {r.emp.fuera.length > 0 && (
