@@ -59571,6 +59571,22 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
   const horasTodasRaw = useObjetoFb("controlDiaHoras");
   const horasTodas = useMemo(() => fusionaDias(horasTodasRaw), [horasTodasRaw, uxAProy]);
+  // cuándo se DESMARCÓ cada ventana (para que «lo último que se hizo» mande, sea del día que sea)
+  const borradasRaw = useObjetoFb("controlDiaBorradas");
+  const borradasCD = useMemo(() => fusionaDias(borradasRaw), [borradasRaw, uxAProy]);
+  // LAS MARCAS SIGUEN A LA OBRA: para cada obra y ventana, la ÚLTIMA marca hecha en CUALQUIER día (por la hora en que se hizo).
+  // Así, si el planning mueve la obra de día, lo picado sigue saliendo en verde.
+  const idxMarcasCD = useMemo(() => {
+    const idx = {}; const ini = (d) => { const t = Date.parse(d + "T00:00:00"); return Number.isFinite(t) ? t : 0; };
+    Object.entries(marcasTodas || {}).forEach(([d, obs]) => { if (!obs || typeof obs !== "object") return; Object.entries(obs).forEach(([k, ids]) => { if (!ids || typeof ids !== "object") return; Object.entries(ids).forEach(([id, v]) => {
+      const val = Number(v) || 0;
+      const ts = val ? (Number((((horasTodas || {})[d] || {})[k] || {})[id]) || ini(d)) : (Number((((borradasCD || {})[d] || {})[k] || {})[id]) || ini(d));
+      const a = (idx[k] = idx[k] || {}); if (!a[id] || ts >= a[id].ts) a[id] = { v: val, ts, d };
+    }); }); });
+    return idx;
+  }, [marcasTodas, horasTodas, borradasCD]);
+  const valorGlobalCD = (k, id) => { const x = (idxMarcasCD[k] || {})[id]; return x ? x.v : 0; };
+  const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
   const incsFabCD = useObjetoFb("incidenciasFabrica"); // incidencias de fábrica (para avisar arriba y pintar la obra en el calendario)
@@ -60211,7 +60227,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
   // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
   const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
-  const valorUlt = (k, id) => { for (const d of diasMarcas) { const x = marcasTodas[d] && marcasTodas[d][k]; if (x && x[id] !== undefined) return x[id] || 0; } return 0; };
+  const valorUlt = (k, id) => valorGlobalCD(k, id); void diasMarcas;
   const incsDeObraCD = (o) => { if (!o) return []; const ids = new Set(idsDe(o).map((x) => String(x))); const nom = String(o.d.nombre || "").trim(); return toArray(incsFabCD).filter((i) => i && i.estado !== "Resuelta" && ((nom && String(i.obra || "").trim() === nom) || (i.ventanaId && ids.has(limpia(String(i.ventanaId)))))); };
   // AVISO ARRIBA: incidencias abiertas y ventanas en NARANJA (problema) de las obras del día, en grande y diciendo qué es
   const avisoIncidenciasCD = (grande) => {
@@ -60613,7 +60629,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const nombreMes = new Date(mesVer + "-01T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" });
   // Lo marcado vale para los días siguientes: si hoy no se ha tocado esa ventana, vale lo último que se marcó antes (una obra que sigue de un día a otro conserva lo hecho)
   const diasAntes = Object.keys(marcasTodas || {}).filter((d) => d < dia).sort().reverse();
-  const valor = (dk, id) => { const k = limpia(dk); const m = marcas[k]; if (m && m[id] !== undefined) return m[id] || 0; for (const d of diasAntes) { const x = marcasTodas[d] && marcasTodas[d][k]; if (x && x[id] !== undefined) return x[id] || 0; } return 0; };
+  const valor = (dk, id) => valorGlobalCD(limpia(dk), id); void diasAntes;
   const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${dia}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
   const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
   const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
@@ -60623,10 +60639,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = (valor(o.d.key, v.id) + 1) % 3; act[v.id] = n; guardarObra(o.d.key, act); // el 0 se guarda: así se puede desmarcar algo marcado otro día
     if (n === 1) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; if (n) h[v.id] = Date.now(); else delete h[v.id]; guardarHoras(o.d.key, h);
+    guardarBorrada(o.d.key, [v.id], !n);
   };
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
-    const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+    const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); guardarBorrada(o.d.key, ids, todasVerdes); };
   // PISTOLA: leer la pegatina de cualquier pieza de la ventana (código de 12 cifras) la pone en VERDE (hecha).
   // Cada ventana física (de las etiquetas) se apunta en «controlDiaPistola» con la casilla que marcó: leer otra pieza de la misma ventana no marca otra.
   const marcarPorCodigoCD = async (txt) => {
@@ -61303,7 +61320,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <div className="text-xs font-bold text-left">{Number(f.slice(8))}</div>
                 {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f;
                   const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
-                  const hecha = idsC.length > 0 && idsC.every((i) => (mkC[i] !== undefined ? mkC[i] : valorUlt(k, i)) === 1); const prob = idsC.some((i) => (mkC[i] !== undefined ? mkC[i] : valorUlt(k, i)) === 2) || incsDeObraCD(ob).length > 0; return (
+                  const hecha = idsC.length > 0 && idsC.every((i) => valorUlt(k, i) === 1); const prob = idsC.some((i) => valorUlt(k, i) === 2) || incsDeObraCD(ob).length > 0; return (
                   <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ENTRAR en la obra (marcar, incidencia, quitar) y ver su material (arrástrala para moverla de día)`}
                     onDragStart={() => setPinSel({ k, de: f })}
                     onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; }
