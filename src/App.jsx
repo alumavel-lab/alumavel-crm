@@ -57492,6 +57492,8 @@ function pptosConGuiaProveedor(ctx) {
 // Reparte las piezas en barras de largo L: cada pieza gasta su medida + lo que come la sierra; el despunte se resta a cada barra.
 // PIEZAS DE LA MISMA VENTANA SEGUIDAS: se empaquetan juntas (la ventana entera en la misma barra si cabe) y, dentro de cada barra,
 // van ordenadas por ventana. Si juntarlas gastara más de una barra de más que el reparto suelto, se usa el suelto (pero ordenado por ventana).
+// GUARDAR RETALES BLOQUEADO (12/11/2026, hasta nueva orden de Miguel): ni se guardan solos al acabar una barra ni a mano. Poner false para volver a activarlo.
+const RETALES_BLOQUEADOS = true;
 const auxVentanaDe = (x) => `${x.ppto || ""}|${x.ventanaPos || ""}|${x.modelo || ""}|${x.unidad || ""}`;
 function auxEmpaquetar(filas, L, sierra, despunte) {
   const suelto = auxEmpaquetarSuelto(filas, L, sierra, despunte);
@@ -58137,6 +58139,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   // Guarda el retal en el primer sitio libre del carro de retales, saca la etiqueta y avisa dónde dejarlo
   const guardarRetal = (inf, len) => {
+    if (RETALES_BLOQUEADOS) { alert("Guardar retales está BLOQUEADO de momento (orden de Miguel). No se ha guardado ni impreso nada."); return null; }
     const site = auxSitioRetal(auxRetalCfg(barraCfg), recortesFb, inf.ref);
     if (!site) { setRetalAviso({ error: true, txt: `El carro de retales está LLENO (${Math.round(len)} mm de ref. ${inf.ref} sin sitio). Amplía carros, lados o niveles en la barra azul.` }); return null; }
     const id = `r${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -58193,10 +58196,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         if (!inf && planBarrasRef.current[p.id]) { inf = planBarrasRef.current[p.id]; inf.ids.forEach((id) => { barraSnap.current[id] = inf; }); }
         if (inf && !inf.hecho && inf.ids.every((id) => id === p.id || recienCortadas.current.has(id) || (est && est[id] && est[id].cortada))) {
           inf.hecho = true;
-          if (inf.sobra >= inf.min) guardarRetal(inf, inf.sobra);
+          if (!RETALES_BLOQUEADOS && inf.sobra >= inf.min) guardarRetal(inf, inf.sobra);
         }
       } catch (er) { /* el retal se puede guardar a mano */ }
-      setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
+      setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, ultimoPieza: { ref: p.ref, ppto: p.ppto, ventanaPos: p.ventanaPos, modelo: p.modelo, unidad: p.unidad }, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
       if (!opt.sinImprimir) pitidoCRM(true);
@@ -58225,12 +58228,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   // Siguiente pieza de la misma tanda (la de la cadena)
   const siguienteDeCadena = (cd) => {
     const libres = sinCortar.filter((x) => !recienCortadas.current.has(x.id));
-    if (!cd || cd.tipo === "global") return orden === "perfil" ? [...libres].sort((a, b) => auxCmp(a.ref, b.ref) || (b.lCorte || 0) - (a.lCorte || 0))[0] || null
+    // por perfil: de la pieza que toca, primero las que quedan de SU MISMA VENTANA (1/2 → 2/2 seguidas)
+    if ((!cd || cd.tipo === "global") && orden === "perfil" && cd && cd.ultimoPieza) { const mismo = libres.find((x) => x.ref === cd.ultimoPieza.ref && auxVentanaDe(x) === auxVentanaDe(cd.ultimoPieza)); if (mismo) return mismo; }
+    if (!cd || cd.tipo === "global") return orden === "perfil" ? [...libres].sort((a, b) => auxCmp(a.ref, b.ref) || (b.lCorte || 0) - (a.lCorte || 0) || auxVentanaDe(a).localeCompare(auxVentanaDe(b)) || (a.k || 0) - (b.k || 0))[0] || null
       : [...libres].sort((a, b) => { const da = diaDe(a.ppto), db = diaDe(b.ppto); return (da ? 0 : 1) - (db ? 0 : 1) || String(da).localeCompare(String(db)) || auxCmp(a.ppto, b.ppto); })[0] || null;
     if (cd.tipo === "obra") return libres.find((x) => x.ppto === cd.ppto) || null;
     if (cd.tipo === "ref") {
       const enDias = (x) => !cd.dias ? true : cd.dias === "sin" ? !diaDe(x.ppto) : cd.dias.includes(diaDe(x.ppto));
       if (cd.plan && cd.plan.length) { const ids = new Set(libres.map((x) => x.id)); const idSig = cd.plan.find((id) => ids.has(id)); if (idSig) return libres.find((x) => x.id === idSig) || null; }
+      if (cd.ultimoPieza) { const mismo = libres.find((x) => `${x.ref}|${x.nombre}|${x.color || ""}` === cd.k && enDias(x) && auxVentanaDe(x) === auxVentanaDe(cd.ultimoPieza)); if (mismo) return mismo; }
       return libres.filter((x) => `${x.ref}|${x.nombre}|${x.color || ""}` === cd.k && enDias(x)).sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto))[0] || null;
     }
     return null;
@@ -58587,7 +58593,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             const setRt = (campo, v) => { const n = parseInt(v, 10); fbSet(ref(fbDb, `auxiliaresBarra/retales/${campo}`), n >= 1 ? n : null).catch(() => {}); };
             const RTC = auxRetalCfg(barraCfg);
             const guardarRec = (e, r, mm) => {
-              e.preventDefault(); const fd = new FormData(e.target); const carro = String(fd.get("carro") || "").trim(); const pos = String(fd.get("pos") || "").trim(); const len = Number(fd.get("len")) || mm;
+              e.preventDefault(); if (RETALES_BLOQUEADOS) { alert("Guardar retales está BLOQUEADO de momento (orden de Miguel)."); return; } const fd = new FormData(e.target); const carro = String(fd.get("carro") || "").trim(); const pos = String(fd.get("pos") || "").trim(); const len = Number(fd.get("len")) || mm;
               if (!carro || !pos) { guardarRetal({ ref: String(r.p.ref), nombre: r.p.nombre, color: r.p.color }, len); e.target.reset(); return; }
               try { localStorage.setItem("auxRecLugar", JSON.stringify({ carro, pos })); } catch (er) { /* nada */ }
               const id = `r${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -58686,7 +58692,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
                         <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
                           <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
-                          {b.sobra >= minDe(r.p.ref) && (
+                          {!RETALES_BLOQUEADOS && b.sobra >= minDe(r.p.ref) && (
                             <form onSubmit={(e) => guardarRec(e, r, b.sobra)} className="ml-auto flex flex-wrap items-center gap-1 font-normal">
                               <span className="font-bold text-amber-900">💾 Guardar recorte</span>
                               <input name="len" type="number" defaultValue={Math.round(b.sobra)} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /><span>mm →</span>
