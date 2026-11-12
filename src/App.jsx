@@ -20604,10 +20604,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const docsPedidosPers = useMemo(() => {
     const out = new Map(); const add = (d) => { if (d && d.url && /\.pdf(\?|$)|application%2Fpdf|\.pdf%/i.test(`${d.url} ${d.nombre || ""}`.replace(/\s/g, "")) || (d && d.url && /pdf/i.test(String(d.nombre || "")))) out.set(d.url, { url: d.url, nombre: d.nombre || "" }); };
     toArray(ctxM.uxPedidosCtx).forEach((pd) => { if (pd && /persian|compact/i.test(String(pd.tipo || ""))) { add(pd.documento); toArray(pd.documentos).forEach(add); } });
+    // PEDIDOS DE COMPRA DEL CRM (Proyectos → Pedidos) de persianas/compactos de obras vivas: sus PDF adjuntos también
+    toArray(ctxM.pedidosCrm).forEach((pd) => { if (!pd || ["Cancelado"].includes(pd.estado)) return; const pr = pd.proyectoId ? toArray(ctxM.proyectos).find((o) => o && o.id === pd.proyectoId) : null; if (pr && ["Entregado", "Cancelado"].includes(pr.estadoTrabajo)) return; const esPers = /persian|compact|caj[oó]n/i.test(`${pd.tipoUxcar || ""} ${pd.tipo || ""} ${pd.comentarios || ""}`) || toArray(pd.lineas).some((l) => (l.seccionListado || "") === "persianas" || /persian|caj[oó]n|compacto|lama/i.test(`${l.referencia || ""} ${l.descripcion || ""}`)); if (!esPers) return; toArray(pd.documentos).forEach(add); toArray(pd.adjuntosPdf).forEach(add); });
     // de las obras solo las que siguen vivas (no entregadas ni canceladas), para no bajar PDF de obras viejas
-    [...toArray(ctxM.proyectos).filter((o) => o && !["Entregado", "Cancelado"].includes(o.estadoTrabajo)), ...toArray(ctxM.uxExpedientes).filter((o) => o && o.estado !== "entregado")].forEach((o) => toArray(o && o.documentos).forEach((d) => { if (d && /persian|compact/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d); }));
+    [...toArray(ctxM.proyectos).filter((o) => o && !["Entregado", "Cancelado"].includes(o.estadoTrabajo)), ...toArray(ctxM.uxExpedientes).filter((o) => o && o.estado !== "entregado")].forEach((o) => toArray(o && o.documentos).forEach((d) => { if (d && /persian|compact|pedido.{0,12}compra|pedido.{0,6}(per|com)/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d); }));
     return [...out.values()];
-  }, [ctxM.uxPedidosCtx, ctxM.proyectos, ctxM.uxExpedientes]);
+  }, [ctxM.uxPedidosCtx, ctxM.proyectos, ctxM.uxExpedientes, ctxM.pedidosCrm]);
   useEffect(() => {
     if (leyendoCabsRef.current) return;
     const falta = docsPedidosPers.filter((d) => !(cabsPedPers || {})[hashTexto(d.url)]);
@@ -20861,10 +20863,27 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     } catch (er) { /* nada */ }
     const cli = pr ? toArray(ctxM.clientes).find((c) => c && c.id === pr.clienteId) : null;
     const cg = cabDePersiana(x); // lo leído del PEDIDO COMPRA guardado en el CRM
+    // PEDIDO DE COMPRA DEL CRM (Proyectos → Pedidos): la línea de esta persiana (misma medida y, si se sabe, su vivienda) dice de qué obra es
+    let pdCrm = null, prCrm = null;
+    try {
+      const L = largoPersiana(x), A = parseFloat(x.alto) || 0, k = normRefPers(x.ref), e = expDigitosPers(x.expediente);
+      const cand = [];
+      toArray(ctxM.pedidosCrm).forEach((pd) => { if (!pd || pd.estado === "Cancelado") return; const pr0 = pd.proyectoId ? toArray(ctxM.proyectos).find((o) => o && o.id === pd.proyectoId) : null;
+        const ux0 = pr0 && pr0.uxcarExpedienteId ? toArray(ctxM.uxExpedientes).find((u) => u && u.id === pr0.uxcarExpedienteId) : null;
+        const expOk = !e || [pr0 && pr0.nombre, ux0 && ux0.numero, pd.referencia, pd.comentarios].some((t) => String(t || "").replace(/\./g, "").includes(e));
+        toArray(pd.lineas).forEach((l) => { const la = parseFloat(l.ancho) || 0, lh = parseFloat(l.alto) || 0; if (!(la > 0 && L > 0)) return;
+          const medOk = (Math.abs(la - L) <= TOL_PEDIDO_MM && (!A || !lh || Math.abs(lh - A) <= TOL_PEDIDO_MM)) || (Math.abs(lh - L) <= TOL_PEDIDO_MM && (!A || Math.abs(la - A) <= TOL_PEDIDO_MM));
+          if (!medOk) return; const vivOk = k.length >= 3 && normRefPers(`${l.referencia || ""} ${l.descripcion || ""} ${l.codigoListado || ""}`).includes(k);
+          cand.push({ pd, pr: pr0, n: (vivOk ? 4 : 0) + (expOk ? 2 : 0) }); }); });
+      cand.sort((a, b) => b.n - a.n);
+      if (cand.length && (cand.length === 1 || cand[0].n > cand[1].n) && cand[0].n >= 2) { pdCrm = cand[0].pd; prCrm = cand[0].pr; }
+    } catch (er) { pdCrm = null; }
+    const cliCrm = prCrm ? toArray(ctxM.clientes).find((c) => c && c.id === prCrm.clienteId) : null;
+    if (!pr && prCrm) pr = prCrm;
     const cliQ = q && q.cliente && !/^uxcar$/i.test(String(q.cliente).trim()) ? q.cliente : "";
     return {
-      presupuesto: (/^\d/.test(String(pp || "")) ? pp : "") || (cg && cg.presupuesto) || pp || "", referencia: referenciaDe(x) || (cg && cg.referencia) || "",
-      cliente: cliQ || (cg && cg.cliente) || (cli && cli.nombre) || x.cliente || "",
+      presupuesto: (/^\d/.test(String(pp || "")) ? pp : "") || (cg && cg.presupuesto) || (prCrm && presupuestoDeObra(prCrm)) || pp || "", referencia: referenciaDe(x) || (cg && cg.referencia) || (pdCrm && (pdCrm.referencia || "")) || (prCrm && prCrm.nombre) || "",
+      cliente: cliQ || (cg && cg.cliente) || (cli && cli.nombre) || (cliCrm && cliCrm.nombre) || x.cliente || "",
       telefono: (pr && pr.telefono) || (cli && (cli.telefono || cli.movil)) || (ux && ux.telefono) || "",
       direccion: (pr && pr.ubicacion) || (ux && (ux.direccion || ux.ubicacion)) || (cli && [cli.direccion, cli.poblacion || cli.provincia].filter(Boolean).join(", ")) || "",
     };
