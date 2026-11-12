@@ -60849,7 +60849,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
   };
   // El contador del ritmo empieza a CERO cada día: solo cuenta lo marcado en verde en ESTE día (no lo que viene heredado de días anteriores)
-  const hechasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
+  // y TAMBIÉN las ventanas ticadas ESTE DÍA en obras de otro día (la de ayer que se terminó hoy, la de mañana que se adelantó):
+  // se cuentan por la HORA en que se marcaron (controlDiaHoras), sea cual sea el día de la obra
+  const hechasObrasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
+  const hechasOtrosDias = (() => {
+    let n = 0;
+    Object.entries(horasTodas || {}).forEach(([fd, obs]) => { if (fd === dia) return; Object.entries(obs || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([idv, ms]) => {
+      if (!ms || new Date(Number(ms)).toLocaleDateString("sv-SE") !== dia) return;
+      if ((((marcasTodas || {})[fd] || {})[ko] || {})[idv] === 1) n++;
+    })); });
+    return n;
+  })();
+  const hechasDia = hechasObrasDia + hechasOtrosDias;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
   const pistolaCD = (grande) => (
@@ -60859,7 +60870,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {msgPist && <span className={`w-full ${grande ? "text-2xl" : "text-sm"} font-bold px-2 py-1 rounded ${msgPist.ok ? (msgPist.rep ? "bg-sky-100 text-sky-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{msgPist.t}</span>}
     </div>
   );
-  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})` : "Empieza a cero cada día"} />;
+  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})${hechasOtrosDias ? ` · ${hechasOtrosDias} de obras de otros días` : ""}` : "Empieza a cero cada día"} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
