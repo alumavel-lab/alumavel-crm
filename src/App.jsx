@@ -45995,10 +45995,20 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).filter((k) => !primerDiaPlan[k] || primerDiaPlan[k] === f).forEach((k) => {
+      Object.keys(planDias[f] || {}).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
+        const esPrimero = !primerDiaPlan[k] || primerDiaPlan[k] === f;
+        // si el planning la pone en varios días: sale en el primero y, en los siguientes, MIENTRAS LE QUEDEN VENTANAS (sigue de otro día)
+        if (!esPrimero) { if (!o) return; const st0 = stats(o); if (!(st0.total > 0 && st0.n < st0.total)) return; if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o, sigueDe: primerDiaPlan[k] }); } return; }
         if (o) { if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } }
         else out.push({ sinEtiquetas: String((planObras[k] && planObras[k].nombre) || (planDias[f][k] && planDias[f][k].nombre) || k).replace(/ · en fabricación$/, "") });
+      });
+      // TRABAJO DEL DÍA: obras de OTRO día (el de antes o el de después) a las que ese día se les metió alguna ventana en palet
+      obrasAD.forEach((o) => {
+        if (vistas.has(o.key)) return;
+        const st0 = stats(o);
+        const hoyMetidas = st0.filas.filter((fl) => fl.c && toArray(fl.c.ventanas).some((v) => mismaVentana(v, fl.w) && v.fecha === f)).length;
+        if (hoyMetidas > 0) { vistas.add(o.key); out.push({ o, deOtroDia: (o.clavePlan && primerDiaPlan[o.clavePlan]) || "", metidasHoy: hoyMetidas }); }
       });
       const man = (asignManualAD && asignManualAD[f]) || {};
       Object.keys(man).forEach((ko) => { if (!man[ko]) return; const o = obrasAD.find((x) => limpiaAD(x.key) === ko); if (o && !o.clavePlan && !vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } });
@@ -46078,7 +46088,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     salidaRefAD.current = stDiaAll.filter((x) => salidaOk(x.o)).map((x) => { const pr = proyectoDeObra(x.o); return pr ? { pid: pr.id, estado: pr.estadoTrabajo, key: x.o.key, clave: x.o.clavePlan || "", nombre: nombreAD(x.o) } : null; }).filter(Boolean);
     const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
     const nPend = stDia.reduce((a, x) => a + x.pend, 0);
-    const metidasDia = stDiaAll.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
+    // VENTANAS METIDAS EN PALET ESE DÍA: las de las obras que se ven, y además las del REGISTRO del día (cualquier obra, también de otro día
+    // o que ya ha salido de esta pantalla). Se cuenta cada ventana una vez (entra − sale).
+    const metidasObras = stDiaAll.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
+    const metidasRegistro = (() => { const neto = new Map(); Object.values(registroAD || {}).filter((r) => r && r.ts).sort((a, b) => a.ts - b.ts).forEach((r) => { const k = `${r.num || ""}|${r.ventana || ""}|${r.fab || ""}`; if (r.accion === "entra") neto.set(k, 1); else if (r.accion === "sale") neto.delete(k); }); return neto.size; })();
+    const metidasDia = Math.max(metidasObras, metidasRegistro);
     const palesDia = new Map(); stDiaAll.forEach((x) => x.filas.forEach((f) => { if (f.c) palesDia.set(f.c.numero, (palesDia.get(f.c.numero) || 0) + 1); }));
     const etiquetaDia = new Date(diaAD + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
     const incsAbiertasAD = toArray(incsFabAD).filter((i) => i && i.estado !== "Resuelta");
@@ -46193,6 +46207,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div key={o.key} className={`rounded-xl border-2 p-3 space-y-2 ${completa ? "border-emerald-500 bg-emerald-50" : "border-slate-300 bg-white"}`}>
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{nombreAD(o)}</span>
+            {(() => { const it = delDia.find((i) => i.o && i.o.key === o.key); if (!it) return null; if (it.sigueDe) return <span className="text-xs font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900">↪ sigue del {fmtDate(it.sigueDe)}</span>; if (it.deOtroDia !== undefined) return <span className="text-xs font-bold px-2 py-0.5 rounded bg-sky-100 text-sky-900">📅 {it.deOtroDia ? `es del ${fmtDate(it.deOtroDia)}` : "de otro día"} · {it.metidasHoy} metida{it.metidasHoy === 1 ? "" : "s"} este día</span>; return null; })()}
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold px-2 rounded bg-emerald-600 text-white`}>🟢 {pend} montada{pend === 1 ? "" : "s"} en la línea · pendiente{pend === 1 ? "" : "s"} de paletizar</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
@@ -46225,7 +46240,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className={`${g ? "text-2xl" : "text-sm"} flex flex-wrap items-center gap-x-5 gap-y-1`}>
         <span><b>{nEn}</b> de <b>{nTot}</b> ventanas en palet</span>
         {nPend > 0 && <span className={`font-semibold ${g ? "text-sky-300" : "text-sky-700"}`}>{nPend} hechas en fábrica esperando palet</span>}
-        {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día</span>}
+        {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día{metidasRegistro > metidasObras ? ` (${metidasRegistro - metidasObras} de obras de otros días)` : ""}</span>}
         {palesDia.size > 0 && <span className={g ? "text-slate-200" : "text-slate-600"}>Palets: {[...palesDia.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</span>}
       </div>
     );
@@ -57534,7 +57549,8 @@ function auxEmpaquetar(filas, L, sierra, despunte) {
 // ventana, luego iguales de otras ventanas) y cada pareja ocupa el mismo sitio en dos barras GEMELAS (A y B, mismos cortes).
 // Las que no tienen pareja van en barras normales.
 function auxEmpaquetarDoble(filas, L, sierra, despunte) {
-  const igual = (a, b) => Math.abs((Number(a.lCorte) || 0) - (Number(b.lCorte) || 0)) < 0.5 && (a.angulo || "") === (b.angulo || "");
+  // misma medida; el ángulo da igual (se le da la vuelta a la barra)
+  const igual = (a, b) => Math.abs((Number(a.lCorte) || 0) - (Number(b.lCorte) || 0)) < 0.5;
   const usados = new Set(); const pares = [];
   const porVent = new Map(); filas.forEach((x) => { const g = auxVentanaDe(x); if (!porVent.has(g)) porVent.set(g, []); porVent.get(g).push(x); });
   porVent.forEach((xs) => { const ord = [...xs].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)); for (let i = 0; i < ord.length; i++) { if (usados.has(ord[i].id)) continue; const j = ord.findIndex((y, jj) => jj > i && !usados.has(y.id) && igual(ord[i], y)); if (j > 0) { usados.add(ord[i].id); usados.add(ord[j].id); pares.push([ord[i], ord[j]]); } } });
