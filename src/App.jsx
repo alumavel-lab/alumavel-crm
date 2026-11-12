@@ -58572,7 +58572,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const cuerpo = lista.map((d) => {
       const porPpto = new Map();
       piezas.forEach((p) => { if ((diaDe(p.ppto) || "") !== d) return; if (filtro && !filtro.has(String(p.ppto))) return; if (!porPpto.has(p.ppto)) porPpto.set(p.ppto, []); porPpto.get(p.ppto).push(p); });
-      const faltan = filtro ? [] : faltanObras.filter((o) => o.dia === d); totFalta += faltan.length;
+      const faltan = filtro || puestoCorte !== "doble" ? [] : faltanObras.filter((o) => o.dia === d); totFalta += faltan.length;
       const obrasHtml = [...porPpto.entries()].sort((a, b) => auxCmp(a[0], b[0])).map(([pp, ps]) => {
         totObras += 1;
         const cort = ps.filter((p) => est[p.id] && est[p.id].cortada).length; totPend += ps.length - cort;
@@ -58988,7 +58988,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
                     <button type="button" onClick={() => imprimirRevision(sem.dias, `semana del ${fmtDate(sem.lunes)}`)} className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                   </div>
-                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = faltanObras.filter((o) => o.dia === d).length; return (
+                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = puestoCorte === "doble" ? faltanObras.filter((o) => o.dia === d).length : 0; return (
                     <details key={d} open={dOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== dOpen) setDiasAbiertos((x) => (o ? [...new Set([...toArray(x), d])] : toArray(x).filter((y) => y !== d))); }} className={`rounded-lg border ${sel ? "ring-2 ring-indigo-300 border-indigo-300" : "border-slate-200"} group/dia`}>
                       <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{cortadasDelDia(d).length > 0 && <span className="text-sm font-bold text-emerald-700">· ✂ {cortadasDelDia(d).length} cortadas</span>}{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
                       {dOpen && <div className="p-1">
@@ -59036,7 +59036,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           </div>
                         </details>
                       )}
-                      {okObras.filter((o) => o.dia === d && o.n === 0).length > 0 && (
+                      {puestoCorte === "doble" && okObras.filter((o) => o.dia === d && o.n === 0).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {okObras.filter((o) => o.dia === d && o.n === 0).map((o) => (
                             <div key={o.k} title={o.n === 0 ? "Toca para volver a subir la hoja de corte de esta obra" : ""} onClick={() => { if (o.n !== 0 || leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2 ${o.n === 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}>
@@ -59054,7 +59054,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           ))}
                         </div>
                       )}
-                      {faltanObras.filter((o) => o.dia === d).length > 0 && (
+                      {puestoCorte === "doble" && faltanObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {faltanObras.filter((o) => o.dia === d).map((o) => (
                             <div key={o.k} title="Toca para subir la hoja de corte de esta obra" onClick={() => { if (leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 cursor-pointer hover:bg-rose-100">
