@@ -57990,6 +57990,55 @@ function AuxConfigPanel({ cfg, onGuardar }) {
   );
 }
 
+// CARROS DE AUXILIARES (lo que hay AHORA): cada carro con sus huecos y las piezas cortadas que hay en cada uno.
+// Se puede SACAR una pieza del carro (libera el hueco; la pieza sigue cortada), moverla a otro carro/hueco o vaciar un hueco entero.
+function CarrosAuxiliares({ cfg, est, quien = "" }) {
+  const carros = toArray(cfg && cfg.carros);
+  const [abierto, setAbierto] = useState(""); // "carroId|hueco"
+  const porHueco = {}; Object.entries(est || {}).forEach(([id, e]) => { if (!e || !e.cortada || !e.carro) return; const k = `${e.carro}|${e.hueco}`; (porHueco[k] = porHueco[k] || []).push({ ...e, id }); });
+  const P = Math.max(1, parseInt(cfg && cfg.porHueco, 10) || 1);
+  const sacar = (ps, motivo) => { ps.forEach((x) => { guardarLinea(`auxiliaresPiezas/${x.id}/carro`, null); guardarLinea(`auxiliaresPiezas/${x.id}/hueco`, null); guardarLinea(`auxiliaresPiezas/${x.id}/sacada`, { at: Date.now(), por: quien || "", de: `${x.carroNombre || ""} · hueco ${x.hueco}`, motivo }); }); };
+  const mover = (x, cid, h) => { const c = carros.find((y) => y.id === cid); if (!c || !(h >= 1)) return; guardarLinea(`auxiliaresPiezas/${x.id}/carro`, c.id); guardarLinea(`auxiliaresPiezas/${x.id}/carroNombre`, c.nombre || ""); guardarLinea(`auxiliaresPiezas/${x.id}/hueco`, h); guardarLinea(`auxiliaresPiezas/${x.id}/movida`, { at: Date.now(), por: quien || "", de: `${x.carroNombre || ""} · hueco ${x.hueco}` }); };
+  if (!carros.length) return <p className="text-sm text-slate-500">No hay carros configurados (Configuración → Almacén vertical de auxiliares).</p>;
+  const total = Object.values(porHueco).reduce((a, l) => a + l.length, 0);
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-slate-600">{total} piezas en carros · cada hueco admite {P}. Toca un hueco para ver qué hay, sacar piezas o moverlas.</div>
+      {carros.map((c) => { const n = parseInt(c.huecos, 10) || 0; const ocup = Array.from({ length: n }, (_, i) => (porHueco[`${c.id}|${i + 1}`] || []).length); return (
+        <div key={c.id} className="rounded-lg border border-slate-300 bg-white p-2">
+          <div className="text-sm font-extrabold text-slate-900 mb-1">🗄 {c.nombre || "Carro"} <span className="text-xs font-normal text-slate-500">· {ocup.reduce((a, x) => a + x, 0)} piezas · {ocup.filter((x) => x > 0).length} de {n} huecos ocupados</span></div>
+          <div className="flex flex-wrap gap-1">
+            {ocup.map((x, i) => { const k = `${c.id}|${i + 1}`; return (
+              <button key={k} type="button" onClick={() => setAbierto(abierto === k ? "" : k)} className={`w-14 h-12 rounded border text-xs font-bold leading-tight ${abierto === k ? "ring-2 ring-sky-500" : ""} ${x === 0 ? "bg-slate-100 border-slate-300 text-slate-400" : x >= P ? "bg-rose-100 border-rose-400 text-rose-900" : "bg-emerald-50 border-emerald-400 text-emerald-900"}`} title={`Hueco ${i + 1}: ${x} pieza(s)`}>
+                {i + 1}<br /><span className="font-normal">{x || "vacío"}</span>
+              </button>
+            ); })}
+          </div>
+          {abierto.startsWith(`${c.id}|`) && (() => { const h = parseInt(abierto.split("|")[1], 10); const ps = (porHueco[abierto] || []).sort((a, b) => String(a.ppto).localeCompare(String(b.ppto)) || String(a.ventanaPos || "").localeCompare(String(b.ventanaPos || ""), "es", { numeric: true })); return (
+            <div className="mt-2 rounded border border-sky-300 bg-sky-50 p-2">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-sky-900">Hueco {h} · {ps.length} pieza{ps.length === 1 ? "" : "s"}
+                {ps.length > 0 && <button type="button" onClick={() => { if (window.confirm(`¿Vaciar el hueco ${h} de ${c.nombre}? Las ${ps.length} piezas salen del carro (siguen cortadas, no vuelven a «falta por cortar»).`)) sacar(ps, "hueco vaciado"); }} className="ml-auto px-2 py-0.5 rounded bg-rose-600 text-white text-xs">Vaciar hueco</button>}
+              </div>
+              {ps.length === 0 ? <div className="text-xs text-slate-500 mt-1">Vacío.</div> : (
+                <ul className="mt-1 space-y-1">
+                  {ps.map((x) => (
+                    <li key={x.id} className="flex flex-wrap items-center gap-2 text-xs bg-white rounded border border-slate-200 px-2 py-1">
+                      <b>{x.cod}</b><span>{x.nombre} {auxMed(x.lCorte)} mm{x.angulo ? ` · ${String(x.angulo).replace(/\s+/g, "")}` : ""}</span><span className="text-slate-500">Ppto {pptoBonito(x.ppto)}{x.ventanaPos ? ` · ${x.ventanaPos}` : ""}{x.grupo ? ` · ${x.grupo}` : ""}</span>
+                      <span className="ml-auto flex items-center gap-1">
+                        <select value="" onChange={(e) => { const [cid, hh] = e.target.value.split("|"); if (cid) mover(x, cid, parseInt(hh, 10)); }} className="border border-slate-300 rounded px-1 py-0.5"><option value="">Mover a…</option>{carros.map((c2) => Array.from({ length: parseInt(c2.huecos, 10) || 0 }, (_, j) => <option key={`${c2.id}|${j + 1}`} value={`${c2.id}|${j + 1}`}>{c2.nombre} · hueco {j + 1} ({(porHueco[`${c2.id}|${j + 1}`] || []).length})</option>))}</select>
+                        <button type="button" onClick={() => { if (window.confirm(`¿Sacar ${x.cod} (${x.nombre} ${auxMed(x.lCorte)} mm) del carro? Sigue cortada; solo libera el hueco.`)) sacar([x], "sacada a mano"); }} className="px-2 py-0.5 rounded border border-rose-300 text-rose-700">Sacar</button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ); })()}
+        </div>
+      ); })}
+    </div>
+  );
+}
 function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin = false }) {
   const cfgRaw = useObjetoFb("auxiliaresConfig");
   const hojas = useObjetoFb("auxiliaresHojas");
@@ -58543,6 +58592,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
         <button type="button" disabled={leyendo} onClick={() => releerUxcar("")} title="Vuelve a leer, con el lector actual, todas las hojas de corte guardadas: las que Uxcar subió desde su portal y las de los documentos de tus obras" className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border-2 border-[#2E8B57] text-[#2E8B57] bg-white disabled:opacity-60"><RefreshCw size={14} /> Releer hojas guardadas</button>
+        <details className="basis-full"><summary className="cursor-pointer text-sm font-bold text-slate-900">🗄 Carros: qué hay ahora en cada uno ({Object.values(est || {}).filter((e) => e && e.cortada && e.carro).length} piezas)</summary><div className="mt-2"><CarrosAuxiliares cfg={{ ...cfg, porHueco: porHuecoAux }} est={est} quien={quien} /></div></details>
         <details className="basis-full"><summary className="cursor-pointer text-sm font-bold text-amber-900">♻ Almacén de retales ({Object.values(recortesFb || {}).filter((v) => v && Number(v.len) > 0).length}) · dar de alta un retal</summary><div className="mt-2">{altaRetal()}</div></details>
         {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0], { tipo: "global" })} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {retalAviso && <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl border-4 px-5 py-3 text-lg font-extrabold shadow-2xl flex items-center gap-3 ${retalAviso.error ? "bg-rose-50 border-rose-600 text-rose-900" : "bg-amber-50 border-amber-500 text-amber-900"}`}><span>{retalAviso.txt}</span><button type="button" onClick={() => setRetalAviso(null)} className="px-2 py-0.5 rounded bg-white border border-slate-400 text-sm">OK</button></div>}
