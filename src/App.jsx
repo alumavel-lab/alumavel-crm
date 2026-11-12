@@ -49857,6 +49857,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   mesaRef.current = mesa;
   const [ultimosMesa, setUltimosMesa] = useState({});
   const [verAux, setVerAux] = useState(false); // botón «Auxiliares» junto a los puestos
+  const [verMosqPost, setVerMosqPost] = useState(false); // botón «Mosquiteras y postigos» (otra máquina de corte)
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
   const [camara, setCamara] = useState(false); // lectura con la cámara del móvil
   const [ficha, setFicha] = useState(null);
@@ -50068,12 +50069,13 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           {PUESTOS_LINEA.filter((p) => p.id !== "carga" && p.id !== "controlDia" && (!puestoFijo || p.id === puestoFijo) && (admin || puedePuesto(p.id))).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
-          {((!puestoFijo && !toArray(puestosPermitidos).length) || admin || toArray(puestosPermitidos).includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
+          {((!puestoFijo && !toArray(puestosPermitidos).length) || admin || toArray(puestosPermitidos).includes("auxiliares")) && <button type="button" onClick={() => { setVerAux((v) => !v); setVerMosqPost(false); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
+          {((!puestoFijo && !toArray(puestosPermitidos).length) || admin || toArray(puestosPermitidos).includes("mosqpost")) && <button type="button" onClick={() => { setVerMosqPost((v) => !v); setVerAux(false); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verMosqPost ? "bg-violet-700 text-white border-violet-700" : "bg-white text-violet-800 border-violet-300"}`}>✂ Mosquiteras y postigos</button>}
           {onIrPantalla && toArray(pantallas).map((x) => (
             <button key={`pant_${x.id}`} type="button" onClick={() => onIrPantalla(x.id)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-indigo-400 bg-indigo-50 text-indigo-900 hover:bg-indigo-100">{x.t}</button>
           ))}
         </div>
-        {verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
+        {verMosqPost ? <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div> : verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
