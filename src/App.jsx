@@ -45995,10 +45995,20 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).filter((k) => !primerDiaPlan[k] || primerDiaPlan[k] === f).forEach((k) => {
+      Object.keys(planDias[f] || {}).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
+        const esPrimero = !primerDiaPlan[k] || primerDiaPlan[k] === f;
+        // si el planning la pone en varios días: sale en el primero y, en los siguientes, MIENTRAS LE QUEDEN VENTANAS (sigue de otro día)
+        if (!esPrimero) { if (!o) return; const st0 = stats(o); if (!(st0.total > 0 && st0.n < st0.total)) return; if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o, sigueDe: primerDiaPlan[k] }); } return; }
         if (o) { if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } }
         else out.push({ sinEtiquetas: String((planObras[k] && planObras[k].nombre) || (planDias[f][k] && planDias[f][k].nombre) || k).replace(/ · en fabricación$/, "") });
+      });
+      // TRABAJO DEL DÍA: obras de OTRO día (el de antes o el de después) a las que ese día se les metió alguna ventana en palet
+      obrasAD.forEach((o) => {
+        if (vistas.has(o.key)) return;
+        const st0 = stats(o);
+        const hoyMetidas = st0.filas.filter((fl) => fl.c && toArray(fl.c.ventanas).some((v) => mismaVentana(v, fl.w) && v.fecha === f)).length;
+        if (hoyMetidas > 0) { vistas.add(o.key); out.push({ o, deOtroDia: (o.clavePlan && primerDiaPlan[o.clavePlan]) || "", metidasHoy: hoyMetidas }); }
       });
       const man = (asignManualAD && asignManualAD[f]) || {};
       Object.keys(man).forEach((ko) => { if (!man[ko]) return; const o = obrasAD.find((x) => limpiaAD(x.key) === ko); if (o && !o.clavePlan && !vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } });
@@ -46078,7 +46088,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     salidaRefAD.current = stDiaAll.filter((x) => salidaOk(x.o)).map((x) => { const pr = proyectoDeObra(x.o); return pr ? { pid: pr.id, estado: pr.estadoTrabajo, key: x.o.key, clave: x.o.clavePlan || "", nombre: nombreAD(x.o) } : null; }).filter(Boolean);
     const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
     const nPend = stDia.reduce((a, x) => a + x.pend, 0);
-    const metidasDia = stDiaAll.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
+    // VENTANAS METIDAS EN PALET ESE DÍA: las de las obras que se ven, y además las del REGISTRO del día (cualquier obra, también de otro día
+    // o que ya ha salido de esta pantalla). Se cuenta cada ventana una vez (entra − sale).
+    const metidasObras = stDiaAll.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
+    const metidasRegistro = (() => { const neto = new Map(); Object.values(registroAD || {}).filter((r) => r && r.ts).sort((a, b) => a.ts - b.ts).forEach((r) => { const k = `${r.num || ""}|${r.ventana || ""}|${r.fab || ""}`; if (r.accion === "entra") neto.set(k, 1); else if (r.accion === "sale") neto.delete(k); }); return neto.size; })();
+    const metidasDia = Math.max(metidasObras, metidasRegistro);
     const palesDia = new Map(); stDiaAll.forEach((x) => x.filas.forEach((f) => { if (f.c) palesDia.set(f.c.numero, (palesDia.get(f.c.numero) || 0) + 1); }));
     const etiquetaDia = new Date(diaAD + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
     const incsAbiertasAD = toArray(incsFabAD).filter((i) => i && i.estado !== "Resuelta");
@@ -46193,6 +46207,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div key={o.key} className={`rounded-xl border-2 p-3 space-y-2 ${completa ? "border-emerald-500 bg-emerald-50" : "border-slate-300 bg-white"}`}>
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{nombreAD(o)}</span>
+            {(() => { const it = delDia.find((i) => i.o && i.o.key === o.key); if (!it) return null; if (it.sigueDe) return <span className="text-xs font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900">↪ sigue del {fmtDate(it.sigueDe)}</span>; if (it.deOtroDia !== undefined) return <span className="text-xs font-bold px-2 py-0.5 rounded bg-sky-100 text-sky-900">📅 {it.deOtroDia ? `es del ${fmtDate(it.deOtroDia)}` : "de otro día"} · {it.metidasHoy} metida{it.metidasHoy === 1 ? "" : "s"} este día</span>; return null; })()}
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold px-2 rounded bg-emerald-600 text-white`}>🟢 {pend} montada{pend === 1 ? "" : "s"} en la línea · pendiente{pend === 1 ? "" : "s"} de paletizar</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
@@ -46225,7 +46240,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className={`${g ? "text-2xl" : "text-sm"} flex flex-wrap items-center gap-x-5 gap-y-1`}>
         <span><b>{nEn}</b> de <b>{nTot}</b> ventanas en palet</span>
         {nPend > 0 && <span className={`font-semibold ${g ? "text-sky-300" : "text-sky-700"}`}>{nPend} hechas en fábrica esperando palet</span>}
-        {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día</span>}
+        {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día{metidasRegistro > metidasObras ? ` (${metidasRegistro - metidasObras} de obras de otros días)` : ""}</span>}
         {palesDia.size > 0 && <span className={g ? "text-slate-200" : "text-slate-600"}>Palets: {[...palesDia.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</span>}
       </div>
     );
@@ -57530,6 +57545,27 @@ function auxEmpaquetar(filas, L, sierra, despunte) {
   }
   return { barras, fuera };
 }
+// DOS BARRAS A LA VEZ (la sierra corta dos barras apiladas): se emparejan las piezas iguales (primero la 1/2 y la 2/2 de la misma
+// ventana, luego iguales de otras ventanas) y cada pareja ocupa el mismo sitio en dos barras GEMELAS (A y B, mismos cortes).
+// Las que no tienen pareja van en barras normales.
+function auxEmpaquetarDoble(filas, L, sierra, despunte) {
+  // misma medida; el ángulo da igual (se le da la vuelta a la barra)
+  const igual = (a, b) => Math.abs((Number(a.lCorte) || 0) - (Number(b.lCorte) || 0)) < 0.5;
+  const usados = new Set(); const pares = [];
+  const porVent = new Map(); filas.forEach((x) => { const g = auxVentanaDe(x); if (!porVent.has(g)) porVent.set(g, []); porVent.get(g).push(x); });
+  porVent.forEach((xs) => { const ord = [...xs].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)); for (let i = 0; i < ord.length; i++) { if (usados.has(ord[i].id)) continue; const j = ord.findIndex((y, jj) => jj > i && !usados.has(y.id) && igual(ord[i], y)); if (j > 0) { usados.add(ord[i].id); usados.add(ord[j].id); pares.push([ord[i], ord[j]]); } } });
+  const resto = filas.filter((x) => !usados.has(x.id)).sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxVentanaDe(a).localeCompare(auxVentanaDe(b)));
+  for (let i = 0; i < resto.length; i++) { if (usados.has(resto[i].id)) continue; const j = resto.findIndex((y, jj) => jj > i && !usados.has(y.id) && igual(resto[i], y)); if (j > 0) { usados.add(resto[i].id); usados.add(resto[j].id); pares.push([resto[i], resto[j]]); } }
+  const sueltas = filas.filter((x) => !usados.has(x.id));
+  const unidades = pares.map(([a, b]) => ({ ...a, id: `${a.id}~${b.id}`, _par: [a, b] }));
+  const e = auxEmpaquetar(unidades, L, sierra, despunte);
+  const barras = [];
+  e.barras.forEach((b, i) => { const base = { usado: b.usado, sobra: b.sobra, util: b.util, parDoble: i + 1 }; barras.push({ ...base, piezas: b.piezas.map((u) => u._par[0]), esA: true }, { ...base, piezas: b.piezas.map((u) => u._par[1]), esB: true }); });
+  const s = auxEmpaquetar(sueltas, L, sierra, despunte); s.barras.forEach((b) => barras.push(b));
+  return { barras, fuera: [...e.fuera.flatMap((x) => (x.p && x.p._par ? x.p._par.map((p) => ({ p, motivo: x.motivo })) : [x])), ...s.fuera], doble: true };
+}
+// orden de corte de un plan: en las barras gemelas, pieza A y pieza B seguidas (salen las 2 etiquetas de cada golpe)
+const auxOrdenPlan = (barras) => { const out = []; toArray(barras).forEach((b, i, arr) => { if (b.esB) return; if (b.esA && arr[i + 1] && arr[i + 1].esB) { b.piezas.forEach((x, j) => { out.push(x); if (arr[i + 1].piezas[j]) out.push(arr[i + 1].piezas[j]); }); return; } out.push(...b.piezas); }); return out; };
 function auxEmpaquetarSuelto(filas, L, sierra, despunte) {
   const cap = L - (despunte || 0); const barras = []; const fuera = [];
   [...filas].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)).forEach((p) => {
@@ -57966,6 +58002,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
   // POR VIVIENDA: cada perfil se puede repartir en barras vivienda a vivienda (el solape, por defecto). Se recuerda en este ordenador.
   const [porViviendaAux, setPorViviendaAux] = useEstadoLocal("auxPorVivienda", {});
+  // DOS BARRAS A LA VEZ (sierra que corta dos barras apiladas): el solape, por defecto
+  const [dobleBarraAux, setDobleBarraAux] = useEstadoLocal("auxDobleBarra", {});
   const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
   const [diasPorObra, setDiasPorObra] = useState([]);
   const [diasSel, setDiasSel] = useState([]);
@@ -58587,15 +58625,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               });
               const porViv = porViviendaAux[r.k] != null ? !!porViviendaAux[r.k] : /solape/i.test(String(r.p.nombre || ""));
               r.porViv = porViv;
+              const doble = dobleBarraAux[r.k] != null ? !!dobleBarraAux[r.k] : /solape/i.test(String(r.p.nombre || ""));
+              r.doble = doble; const empq = doble ? auxEmpaquetarDoble : auxEmpaquetar;
               const vivDe = (x) => `${pptoBonito(x.ppto)}${x.grupo ? ` · ${x.grupo}` : ""}`;
               if (porViv && new Set(pend.map(vivDe)).size > 1) {
                 // cada vivienda (presupuesto + vivienda) en sus propias barras, una detrás de otra
                 const grupos = new Map(); pend.forEach((x) => { const g = vivDe(x); if (!grupos.has(g)) grupos.set(g, []); grupos.get(g).push(x); });
                 const barras = []; const fuera = [];
-                [...grupos.entries()].sort((a, b) => auxCmp(a[0], b[0])).forEach(([g, xs]) => { const e = auxEmpaquetar(xs, BL, KF, DP); e.barras.forEach((b) => { b.vivienda = g; barras.push(b); }); fuera.push(...e.fuera); });
-                r.emp = { barras, fuera }; r.barrasDeMas = barras.length - auxEmpaquetar(pend, BL, KF, DP).barras.length;
-              } else { r.emp = auxEmpaquetar(pend, BL, KF, DP); r.barrasDeMas = 0; }
-              r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
+                [...grupos.entries()].sort((a, b) => auxCmp(a[0], b[0])).forEach(([g, xs]) => { const e = empq(xs, BL, KF, DP); e.barras.forEach((b) => { b.vivienda = g; barras.push(b); }); fuera.push(...e.fuera); });
+                r.emp = { barras, fuera }; r.barrasDeMas = barras.length - empq(pend, BL, KF, DP).barras.length;
+              } else { r.emp = empq(pend, BL, KF, DP); r.barrasDeMas = 0; }
+              r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...auxOrdenPlan(r.emp.barras), ...r.emp.fuera.map((x) => x.p)];
             });
             // (no se vacía: con varios días abiertos a la vez, cada uno añade el plan de sus barras)
             refs.forEach((r) => (r.emp.barras || []).forEach((b) => { const inf = { ids: b.piezas.map((x) => x.id), sobra: b.sobra, ref: String(r.p.ref), nombre: r.p.nombre, color: r.p.color, min: minDe(r.p.ref) }; b.piezas.forEach((x) => { planBarrasRef.current[x.id] = inf; }); }));
@@ -58663,6 +58703,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} por cortar</span>{(() => { const n = piezas.filter((p) => `${p.ref}|${p.nombre}|${p.color || ""}` === r.k && dias.includes(diaDe(p.ppto)) && est && est[p.id] && est[p.id].cortada).length; return n ? <span className="text-sm font-bold text-emerald-700">✂ {n} cortadas</span> : null; })()}<span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
                     <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <label className="flex items-center gap-1 text-xs font-bold text-violet-900 bg-violet-50 border border-violet-300 rounded px-2 py-0.5" title="Repartir las barras vivienda a vivienda (cada vivienda en sus barras)"><input type="checkbox" checked={!!r.porViv} onChange={(e) => setPorViviendaAux({ ...porViviendaAux, [r.k]: e.target.checked })} /> 🏠 Por vivienda{r.porViv && r.barrasDeMas > 0 ? ` (+${r.barrasDeMas} barra${r.barrasDeMas === 1 ? "" : "s"})` : ""}</label>
+                      <label className="flex items-center gap-1 text-xs font-bold text-fuchsia-900 bg-fuchsia-50 border border-fuchsia-300 rounded px-2 py-0.5" title="La sierra corta dos barras apiladas: el plan hace barras gemelas (mismos cortes)"><input type="checkbox" checked={!!r.doble} onChange={(e) => setDobleBarraAux({ ...dobleBarraAux, [r.k]: e.target.checked })} /> ✌ 2 barras a la vez</label>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
@@ -58700,7 +58741,27 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                         {u.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
                       </div>
                     ))}
-                    {r.emp.barras.map((b, bi) => (
+                    {r.emp.barras.map((b, bi) => b.esB ? null : b.esA && r.emp.barras[bi + 1] && r.emp.barras[bi + 1].esB ? (() => {
+                      // BARRAS GEMELAS: se cortan las dos a la vez; cada fila = un golpe de sierra = 2 piezas y 2 etiquetas
+                      const B2 = r.emp.barras[bi + 1]; const ctxB = { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) };
+                      const sinC = (z) => z && !(est && est[z.id] && est[z.id].cortada);
+                      const quedan = b.piezas.flatMap((x, j) => [x, B2.piezas[j]]).filter(sinC);
+                      return (
+                        <div key={bi} className="mt-2 rounded-lg border-2 border-fuchsia-400 overflow-hidden">
+                          <div className="bg-fuchsia-100 px-2 py-1 text-xs font-bold text-fuchsia-900 flex flex-wrap items-center gap-x-3">
+                            <span>✌ Barras {bi + 1} y {bi + 2} de {r.emp.barras.length} · SE CORTAN LAS DOS A LA VEZ</span>{b.vivienda && <span>🏠 {b.vivienda}</span>}<span>{b.piezas.length} golpe{b.piezas.length === 1 ? "" : "s"} ({b.piezas.length * 2} piezas)</span><span>sobran {Math.round(b.sobra)} mm en cada una</span>
+                            {quedan.length > 1 && <button type="button" onClick={() => { if (window.confirm(`¿Cortar las barras ${bi + 1} y ${bi + 2} enteras (${quedan.length} piezas, ${quedan.length} etiquetas seguidas)?`)) cortarVarias(quedan, ctxB); }} className="px-2 py-0.5 rounded bg-[#2E8B57] text-white font-bold">✂ Cortar las 2 barras enteras ({quedan.length})</button>}
+                          </div>
+                          <div className="flex h-2 bg-slate-200">{b.piezas.map((x, xi) => <div key={xi} title={`${auxMed(x.lCorte)} mm`} style={{ width: `${((Number(x.lCorte) + KF) / BL) * 100}%` }} className={`${xi % 2 ? "bg-fuchsia-400" : "bg-fuchsia-600"} border-r border-white`} />)}</div>
+                          {b.piezas.map((x, j) => { const y = B2.piezas[j]; const faltan = [x, y].filter(sinC); return (
+                            <div key={x.id} className="border-b border-fuchsia-100 px-1">
+                              <div className="flex items-center gap-2 text-xs font-bold text-fuchsia-900 pt-1">Golpe {j + 1}: 2 × {auxMed(x.lCorte)} mm{faltan.length > 0 && <button type="button" onClick={() => cortarVarias(faltan, ctxB)} className="px-2 py-0.5 rounded bg-fuchsia-600 text-white">✂ Cortado ({faltan.length} etiqueta{faltan.length === 1 ? "" : "s"})</button>}</div>
+                              {fila(x, true, ctxB)}{y && fila(y, true, ctxB)}
+                            </div>
+                          ); })}
+                        </div>
+                      );
+                    })() : (
                       <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
                         <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
                           <span>Barra {bi + 1} de {r.emp.barras.length}</span>{b.vivienda && <span className="text-violet-800">🏠 {b.vivienda}</span>}<span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
@@ -58716,19 +58777,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           )}
                         </div>
                         <div className="flex h-2 bg-slate-200">{b.piezas.map((x, xi) => <div key={xi} title={`${auxMed(x.lCorte)} mm`} style={{ width: `${((Number(x.lCorte) + KF) / BL) * 100}%` }} className={`h-2 border-r border-white ${xi % 2 ? "bg-indigo-400" : "bg-indigo-600"}`} />)}</div>
-                        {(() => {
-                          // CORTAR DOS A LA VEZ: las piezas iguales seguidas de la misma ventana (1/2 y 2/2) se cortan juntas con sus 2 etiquetas
-                          const ctxB = { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }; const out = []; const ps = b.piezas;
-                          for (let i = 0; i < ps.length; i++) {
-                            const x = ps[i], y = ps[i + 1]; const sinC = (z) => z && !(est && est[z.id] && est[z.id].cortada);
-                            if (y && sinC(x) && sinC(y) && auxVentanaDe(x) === auxVentanaDe(y) && Math.abs((Number(x.lCorte) || 0) - (Number(y.lCorte) || 0)) < 0.5 && (x.angulo || "") === (y.angulo || "")) {
-                              out.push(<div key={`par-${x.id}`} className="border-l-4 border-violet-400 pl-1 my-1"><div className="flex items-center gap-2 text-xs font-bold text-violet-900">✌ Misma ventana y medida <button type="button" onClick={() => cortarVarias([x, y], ctxB)} className="px-2 py-0.5 rounded bg-violet-600 text-white">✂ Cortar las 2 a la vez</button></div>{fila(x, true, ctxB)}{fila(y, true, ctxB)}</div>);
-                              i++; continue;
-                            }
-                            out.push(fila(x, true, ctxB));
-                          }
-                          return out;
-                        })()}
+                        {b.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
                       </div>
                     ))}
                     {r.emp.fuera.length > 0 && (
@@ -60800,7 +60849,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
   };
   // El contador del ritmo empieza a CERO cada día: solo cuenta lo marcado en verde en ESTE día (no lo que viene heredado de días anteriores)
-  const hechasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
+  // y TAMBIÉN las ventanas ticadas ESTE DÍA en obras de otro día (la de ayer que se terminó hoy, la de mañana que se adelantó):
+  // se cuentan por la HORA en que se marcaron (controlDiaHoras), sea cual sea el día de la obra
+  const hechasObrasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
+  const hechasOtrosDias = (() => {
+    let n = 0;
+    Object.entries(horasTodas || {}).forEach(([fd, obs]) => { if (fd === dia) return; Object.entries(obs || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([idv, ms]) => {
+      if (!ms || new Date(Number(ms)).toLocaleDateString("sv-SE") !== dia) return;
+      if ((((marcasTodas || {})[fd] || {})[ko] || {})[idv] === 1) n++;
+    })); });
+    return n;
+  })();
+  const hechasDia = hechasObrasDia + hechasOtrosDias;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
   const pistolaCD = (grande) => (
@@ -60810,7 +60870,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {msgPist && <span className={`w-full ${grande ? "text-2xl" : "text-sm"} font-bold px-2 py-1 rounded ${msgPist.ok ? (msgPist.rep ? "bg-sky-100 text-sky-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{msgPist.t}</span>}
     </div>
   );
-  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})` : "Empieza a cero cada día"} />;
+  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})${hechasOtrosDias ? ` · ${hechasOtrosDias} de obras de otros días` : ""}` : "Empieza a cero cada día"} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
