@@ -3116,9 +3116,11 @@ export default function App() {
   // un pedido de Uxcar, la entrada también se guarda en su portal.
   // desdeFabrica: la entrada la da fábrica. Fábrica NO cierra el pedido en oficina: las líneas quedan confirmadas por fábrica
   // (la obra sigue su camino) pero el pedido y las líneas siguen abiertos en oficina hasta que oficina los cierre ella misma.
-  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica, sinUbicar }) => {
+  const recibirPedidoConAlbaran = (pedidoId, { filas: filas0, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica, sinUbicar, reentrada }) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
+    // VOLVER A METER: solo las persianas entran otra vez en el almacén; el stock, los cristales y el pedido no se tocan
+    const filas = reentrada ? toArray(filas0).map((f) => (f.tipo === "persiana" ? f : { ...f, llega: 0, rotos: 0 })) : filas0;
     const hoy = new Date().toISOString().slice(0, 10);
     const proveedorNombre = proveedores.find((pr) => pr.id === pedido.proveedorId)?.nombre || pedido.proveedorExterno || "Proveedor";
     const porId = Object.fromEntries(filas.map((f) => [f.lineaId, f]));
@@ -3249,6 +3251,12 @@ export default function App() {
       nuevasPers.length ? `${nuevasPers.length} persianas pendientes de ubicar` : "",
       rotosTotal ? `${rotosTotal} rotos` : "",
     ].filter(Boolean).join(" · ");
+    if (reentrada) {
+      if (nuevasPers.length) savePersianasAlmacen([...persianasAlmacen, ...nuevasPers]);
+      savePedidos(pedidos.map((p) => (p.id === pedidoId ? JSON.parse(JSON.stringify({ ...pedido, recepciones: [...toArray(pedido.recepciones), { ...recep, reentrada: true, nota: "Persianas vueltas a meter en el almacén (no cambia lo recibido)" }] })) : p)));
+      showToast(`${nuevasPers.length} persianas vueltas a meter en «Pendientes de ubicar». El pedido no cambia.`);
+      return { pedido: pedido.numero, completo: true, rotos: 0, aStock: 0, cristalesYaEstaban: [], cristales: [], persianas: nuevasPers.map((x) => ({ ref: x.ref || "", medida: `${x.largo || x.ancho || "?"} mm`, expediente: x.expediente || "", donde: "Pendientes de ubicar" })) };
+    }
     const pedidoNuevo = { ...pedido, lineas, recepciones: [...toArray(pedido.recepciones), recep], albaranComprobado: { fecha: new Date().toISOString(), archivo: archivo || "" },
       avisoRecepcion: { fecha: new Date().toISOString(), por: recep.por || "Fábrica", porId: currentUser ? currentUser.id : "", completo: todo, resumen: resumenAviso, vistoPor: {} },
       ...(todo ? (desdeFabrica ? { recepcionParcial: false, fabricaDaPorLlegado: hoy } : { estado: "Recibido", fechaRecibido: hoy, recepcionParcial: false }) : { recepcionParcial: true }) };
@@ -14594,13 +14602,14 @@ async function leerAlbaranRecepcion(file) {
   };
 }
 // Cruza lo del albarán con las líneas del pedido que aún están pendientes
-const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
+const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea, opts = {}) => {
   const alb = lineasAlb.map((a, i) => ({ ...a, i, resto: parseFloat(a.cantidad) || 0 }));
   const filas = toArray(pedido.lineas).map((l) => {
     const pedida = parseFloat(l.cantidad) || 0;
     const ya = parseFloat(l.recibidoBien) || 0;
-    const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
     const tipo = tipoLineaRecepcion(l, pedido);
+    // VOLVER A METER (persianas borradas del almacén): la línea cuenta entera aunque ya conste como recibida
+    const pend = opts.reentrada && tipo === "persiana" ? pedida : Math.max(0, Math.round((pedida - ya) * 100) / 100);
     const nombre = nombreLinea(l);
     let llega = 0, precioAlb = 0, caballete = "", ref = "", refObra = "", pedidoProv = "";
     const toma = (a, n) => { const t = Math.min(a.resto, n); a.resto -= t; llega += t; if (a.precio) precioAlb = a.precio; if (!caballete && a.caballete) caballete = a.caballete; if (!ref && a.ref) ref = a.ref; if (!refObra && a.refObra) refObra = a.refObra; if (!pedidoProv && a.pedidoProv) pedidoProv = a.pedidoProv; };
@@ -14675,7 +14684,7 @@ function DondeEstaPedido({ pedido, proyectos }) {
     </div>
   );
 }
-function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante, infoInicial }) {
+function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante, infoInicial, reentrada = false }) {
   const [informe, setInforme] = useState(null); // dónde ha ido cada cristal y cada persiana al confirmar la entrada
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
@@ -14695,10 +14704,10 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   // Albarán ya leído desde fuera (Fábrica → Materiales pendientes): no se vuelve a leer, solo se compara con este pedido
   useEffect(() => {
     if (infoInicial && toArray(infoInicial.lineas).length) {
-      const r = emparejarAlbaran(pedido, infoInicial.lineas, materiales, nombreLinea);
+      const r = emparejarAlbaran(pedido, infoInicial.lineas, materiales, nombreLinea, { reentrada });
       setLectura({ ...r, archivo: infoInicial.archivo || "", info: infoInicial });
     }
-  }, [infoInicial, pedido.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [infoInicial, pedido.id, reentrada]); // eslint-disable-line react-hooks/exhaustive-deps
   const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
   const num = (v) => Math.max(0, parseFloat(v) || 0);
   // Recepción a mano, sin foto de albarán: se enseñan las líneas pendientes con lo que
@@ -14721,7 +14730,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   const confirmar = () => {
     const filas = lectura.filas.map((f) => ({ ...f, llega: num(f.llega), rotos: Math.min(num(f.rotos), num(f.llega)) }));
     if (!filas.some((f) => f.llega > 0)) { setError("No hay nada que recibir: pon cuántas han llegado."); return; }
-    const inf = onRecibirConAlbaran({ filas, archivo: lectura.archivo, numeroAlbaran: lectura.info.numeroAlbaran, numeroPedidoProveedor: lectura.info.numeroPedido });
+    const inf = onRecibirConAlbaran({ filas, archivo: lectura.archivo, numeroAlbaran: lectura.info.numeroAlbaran, numeroPedidoProveedor: lectura.info.numeroPedido, reentrada });
     setLectura(null);
     if (inf) setInforme(inf);
   };
@@ -22985,6 +22994,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
+  const [reentradaAlb, setReentradaAlb] = useState(false); // volver a meter en el almacén persianas de un pedido ya recibido
   const [selId, setSelId] = useState("");
   const [pptoAlb, setPptoAlb] = useState(""); // nº de presupuesto (Edmo) del albarán: opcional, ayuda a encontrar el pedido
   const inputRef = useRef(null);
@@ -23089,8 +23099,13 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
           )}
           {elegido && (
             <>
-              <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
-                puedeRecibir={false} infoInicial={lect}
+              {(() => { const persL = toArray(elegido.p.lineas).filter((l) => tipoLineaRecepcion(l, elegido.p) === "persiana"); const yaRec = persL.length > 0 && persL.every((l) => (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0)); return (yaRec || reentradaAlb) ? (
+                <label className={`flex items-start gap-2 rounded-lg border-2 px-3 py-2 text-sm ${reentradaAlb ? "border-amber-500 bg-amber-50" : "border-slate-300 bg-white"}`}>
+                  <input type="checkbox" className="mt-0.5" checked={reentradaAlb} onChange={(e) => setReentradaAlb(e.target.checked)} />
+                  <span><b>🔁 Volver a meter estas persianas en el almacén</b> (este pedido ya consta como recibido; por ejemplo, se borraron de los carros). Entran en «Pendientes de ubicar» y <b>no</b> cambia el pedido ni el stock.</span>
+                </label>) : null; })()}
+              <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}-${reentradaAlb ? "re" : ""}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
+                puedeRecibir={false} infoInicial={lect} reentrada={reentradaAlb}
                 onRecibirConAlbaran={(datos) => onRecibirConAlbaran(elegido.p.id, datos)} onCrearPedidoFaltante={onCrearPedidoFaltante} />
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <button type="button" onClick={cerrarTodo} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 px-3.5 py-2 rounded-md"><CheckCircle2 size={15} /> Dar el pedido por completo (quitarlo de pendientes)</button>
