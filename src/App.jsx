@@ -48097,7 +48097,11 @@ function anunciarFinImpresion(texto, cuantas) {
 let _secImpresionActiva = null; // tanda de pegatinas en marcha (si se lanza otra, la anterior se cancela: si no, su pegatina se imprimía junto con la nueva)
 function imprimirSecuencia(htmls, opc = null, finTxt = "") {
   const PAUSA_MS = 4000;
+  // EN COLA: si ya se está imprimiendo una tanda (y esta no va con pistola), las nuevas se AÑADEN detrás en vez de cancelar la anterior
+  // (antes, al sacar la siguiente pegatina muy seguido, la que se estaba imprimiendo se perdía aunque la pieza quedaba como cortada)
+  try { if (_secImpresionActiva && _secImpresionActiva.anadir && !(opc && opc.leidas) && _secImpresionActiva.anadir(htmls)) return; } catch (e) { /* nada */ }
   try { if (_secImpresionActiva) _secImpresionActiva(); } catch (e) { /* nada */ }
+  htmls = [...toArray(htmls)];
   try { document.querySelectorAll("#pegatina-print").forEach((e) => e.remove()); } catch (e) { /* nada */ }
   const modoPistola = !!(opc && opc.leidas && Array.isArray(opc.codigos));
   // el botón pulsado conserva el foco: la pistola escribe el código + Enter y ese Enter volvería a pulsarlo (imprimiría otra pegatina)
@@ -48128,6 +48132,8 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
   const enfocarLector = () => { try { const el = document.querySelector('input[placeholder^="Pasa la pistola por la etiqueta"]'); if (el && document.activeElement !== el) el.focus(); } catch (e) { /* nada */ } };
   const limpiar = () => { try { estilo.remove(); cont.remove(); caja.remove(); } catch (e) { /* nada */ } };
   const abortar = () => { parar = true; limpiar(); };
+  let cerrada = false;
+  abortar.anadir = (hs) => { if (parar || cerrada || modoPistola) return false; htmls.push(...toArray(hs)); return true; };
   _secImpresionActiva = abortar;
   (async () => {
     let hechas = 0;
@@ -48165,8 +48171,11 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
         }
       } else if (i < htmls.length - 1 || !(opc && opc.sinAviso)) {
         await espera(PAUSA_MS);
+      } else {
+        await espera(1500); // la última: un respiro por si llega otra en cola
       }
     }
+    cerrada = true;
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
     if (!parar && hechas > 0 && !(opc && opc.sinAviso)) anunciarFinImpresion(finTxt || "las pegatinas", hechas);
     if (_secImpresionActiva === abortar) _secImpresionActiva = null;
