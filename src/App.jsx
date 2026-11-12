@@ -57490,7 +57490,45 @@ function pptosConGuiaProveedor(ctx) {
   return set;
 }
 // Reparte las piezas en barras de largo L: cada pieza gasta su medida + lo que come la sierra; el despunte se resta a cada barra.
+// PIEZAS DE LA MISMA VENTANA SEGUIDAS: se empaquetan juntas (la ventana entera en la misma barra si cabe) y, dentro de cada barra,
+// van ordenadas por ventana. Si juntarlas gastara más de una barra de más que el reparto suelto, se usa el suelto (pero ordenado por ventana).
+const auxVentanaDe = (x) => `${x.ppto || ""}|${x.ventanaPos || ""}|${x.modelo || ""}|${x.unidad || ""}`;
 function auxEmpaquetar(filas, L, sierra, despunte) {
+  const suelto = auxEmpaquetarSuelto(filas, L, sierra, despunte);
+  const cap = L - (despunte || 0); const k = sierra || 0;
+  const fuera = []; const grupos0 = new Map();
+  filas.forEach((p) => { const l = Number(p.lCorte) || 0; if (!(l > 0)) { fuera.push({ p, motivo: "sin medida" }); return; } if (l + k > cap) { fuera.push({ p, motivo: "más larga que la barra" }); return; } const g = auxVentanaDe(p); if (!grupos0.has(g)) grupos0.set(g, []); grupos0.get(g).push(p); });
+  const grupos = [...grupos0.values()].map((ps) => ps.sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)));
+  const tot = (ps) => ps.reduce((t, p) => t + (Number(p.lCorte) || 0) + k, 0);
+  // se prueban varios órdenes (por largo total, por la pieza más larga, por número de piezas) y se queda el que menos barras gasta
+  const probar = (orden) => {
+    const barras = [];
+    const meter = (ps) => { const need = tot(ps); let mejor = -1, hueco = Infinity; barras.forEach((b, i) => { const libre = cap - b.usado; if (libre >= need && libre - need < hueco) { hueco = libre - need; mejor = i; } }); if (mejor < 0) { if (need > cap) return false; barras.push({ piezas: [], usado: 0 }); mejor = barras.length - 1; } barras[mejor].piezas.push(...ps); barras[mejor].usado += need; return true; };
+    [...grupos].sort(orden).forEach((ps) => { if (!meter(ps)) ps.forEach((p) => meter([p])); }); // la ventana no cabe entera en una barra: sus piezas sueltas
+    return barras;
+  };
+  const ordenes = [(a, b) => tot(b) - tot(a), (a, b) => (b[0].lCorte || 0) - (a[0].lCorte || 0) || tot(b) - tot(a), (a, b) => b.length - a.length || tot(b) - tot(a), (a, b) => (b[0].lCorte || 0) * b.length - (a[0].lCorte || 0) * a.length];
+  let barras = null; ordenes.forEach((o) => { const r = probar(o); if (!barras || r.length < barras.length) barras = r; });
+  barras = barras || [];
+  barras.forEach((b) => { b.sobra = cap - b.usado; b.util = b.piezas.reduce((a, x) => a + (Number(x.lCorte) || 0), 0); });
+  if (barras.length > suelto.barras.length) {
+    // juntarlas gastaría más barras: reparto suelto, pero dentro de cada barra las piezas de la misma ventana seguidas
+    // y las barras en un orden en que la ventana partida acabe una barra y empiece la siguiente (así sale seguida al cortar)
+    const ven = (b) => new Set(b.piezas.map(auxVentanaDe)); const comun = (a, b) => { const sa = ven(a); return [...ven(b)].filter((g) => sa.has(g)); };
+    const resto = [...suelto.barras]; const orden = [resto.shift()].filter(Boolean);
+    while (resto.length) { const ult = orden[orden.length - 1]; let mi = 0, mx = -1; resto.forEach((b, i) => { const c = comun(ult, b).length; if (c > mx) { mx = c; mi = i; } }); orden.push(resto.splice(mi, 1)[0]); }
+    orden.forEach((b, i) => {
+      const P = new Set(i > 0 ? comun(orden[i - 1], b) : []); const N = new Set(i < orden.length - 1 ? comun(b, orden[i + 1]) : []);
+      const pos = new Map(); b.piezas.forEach((x, j) => { const g = auxVentanaDe(x); if (!pos.has(g)) pos.set(g, j); });
+      const nivel = (x) => { const g = auxVentanaDe(x); return P.has(g) ? 0 : N.has(g) ? 2 : 1; };
+      b.piezas.sort((x, y) => nivel(x) - nivel(y) || pos.get(auxVentanaDe(x)) - pos.get(auxVentanaDe(y)));
+    });
+    suelto.barras = orden; suelto.ventanasPartidas = true;
+    return suelto;
+  }
+  return { barras, fuera };
+}
+function auxEmpaquetarSuelto(filas, L, sierra, despunte) {
   const cap = L - (despunte || 0); const barras = []; const fuera = [];
   [...filas].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)).forEach((p) => {
     const l = Number(p.lCorte) || 0;
