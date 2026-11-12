@@ -57294,7 +57294,9 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
         // Filas de PERFILES: salen al revés: "ángulo L.Corte L.Final COLOR ToT descripción REF Ud"
         if ((m = linea.match(new RegExp(`º\\s*(${AUX_NUM})\\s*(${AUX_NUM})(.*?)${re}\\s+(\\d+)\\s*$`)))) {
           const cm = m[3].match(AUX_COLOR_RE);
-          filas.push({ ref, desc: m[3].replace(AUX_COLOR_RE, "").replace(/^\s*\d+/, "").trim(), color: cm ? cm[1].toUpperCase() : "", lCorte: auxNum(m[1]), lFinal: auxNum(m[2]), tot: parseInt(m[4], 10) * uds, ud: parseInt(m[4], 10) });
+          // ÁNGULO DE CORTE: la fila empieza por él («45º -45 º…», «90º -90 º…»): va en la pegatina
+          const angM = linea.match(/^\s*(\d{1,3})\s*[º°]\s*(-?)\s*(\d{1,3})\s*[º°]/);
+          filas.push({ ref, desc: m[3].replace(AUX_COLOR_RE, "").replace(/^\s*\d+/, "").trim(), color: cm ? cm[1].toUpperCase() : "", lCorte: auxNum(m[1]), lFinal: auxNum(m[2]), tot: parseInt(m[4], 10) * uds, ud: parseInt(m[4], 10), angulo: angM ? `${angM[1]}° ${angM[2]}${angM[3]}°` : "" });
           return;
         }
         // Junta de ensanche (sin ángulo): "L.Corte L.Final ToT descripción REF Ud", medidas en metros
@@ -58948,6 +58950,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                             <div key={o.k} title="Toca para subir la hoja de corte de esta obra" onClick={() => { if (leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 cursor-pointer hover:bg-rose-100">
                               <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
                               <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
+                              {(() => { const mias = toArray(pendientes).filter((p) => o.pres.has(digitosPresu(String(p.ppto).split("-")[0]))); const cort = toArray(piezas).filter((p) => o.pres.has(digitosPresu(String(p.ppto).split("-")[0]))).length - mias.length; return (
+                                <div className="mt-0.5 text-xs font-bold text-slate-800">📅 Se corta el {o.dia ? fmtDate(o.dia) : "— (sin día)"} · {mias.length || cort > 0 ? `faltan ${mias.length} pieza${mias.length === 1 ? "" : "s"}${cort > 0 ? ` (${cort} ya cortada${cort === 1 ? "" : "s"})` : ""}` : "piezas: sin hoja no sé cuántas"}</div>
+                              ); })()}
                               <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ No tiene nº de presupuesto en la ficha: sube aquí su hoja de corte y lo leo de ella" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
                               {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}{[...o.pres].some((pp) => hojasUxDe(pp).length) && <button type="button" disabled={leyendo} title="Relee la hoja de corte guardada (la de los documentos de la obra o la que dejó Uxcar)" onClick={(e) => { e.stopPropagation(); releerUxcar([...o.pres].find((pp) => hojasUxDe(pp).length)); }} className="mt-1 flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-sky-600 text-sky-700 bg-white hover:bg-sky-50 disabled:opacity-60"><RefreshCw size={12} /> Releer la guardada</button>}
                             </div>
