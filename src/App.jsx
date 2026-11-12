@@ -56263,12 +56263,14 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
 function ActividadUsuarioModal({ u, onCerrar }) {
   const [escaneos, setEscaneos] = useState([]);
   const [incs, setIncs] = useState([]);
+  const [auxP, setAuxP] = useState({}); // piezas de AUXILIARES cortadas (doble cabezal), leídas y comprobadas
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   useEffect(() => {
     const a = onValue(ref(fbDb, "escaneosLinea"), (snap) => setEscaneos(toArray(snap.val())), () => {});
     const b = onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncs(toArray(snap.val())), () => {});
-    return () => { a(); b(); };
+    const c = onValue(ref(fbDb, "auxiliaresPiezas"), (snap) => setAuxP(snap.val() || {}), () => {});
+    return () => { a(); b(); c(); };
   }, []);
   const nombre = `${u.nombre} ${u.apellidos || ""}`.trim();
   const fechaDe = (ts) => new Date(ts).toLocaleDateString("sv-SE");
@@ -56277,6 +56279,16 @@ function ActividadUsuarioModal({ u, onCerrar }) {
   escaneos.forEach((x) => {
     const mio = x.porId ? x.porId === u.id : String(x.por || "").trim() === nombre; // las lecturas antiguas no guardaban el id: se reconocen por el nombre
     if (mio && enRango(x.ts)) filas.push({ ts: x.ts, tipo: "Lectura", puesto: x.puestoNombre || x.puestoId, obra: x.obraNombre || "", detalle: `${x.pos || ""} ${x.pieza || ""}`.trim(), aviso: x.porId ? "" : "(identificada por nombre)" });
+  });
+  // AUXILIARES: lo cortado (pegatina AX), lo leído con la pistola y lo comprobado por este usuario
+  const esYo = (t) => { const a = String(t || "").trim().toLowerCase(); return !!a && (a === nombre.toLowerCase() || a === String(u.nombre || "").trim().toLowerCase()); };
+  Object.values(auxP || {}).forEach((e) => {
+    if (!e) return;
+    const det = `${e.cod || ""} · ${e.nombre || ""} ${e.lCorte ? auxMed(e.lCorte) + " mm" : ""}${e.ventanaPos ? " · " + e.ventanaPos : ""}`.trim();
+    const obra = e.ppto ? `Ppto ${pptoBonito(e.ppto)}` : e.obra || "";
+    if (e.cortada && e.cortadaAt && esYo(e.por) && enRango(e.cortadaAt)) filas.push({ ts: e.cortadaAt, tipo: "Auxiliar cortado", puesto: "Doble cabezal (auxiliares)", obra, detalle: det, aviso: "" });
+    if (e.leida && e.leida.at && esYo(e.leida.por) && enRango(e.leida.at)) filas.push({ ts: e.leida.at, tipo: "Auxiliar leído (pistola)", puesto: "Auxiliares", obra, detalle: det, aviso: "" });
+    if (e.comprobada && e.comprobada.at && esYo(e.comprobada.por) && enRango(e.comprobada.at)) filas.push({ ts: e.comprobada.at, tipo: "Auxiliar comprobado", puesto: "Auxiliares", obra, detalle: det, aviso: "" });
   });
   incs.forEach((i) => {
     if (i.creadaPor && i.creadaPor.id === u.id && enRango(i.creadaTs)) filas.push({ ts: i.creadaTs, tipo: "Incidencia creada", puesto: i.puesto || "", obra: i.obra || "", detalle: `${i.tipo ? i.tipo + ": " : ""}${i.texto || ""}`, aviso: "" });
