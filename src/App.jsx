@@ -57942,6 +57942,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
               <label className="flex items-center gap-0.5 text-xs font-bold text-rose-700" title="Milímetros que se RESTAN a la medida de la hoja de corte en cada pieza de este perfil">−<input type="number" min="0" step="0.5" value={r.menos ?? ""} onChange={(e) => upRef(i, { menos: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
               <label className="flex items-center gap-0.5 text-xs font-bold text-emerald-700" title="Milímetros que se SUMAN a la medida de la hoja de corte en cada pieza de este perfil">+<input type="number" min="0" step="0.5" value={r.mas ?? ""} onChange={(e) => upRef(i, { mas: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
+              <select value={auxPuestoDeRef(r, r.ref)} onChange={(e) => upRef(i, { puestoCorte: e.target.value })} title="En qué máquina/puesto se corta este perfil" className={campo + " w-48"}>{AUX_PUESTOS_CORTE.map((pc) => <option key={pc.id} value={pc.id}>Se corta en: {pc.nombre}</option>)}</select>
               <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}><option value="">Carro: automático (por el nombre)</option>{auxTiposCarro(b).map((tc) => <option key={tc.id} value={tc.id}>Carro: {tc.nombre}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
@@ -58002,6 +58003,11 @@ function AuxConfigPanel({ cfg, onGuardar }) {
   );
 }
 
+// PUESTO DE CORTE de cada perfil auxiliar: el doble cabezal (por defecto) o «Mosquiteras y postigos» (otra máquina).
+// Estos 4 van a Mosquiteras y postigos salvo que en la configuración se diga otra cosa.
+const AUX_REFS_MOSQ_POSTIGO = ["M05904", "MPLX42240", "COR-2366", "COR-7228"];
+const AUX_PUESTOS_CORTE = [{ id: "doble", nombre: "Doble cabezal (Auxiliares)" }, { id: "mosqpost", nombre: "Mosquiteras y postigos" }];
+const auxPuestoDeRef = (r, ref) => (r && r.puestoCorte) || (AUX_REFS_MOSQ_POSTIGO.includes(String(ref || (r && r.ref) || "").trim().toUpperCase()) ? "mosqpost" : "doble");
 // CARROS DE AUXILIARES (lo que hay AHORA): cada carro con sus huecos y las piezas cortadas que hay en cada uno.
 // Se puede SACAR una pieza del carro (libera el hueco; la pieza sigue cortada), moverla a otro carro/hueco o vaciar un hueco entero.
 function CarrosAuxiliares({ cfg, est, quien = "" }) {
@@ -58051,7 +58057,7 @@ function CarrosAuxiliares({ cfg, est, quien = "" }) {
     </div>
   );
 }
-function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin = false }) {
+function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin = false, puestoCorte = "doble" }) {
   const cfgRaw = useObjetoFb("auxiliaresConfig");
   const hojas = useObjetoFb("auxiliaresHojas");
   const hojasCDAux = useObjetoFb("controlDiaHojaCorte"); // hojas de corte de Control del día (con el enlace del PDF): para releerlas aquí
@@ -58082,7 +58088,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const quitadasAux = useObjetoFb("auxiliaresQuitadas");
   const kQuit = (id) => String(id).replace(/[.#$/[\]]/g, "_");
   const piezasTodas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
-  const piezas = useMemo(() => piezasTodas.filter((x) => !(quitadasAux && quitadasAux[kQuit(x.id)])), [piezasTodas, quitadasAux]);
+  // cada puesto de corte ve SOLO sus perfiles (doble cabezal / mosquiteras y postigos)
+  const piezas = useMemo(() => piezasTodas.filter((x) => !(quitadasAux && quitadasAux[kQuit(x.id)]) && auxPuestoDeRef(toArray(cfg.refs).find((r) => String(r.ref).trim() === String(x.ref).trim()), x.ref) === puestoCorte), [piezasTodas, quitadasAux, cfg, puestoCorte]);
   const quitarPiezas = (ps, txt) => {
     const L = toArray(ps).filter((x) => x && !(est && est[x.id] && est[x.id].cortada)); if (!L.length) return;
     if (!window.confirm(`${txt || `¿Quitar ${L.length} pieza${L.length === 1 ? "" : "s"}?`}\n\nNo saldrán para cortar. Se pueden recuperar abajo en «Piezas quitadas».`)) return;
@@ -61967,12 +61974,13 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   ] : (() => {
     // Todo en un sitio y en el orden del camino de la ventana. Con pantallas marcadas en su usuario, cada uno ve solo las suyas.
     const perm = toArray(puestosPermitidos).filter(Boolean);
-    const verTab = (id) => admin || !perm.length || perm.includes(`tab:${id}`) || (id === "puesto" && perm.some((x) => PUESTOS_LINEA.some((q) => q.id === x))) || (id === "auxiliares" && perm.includes("auxiliares"));
+    const verTab = (id) => admin || !perm.length || perm.includes(`tab:${id}`) || (id === "puesto" && perm.some((x) => PUESTOS_LINEA.some((q) => q.id === x))) || (id === "auxiliares" && perm.includes("auxiliares")) || (id === "mosqpost" && perm.includes("mosqpost"));
     const almacenOk = (id) => verMas || admin || perm.includes(`tab:${id}`);
     return [
       { id: "controlDia", t: "1 · Control del día", aviso: "" },
       { id: "puesto", t: "2 · Puestos (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
       { id: "auxiliares", t: "Auxiliares", aviso: "" },
+      { id: "mosqpost", t: "Mosquiteras y postigos", aviso: "" },
       ...(almacenOk("almacenDia") ? [{ id: "almacenDia", t: "3 · 📅 Almacén del día (paletizar)", aviso: "" }] : []),
       ...(almacenOk("almacen") ? [{ id: "almacen", t: "4 · Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." }] : []),
       { id: "cargas", t: "5 · Cargas de hoy", aviso: "" },
@@ -62006,6 +62014,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
+      {actual.id === "mosqpost" && <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div>}
       {actual.id === "almacen" && (
         <AlmacenVentanas onMoverDiaFabrica={onMoverDiaFabrica} simple={soloAlmacen} quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
@@ -62137,7 +62146,7 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
         {f.rol !== "Administrador" && (
           <Field label="Pantallas y puestos de la Línea que puede usar">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
-              {[{ id: "tab:controlDia", nombre: "📋 Control del día" }, ...PUESTOS_LINEA.filter((q) => q.id !== "carga" && q.id !== "controlDia"), { id: "auxiliares", nombre: "Auxiliares (corte)" }, { id: "tab:almacenDia", nombre: "📅 Almacén del día" }, { id: "tab:almacen", nombre: "🏬 Almacén de ventanas" }, { id: "tab:cargas", nombre: "🚚 Cargas de hoy" }, { id: "tab:estanterias", nombre: "Estanterías e informes" }].map((q) => (
+              {[{ id: "tab:controlDia", nombre: "📋 Control del día" }, ...PUESTOS_LINEA.filter((q) => q.id !== "carga" && q.id !== "controlDia"), { id: "auxiliares", nombre: "Auxiliares (corte)" }, { id: "mosqpost", nombre: "✂ Mosquiteras y postigos (corte)" }, { id: "tab:almacenDia", nombre: "📅 Almacén del día" }, { id: "tab:almacen", nombre: "🏬 Almacén de ventanas" }, { id: "tab:cargas", nombre: "🚚 Cargas de hoy" }, { id: "tab:estanterias", nombre: "Estanterías e informes" }].map((q) => (
                 <label key={q.id} className="flex items-center gap-2 text-sm text-slate-700">
                   <input type="checkbox" checked={toArray(f.puestosLinea).includes(q.id)} onChange={(e) => setF({ ...f, puestosLinea: e.target.checked ? [...toArray(f.puestosLinea), q.id] : toArray(f.puestosLinea).filter((x) => x !== q.id) })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                   {q.nombre}
