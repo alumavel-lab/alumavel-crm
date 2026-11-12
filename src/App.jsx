@@ -58131,6 +58131,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
   // POR VIVIENDA: cada perfil se puede repartir en barras vivienda a vivienda (el solape, por defecto). Se recuerda en este ordenador.
   const [porViviendaAux, setPorViviendaAux] = useEstadoLocal("auxPorVivienda", {});
+  // SIN IMPRESORA (p. ej. Mosquiteras y postigos): se cortan con un TIC, sin sacar pegatina. Se recuerda por puesto en este ordenador.
+  const [sinImpresora, setSinImpresora] = useEstadoLocal(`auxSinImpresora_${puestoCorte}`, puestoCorte === "mosqpost");
   // DOS BARRAS A LA VEZ (sierra que corta dos barras apiladas): el solape, por defecto
   const [dobleBarraAux, setDobleBarraAux] = useEstadoLocal("auxDobleBarra", {});
   const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
@@ -58358,7 +58360,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, angulo: p.angulo || "", color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
-      if (!opt.sinImprimir) imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
+      if (!opt.sinImprimir && !sinImpresora) imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
       try {
         let inf = barraSnap.current[p.id];
@@ -58368,7 +58370,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           if (!RETALES_BLOQUEADOS && inf.sobra >= inf.min) guardarRetal(inf, inf.sobra);
         }
       } catch (er) { /* el retal se puede guardar a mano */ }
-      setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, ultimoPieza: { ref: p.ref, ppto: p.ppto, ventanaPos: p.ventanaPos, modelo: p.modelo, unidad: p.unidad }, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
+      if (!sinImpresora) setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, ultimoPieza: { ref: p.ref, ppto: p.ppto, ventanaPos: p.ventanaPos, modelo: p.modelo, unidad: p.unidad }, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
       if (!opt.sinImprimir) pitidoCRM(true);
@@ -58381,7 +58383,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const estL = { ...(estBase || {}) }; const regs = [];
     for (const p of lista) { const r = await cortar(p, ctx, { sinImprimir: true, est: estL }); if (!r) break; estL[p.id] = r.reg; regs.push(r.reg); }
     if (!regs.length) return;
-    imprimirAux(regs.map((reg) => ({ ...reg, pasosTxt: auxPasosTxt(refDe(reg.ref), reg), ejeTxt: auxEjeTxt(refDe(reg.ref), reg) })), cfg);
+    if (!sinImpresora) imprimirAux(regs.map((reg) => ({ ...reg, pasosTxt: auxPasosTxt(refDe(reg.ref), reg), ejeTxt: auxEjeTxt(refDe(reg.ref), reg) })), cfg);
     const sitios = [...new Set(regs.map((x) => `${String(x.carroNombre || "").split("·").pop().trim()} · hueco ${x.hueco}`))];
     setMsg(`✓ ${regs.length} × ${regs[0].nombre} ${auxMed(regs[0].lCorte)} mm cortadas · ${regs.length} etiquetas seguidas → ${sitios.slice(0, 8).join(" | ")}${sitios.length > 8 ? " …" : ""}${regs.length < lista.length ? ` · ⚠ paré en ${regs.length} de ${lista.length} (mira el aviso)` : ""}`);
     pitidoCRM(true);
@@ -58597,7 +58599,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             </>); })()}
           </span>
         )}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
-      <button type="button" onClick={() => cortar(p, ctx)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
+      <button type="button" onClick={() => cortar(p, ctx)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md">{sinImpresora ? <><CheckCircle2 size={13} /> ✓ Cortada</> : <><Printer size={13} /> Cortada + etiqueta</>}</button>
       <button type="button" onClick={() => quitarPiezas([p], `¿Quitar ${p.nombre} ${auxMed(p.lCorte)} mm del Ppto ${pptoBonito(p.ppto)}?`)} title="Esta pieza no va (hoja mal leída): quitarla de la lista de corte" className="text-xs font-semibold px-2 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">🗑</button>
     </div>
   );
@@ -58615,6 +58617,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         <details className="basis-full"><summary className="cursor-pointer text-sm font-bold text-amber-900">♻ Almacén de retales ({Object.values(recortesFb || {}).filter((v) => v && Number(v.len) > 0).length}) · dar de alta un retal</summary><div className="mt-2">{altaRetal()}</div></details>
         {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0], { tipo: "global" })} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {retalAviso && <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl border-4 px-5 py-3 text-lg font-extrabold shadow-2xl flex items-center gap-3 ${retalAviso.error ? "bg-rose-50 border-rose-600 text-rose-900" : "bg-amber-50 border-amber-500 text-amber-900"}`}><span>{retalAviso.txt}</span><button type="button" onClick={() => setRetalAviso(null)} className="px-2 py-0.5 rounded bg-white border border-slate-400 text-sm">OK</button></div>}
+        <label className={`flex items-center gap-1.5 text-sm font-semibold border rounded-lg px-3 py-2 ${sinImpresora ? "border-amber-500 bg-amber-50 text-amber-900" : "border-slate-300 bg-white text-slate-700"}`} title="Si en este puesto no hay impresora: se marca cortada con un tic y no saca pegatina"><input type="checkbox" checked={!!sinImpresora} onChange={(e) => setSinImpresora(e.target.checked)} /> 🖨 Sin impresora (solo ticar)</label>
         <label className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 py-2 bg-white">📦 En cada hueco caben <input key={`ph${porHuecoAux}`} type="number" min="1" defaultValue={porHuecoAux} onBlur={(e) => { const n = parseInt(e.target.value, 10); if (n >= 1 && n !== porHuecoAux) fbSet(ref(fbDb, "auxiliaresBarra/porHueco"), n).catch(() => {}); }} className="w-14 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> piezas</label>
         {admin && <button type="button" onClick={() => setVerConfig(!verConfig)} className="text-sm font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">{verConfig ? "Cerrar configuración" : "Configuración"}</button>}
       </div>
