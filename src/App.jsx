@@ -52131,17 +52131,19 @@ const repartirPlanning = (obras, desde, horasDia, ocupado = {}) => {
     let h = o.horas > 0 ? o.horas : 0.5;
     if (o.forzar && o.disponible) {
       // Día elegido a mano (o metida desde Control del día): entra ENTERA ese día aunque ya no queden horas (cosas atrasadas)
-      const fz = primerLaborableDesde(o.disponible);
+      const fz = o.disponible; // se respeta el día elegido aunque sea sábado o domingo
       if (!dias[fz]) dias[fz] = { usadas: 0, trozos: [] };
       dias[fz].usadas += h; dias[fz].trozos.push({ id: o.id, nombre: o.nombre, horas: Math.round(h * 10) / 10 });
       res[o.id] = { inicio: fz, fin: fz };
       return;
     }
-    let f = primerLaborableDesde(o.disponible && o.disponible > desde ? o.disponible : desde);
+    // anclada = ya estaba planificada en un día (se queda en ese día aunque el día esté lleno; lo que sobra sigue en los días siguientes)
+    let f = o.anclar && o.disponible ? o.disponible : primerLaborableDesde(o.disponible && o.disponible > desde ? o.disponible : desde);
     let guard = 0;
     while (h > 0.01 && guard++ < 400) {
       if (!dias[f]) dias[f] = { usadas: 0, trozos: [] };
-      const libre = Hd - dias[f].usadas;
+      const primero = o.anclar && !res[o.id];
+      const libre = primero ? Math.max(Hd - dias[f].usadas, Math.min(h, Hd)) : Hd - dias[f].usadas;
       if (libre > 0.01) {
         const pon = Math.min(libre, h);
         dias[f].usadas += pon;
@@ -52166,7 +52168,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
   const hoy = new Date().toISOString().slice(0, 10);
-  const [desde, setDesde] = useState(() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); });
+  // «Planificar desde»: por defecto el próximo lunes, calculado SIEMPRE con la fecha de hoy (antes se quedaba fijo desde que se abría la pantalla
+  // y cada ordenador publicaba un planning distinto). Lo que se elija a mano solo cambia lo que se ve en esta pantalla.
+  const desdeAuto = (() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); })();
+  const [desdeSel, setDesde] = useState("");
+  const desde = soloPublicar ? desdeAuto : (desdeSel || desdeAuto);
   const [verTiempos, setVerTiempos] = useState(false);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
   const [diaGolpe, setDiaGolpe] = useState("");
@@ -52283,16 +52289,6 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Reparto: primero las listas, luego las que esperan material (desde el día siguiente a su llegada)
   // Las que tienen día elegido van primero y se colocan en ese día (si no cabe todo, lo que sobra pasa al siguiente día laborable);
   // el resto se reparte después en los huecos, desde "Planificar desde".
-  const diaFijo = (o) => fechasPlan[o.id] || o.diaTerm || ""; // las terminadas sin paletizar se quedan en su día (o el día en que se terminaron)
-  const conDia = firmes.filter((o) => diaFijo(o)).sort((a, b) => diaFijo(a).localeCompare(diaFijo(b)));
-  const sinDia = firmes.filter((o) => !diaFijo(o));
-  const desdeEf = [desde, ...conDia.map((o) => diaFijo(o))].sort()[0];
-  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: diaFijo(o), forzar: true })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
-  const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
-  const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: fechasPlan[o.id] && fechasPlan[o.id] > (o.material ? sigLaborable(o.material) : desde) ? fechasPlan[o.id] : o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
-  const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
-  // «Control del día» lee este planning (Fábrica manda): se publica en Firebase solo cuando cambia
-  const peticionesCD = useObjetoFb("controlDiaPeticiones");
   const limpiaFb = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
   const claveRefFb = (o) => limpiaFb(`${o.ref.tipo}-${o.ref.id}`);
   // Códigos de presupuesto de la obra (con versión: 6633-1 y 6633-2 son viviendas distintas): es lo que enlaza Fábrica con Control del día
@@ -52302,6 +52298,35 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     if (o.ref.tipo === "uxcar") { const e = toArray(uxExpedientes).find((x) => x.id === o.ref.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     return [...out];
   };
+  // ANCLAJE (13/11/2026): una obra que ya estaba publicada en un día de esta semana (antes de «Planificar desde») se queda en ese día.
+  // Antes se recalculaba todo cada vez y las obras sin día elegido saltaban de día (o a la semana siguiente al llegar el lunes) y
+  // en Control del día «desaparecían» del día en que se estaban haciendo.
+  const planPrevio = useObjetoFb("planFabrica");
+  const planPrevioListo = useFbListo("planFabrica");
+  const anclaDe = (() => {
+    const porClave = {}; const porPres = {};
+    Object.entries((planPrevio && planPrevio.obras) || {}).forEach(([k, r]) => {
+      if (!r || !r.inicio) return; porClave[k] = r.inicio;
+      toArray(r.pres).forEach((c) => { porPres[c] = porPres[c] === undefined ? r.inicio : (porPres[c] === r.inicio ? r.inicio : null); });
+    });
+    return (o) => {
+      let d = porClave[claveRefFb(o)];
+      if (!d) { for (const c of presFab(o)) { if (porPres[c]) { d = porPres[c]; break; } } }
+      return d && d < desdeAuto ? d : "";
+    };
+  })();
+  const diaElegido = (o) => fechasPlan[o.id] || o.diaTerm || ""; // las terminadas sin paletizar se quedan en su día (o el día en que se terminaron)
+  const diaFijo = (o) => diaElegido(o) || anclaDe(o);
+  const conDia = firmes.filter((o) => diaFijo(o)).sort((a, b) => diaFijo(a).localeCompare(diaFijo(b)));
+  const sinDia = firmes.filter((o) => !diaFijo(o));
+  // las nuevas (sin día) rellenan huecos desde hoy como muy pronto: nunca en días ya pasados (si no, al día siguiente se quedarían ancladas atrás)
+  const desdeEf = [desde, ...conDia.map((o) => diaFijo(o)).filter((f) => f >= hoy)].sort()[0];
+  const plan1 = repartirPlanning([...conDia.map((o) => (diaElegido(o) ? { ...o, disponible: diaElegido(o), forzar: true } : { ...o, disponible: anclaDe(o), anclar: true })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
+  const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
+  const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: fechasPlan[o.id] && fechasPlan[o.id] > (o.material ? sigLaborable(o.material) : desde) ? fechasPlan[o.id] : o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
+  const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
+  // «Control del día» lee este planning (Fábrica manda): se publica en Firebase solo cuando cambia
+  const peticionesCD = useObjetoFb("controlDiaPeticiones");
   const publicadoFb = (() => {
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
     const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
@@ -52311,7 +52336,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub });
   })();
   const ultimoPublicadoFb = useRef("");
-  useEffect(() => { if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb]);
+  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb, planPrevioListo]);
   // Semanas del planning virtual
   const semanas = {};
   Object.entries(plan2.dias).forEach(([f, d]) => {
