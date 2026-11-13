@@ -61004,7 +61004,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const vivsInforme = [...new Set(todasFilasInforme.filter((f) => !fObra || f.o.d.key === fObra).map((f) => f.g).filter(Boolean))];
   const horaDe = (t) => (t ? new Date(t).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "");
   const tiemposInforme = todasFilasInforme.map((f) => f.t).filter(Boolean).sort((a, b) => a - b);
-  const textoTiempos = tiemposInforme.length ? `Primera marca ${horaDe(tiemposInforme[0])} · última ${horaDe(tiemposInforme[tiemposInforme.length - 1])}` : "";
+  // Primera y última marca DE ESE DÍA DE CALENDARIO (por la hora real en que se marcó, sea de la obra que sea): antes salían
+  // mezcladas horas de otros días (p. ej. «primera 10:36 · última 07:38» con una marca de ayer)
+  const tiemposDelDia = (() => { const out = []; Object.entries(horasTodas || {}).forEach(([fd, obs]) => Object.entries(obs || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([idv, ms]) => { const t = Number(ms); if (!t || new Date(t).toLocaleDateString("sv-SE") !== dia) return; if ((((marcasTodas || {})[fd] || {})[ko] || {})[idv] === 1) out.push(t); }))); return out.sort((a, b) => a - b); })();
+  const textoTiempos = tiemposDelDia.length ? `Primera marca ${horaDe(tiemposDelDia[0])} · última ${horaDe(tiemposDelDia[tiemposDelDia.length - 1])}` : "";
   const cuentaInforme = (arr) => ({ total: arr.length, hechas: arr.filter((f) => f.val === 1).length, problema: arr.filter((f) => f.val === 2).length, pendientes: arr.filter((f) => !f.val).length });
   const imprimirInforme = () => {
     const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -61033,7 +61036,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     })); });
     return n;
   })();
-  const hechasDia = hechasObrasDia + hechasOtrosDias;
+  // lo marcado sin hora guardada (marcas antiguas) del propio día cuenta también
+  const sinHoraDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1) && !Number((horas[limpia(f.o.d.key)] || {})[f.v.id])).length;
+  // CONTADOR DEL DÍA = ventanas marcadas en verde EN ESE DÍA DE CALENDARIO (por la hora de la marca), sean de la obra que sean
+  const hechasDia = tiemposDelDia.length + sinHoraDia; void hechasObrasDia;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
   const pistolaCD = (grande) => (
