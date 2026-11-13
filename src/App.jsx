@@ -5055,6 +5055,9 @@ export default function App() {
         const otros = new Set(toArray(pd.expedientes).map((x) => x.expedienteId).filter((id) => id && id !== exp.id)
           .flatMap((id) => { const e2 = toArray(uxExpedientes).find((q) => q.id === id); return e2 ? [...codigosExpUx(e2)] : []; }));
         return toArray(pd.documentos).filter((d) => d && d.url && d.nombre).filter((d) => {
+          // los nuevos ya dicen de qué expediente son (leído dentro del PDF)
+          if (toArray(d.expedienteIds).length) { if (toArray(d.expedienteIds).includes(exp.id)) return true; ajenas.add(d.url); return false; }
+          if (toArray(pd.expedientes).length < 2) return true; // pedido de un solo expediente: todo es suyo
           const ns = numsUx(d.nombre);
           if (ns.some((n) => mios.has(n))) return true;
           if (ns.some((n) => otros.has(n))) { ajenas.add(d.url); return false; }
@@ -55150,7 +55153,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
-      for (const a of archivos) documentos.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-pedidos") });
+      for (const a of archivos) documentos.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-pedidos"), codigos: [...new Set(toArray(a.leidos).map((g) => uxNormExp(g.codigo)).filter(Boolean))] });
     } catch (e) { return false; }
     const pedidoId = uid();
     const hoy = uxHoy();
@@ -55173,8 +55176,10 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         const matPed = uxMatAlbaran(tipo);
         if (exp && matPed && (!exp.materiales || !exp.materiales[matPed] || exp.materiales[matPed].estado === "pendiente")) patch[`expedientes/${exp.id}/materiales/${matPed}/estado`] = "pedido";
       }
-      if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas });
+      if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas, codigo: uxNormExp(g.codigo) });
     });
+    // Cada PDF sabe de qué expediente(s) es (por lo que se leyó DENTRO del PDF): así cada obra recibe solo el suyo
+    documentos.forEach((d) => { const ids = expsPedido.filter((x) => x.codigo && toArray(d.codigos).includes(x.codigo)).map((x) => x.expedienteId); if (ids.length) d.expedienteIds = ids; delete d.codigos; });
     const numero = siguienteNumeroPedido();
     patch[`pedidos/${pedidoId}`] = JSON.parse(JSON.stringify({
       id: pedidoId, numero, tipo, proveedorId, proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
