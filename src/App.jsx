@@ -45983,6 +45983,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     // Cambia UNA obra de día (las de Fábrica no: allí manda Fábrica). Lo ya ticado en Control del día viaja con ella.
     const moverObraDia = (o, desde, hasta) => {
       if (!hasta || hasta === desde) return;
+      if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; }
       const ko = limpiaAD(o.key); const ex = (extraAD && extraAD[desde]) || {}; const mn = (asignManualAD && asignManualAD[desde]) || {};
       const hO = horasObraAD(o); const ya = horasDiaAD(hasta);
       const tareas = [];
@@ -46443,6 +46444,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               if (o0 && !o) { avisar(false, `${nombreAD(o0)}: ya no está en planificación. Estado: ${situacionAD(o0).estado || "terminada / entregada"}.`); return; }
               const sit = o ? situacionAD(o) : null;
               if (sit && sit.dias.length) { setDiaAD(sit.dias.includes(diaAD) ? diaAD : sit.dias[0]); avisar(true, `${nombreAD(o)} YA ESTÁ EN PLANNING: ${sit.dias.map((d) => fmtDate(d)).join(", ")}${sit.estado ? ` · estado: ${sit.estado}` : ""}. Te llevo a ese día.`); return; }
+              if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; }
               const hO = horasObraAD(o); const diaDest = diaLibreAD(hO, diaAD);
               if (!(hO > 0)) window.alert(`⚠ ${nombreAD(o)} sale con 0 HORAS: no está en el planning de Fábrica, ni en el PDF «PLANING», ni tiene listado de mano de obra. La he puesto en ${fmtDate(diaDest)} sin poder contar sus horas; ese día puede pasarse de ${cap160} h sin que lo sepas. Ponle las horas (Fábrica) o sube su listado.`);
               fbSet(ref(fbDb, `controlDiaObras/${diaDest}/${limpiaAD(k)}`), true).catch(() => {});
@@ -52117,6 +52119,10 @@ const horasObra = (recuento, totales, horasManual, tiempos, horasListado) => {
   }
   return { horas: Math.round(h * 10) / 10, aMano: false };
 };
+// 13/11/2026: los días de las obras SOLO se ponen en Fábrica → Planning (así nadie lo pisa desde Control del día / Almacén del día).
+// Desde las otras pantallas se puede ver, marcar ventanas y QUITAR una obra puesta a mano, pero no ponerla ni moverla de día.
+const SOLO_PLANNING_PONE_DIAS = true;
+const avisoSoloPlanning = () => window.alert("📅 Los días de las obras se ponen SOLO en Fábrica → Planning.\n\nPídeselo a quien lleva el planning (o hazlo tú allí): desde aquí ya no se puede, para que no se pisen.");
 const esLaborable = (d) => d.getDay() !== 0 && d.getDay() !== 6;
 const sigLaborable = (fechaStr) => { const d = new Date(fechaStr + "T12:00:00"); do { d.setDate(d.getDate() + 1); } while (!esLaborable(d)); return d.toISOString().slice(0, 10); };
 const primerLaborableDesde = (fechaStr) => { const d = new Date(fechaStr + "T12:00:00"); while (!esLaborable(d)) d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
@@ -60453,7 +60459,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   // Claves antiguas de la MISMA obra (el expediente de Uxcar de este proyecto): al quitar o mover, se limpian también
   const gemelasDe = (k) => { const c = canonK(k); return Object.entries(uxAProy).filter(([, pid]) => `p-${pid}`.replace(/[.#$\/\[\]]/g, "_") === c).map(([eid]) => `u-${eid}`.replace(/[.#$\/\[\]]/g, "_")); };
-  const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); if (!si) for (const g of gemelasDe(limpia(o.d.key))) await fbSet(ref(fbDb, `controlDiaObras/${dia}/${g}`), null); } catch (e) { /* nada */ } };
+  const asignar = async (o, si) => { if (si && SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; } try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); if (!si) for (const g of gemelasDe(limpia(o.d.key))) await fbSet(ref(fbDb, `controlDiaObras/${dia}/${g}`), null); } catch (e) { /* nada */ } };
   // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
   const mandarAReparto = (o) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -60671,6 +60677,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const sumaDias = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const siguienteLaborable = (f) => { let x = sumaDias(f, 1); while ([0, 6].includes(new Date(x + "T12:00:00").getDay())) x = sumaDias(x, 1); return x; };
   const pasarAlSiguiente = async () => {
+    if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; }
     const sig = siguienteLaborable(dia); const noTerminadas = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) !== "verde");
     for (const o of noTerminadas) { try { await fbSet(ref(fbDb, `controlDiaObras/${sig}/${limpia(o.d.key)}`), true); } catch (e) { /* nada */ } }
     setDia(sig); setMesVer(sig.slice(0, 7));
@@ -60794,6 +60801,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   };
   // Mueve una obra de un día a otro, con sus marcas, horas y notas
   const moverObraDia = async (k, de, a) => {
+    if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; }
     setPinSel(null);
     if (!k || !de || !a || de === a) return;
     if (enFabrica.has(k)) { // obra del planning de Fábrica: se cambia allí (y aquí sale sola el día nuevo); sus marcas van con ella
@@ -61194,7 +61202,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">{verFolio ? "Ver como lista" : "Ver el folio con chinchetas"}</button>
         <button type="button" onClick={() => setInforme((x) => !x)} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${informe ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-800 border-slate-400"}`}>📋 {informe ? "Volver a las obras" : "Informe del día"}</button>
-        {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
+        {lista.length > 0 && !SOLO_PLANNING_PONE_DIAS && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
         {lista.length > 0 && <span className="inline-flex items-center gap-1"><input type="date" value={destDia} onChange={(e) => setDestDia(e.target.value)} className="border border-slate-300 rounded px-1 py-1 text-sm" /><button type="button" disabled={!destDia} onClick={moverDiaEntero} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold disabled:opacity-40">Mover todo el día a esa fecha</button></span>}
       </div>
       {(() => {
@@ -61215,7 +61223,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </>
         );
       })()}
-      {onMeterEnPlanning && (() => {
+      {onMeterEnPlanning && !SOLO_PLANNING_PONE_DIAS && (() => {
         // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
         const q = qMeter.trim().toLowerCase(); const qd = q.split(/\s+/).length === 1 ? q.replace(/[^\d]/g, "") : "";
         const lotesBusq = verMeter && q ? lotesPorObra() : null;
@@ -61379,6 +61387,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         <div className="flex flex-wrap items-center gap-1 mt-1">
                           <input type="date" id={`fpon-${k}`} defaultValue={dia || hoy} className="border border-slate-300 rounded px-1 py-0.5 text-xs" />
                           <button type="button" onClick={async () => {
+                            if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; }
                             const el = document.getElementById(`fpon-${k}`); const f = (el && el.value) || dia || hoy;
                             if (fs.includes(f)) { ir(k, f); return; }
                             // Ya está en otro día: se MUEVE (con sus ventanas marcadas, horas y notas), nunca se duplica
