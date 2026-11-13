@@ -46057,7 +46057,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     // ¿Tiene ya ETIQUETAS de fabricación? (las suyas, o un lote subido en otra obra que trae ventanas de su presupuesto)
     const presConEtiq = new Set();
     [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].forEach((l) => l && toArray(l.ventanas).forEach((v) => { const b = basePresuDia(v && v.num); if (b.length >= 3) presConEtiq.add(b); }));
-    const tieneEtiq = (o) => toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
+    // Con la HOJA DE CORTE (o Control del día) ya hay ventanas: no hacen falta las etiquetas. Solo avisa si no tiene ventanas de ningún sitio.
+    const tieneEtiq = (o) => toArray(o && o.vs).length > 0 || toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
     // UNA OBRA = UN DÍA: si el planning la pone en varios días, aquí sale solo en el primero (igual que en Control del día)
     const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
@@ -46487,7 +46488,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {avisoSinEt}
           {(() => { const faltan = delDia.filter((it) => it.o && !it.terminada && !tieneEtiq(it.o)); if (!faltan.length) return null; return (
             <div className="rounded-lg border-2 border-rose-500 bg-rose-50 p-3 space-y-2">
-              <div className="text-sm font-extrabold text-rose-800">⚠ {faltan.length === 1 ? "Esta obra planificada NO tiene" : `Estas ${faltan.length} obras planificadas NO tienen`} las etiquetas de fabricación subidas. Sin ellas la pistola no las reconoce. Súbelas aquí:</div>
+              <div className="text-sm font-extrabold text-rose-800">⚠ {faltan.length === 1 ? "Esta obra planificada NO tiene" : `Estas ${faltan.length} obras planificadas NO tienen`} ventanas en el CRM: ni hoja de corte ni etiquetas. Sube su hoja de corte (en Control del día / Auxiliares) o, si las tienes, sus etiquetas aquí:</div>
               {faltan.map((it) => (/^[pu]-/.test(String(it.o.key)) ? (
                 <div key={it.o.key} className="rounded-md border border-rose-300 bg-white p-2">
                   <div className="text-sm font-bold text-rose-800 mb-1">{nombreAD(it.o)} · {it.o.nombre}</div>
