@@ -2077,6 +2077,7 @@ export default function App() {
   };
   // Control del día: meter una obra en el planning de Fábrica en un día. Si no estaba en fabricación, se empieza (con sus comprobaciones);
   // si estaba quitada del planning (sin tick), se vuelve a poner. El día queda como «Empezar el».
+  const planFabApp = useObjetoFb("planFabrica"); // para el aviso de obras atrasadas (lo publica el planning de Fábrica)
   const meterObraEnPlanning = async (proyectoId, fecha) => {
     const p = proyectos.find((x) => x.id === proyectoId); if (!p) return false;
     if (p.estadoTrabajo !== "En proceso") { const ok = await iniciarFabricacionObra(proyectoId); if (!ok) return false; }
@@ -6573,6 +6574,19 @@ export default function App() {
           return (
             <button onClick={() => { tabInicialLinea.actual = "almacen"; setModulo("lineapistola"); }} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-amber-100 text-amber-900 hover:bg-amber-200">
               🪵 {tarde.length} caballete{tarde.length === 1 ? "" : "s"} para RECLAMAR (ya tenía{tarde.length === 1 ? "" : "n"} que haber vuelto) · {det}{Object.keys(porCli).length > 3 ? "…" : ""}. Toca para verlos →
+            </button>
+          );
+        })()}
+        {(() => {
+          // Obras del planning que se han quedado en días ya pasados SIN terminar: lo ve todo el que tiene Fábrica (no solo quien abre el planning)
+          if (!currentUser || !(isAdmin || veFabrica)) return null;
+          const atr = Object.values((planFabApp && planFabApp.atrasadas) || {}).filter((x) => x && x.nombre).sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)));
+          if (!atr.length) return null;
+          const det = atr.slice(0, 3).map((x) => `${x.nombre} (${fmtDate(x.fin)})`).join(" · ");
+          return (
+            <button onClick={() => { tabInicialFabrica.actual = "preparar"; setModulo("fabrica"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-amber-100 text-amber-900 hover:bg-amber-200">
+              ⏰ PLANNING: {atr.length} obra{atr.length === 1 ? "" : "s"} en días ya pasados SIN TERMINAR: {det}{atr.length > 3 ? "…" : ""}. Toca para ponerles día en Fábrica → Planning →
             </button>
           );
         })()}
@@ -52335,13 +52349,17 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
   // «Control del día» lee este planning (Fábrica manda): se publica en Firebase solo cuando cambia
   const peticionesCD = useObjetoFb("controlDiaPeticiones");
+  // Obras que se han quedado en un día ya pasado sin terminar (ancladas o con día puesto a mano): se pasan desde aquí y se PUBLICAN
+  // (planFabrica.atrasadas) para que el aviso salga a todos: barra de arriba del CRM y Control del día
+  const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
   const publicadoFb = (() => {
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
     const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
     // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
     const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
-    return JSON.stringify({ dias, obras: obrasF, listas: listasPub });
+    const atrasadas = {}; atascadas.forEach((o) => { const r = plan1.obras[o.id]; atrasadas[claveRefFb(o)] = { nombre: o.nombre, inicio: r.inicio, fin: r.fin, pres: presFab(o) }; });
+    return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas });
   })();
   const ultimoPublicadoFb = useRef("");
   useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb, planPrevioListo]);
@@ -52553,8 +52571,6 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   );
 
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
-  // Obras que se han quedado en un día ya pasado sin terminar (ancladas o con día puesto a mano): se pasan desde aquí
-  const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
   const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; lista.forEach((o) => { n[o.id] = dia; }); guardarCfg({ fechasPlan: n }); };
   return (
     <div className="space-y-6">
@@ -61221,6 +61237,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             )}
             {hace !== null && hace > 180 && <div className="mb-2 text-[11px] text-amber-700">Planning de Fábrica publicado hace {hace >= 1440 ? `${Math.round(hace / 1440)} día(s)` : `${Math.round(hace / 60)} h`}: si has cambiado algo en Fábrica y no sale, abre Fábrica → Planning.</div>}
           </>
+        );
+      })()}
+      {(() => {
+        const atr = Object.values((planF && planF.atrasadas) || {}).filter((x) => x && x.nombre).sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)));
+        if (!atr.length) return null;
+        return (
+          <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-3 mb-3">
+            <p className="font-bold text-amber-900 text-sm">⏰ {atr.length} obra{atr.length === 1 ? "" : "s"} de días ya pasados SIN TERMINAR (siguen en su día hasta que Fábrica les ponga otro):</p>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {atr.map((x, i) => <button key={i} type="button" onClick={() => { setDia(x.inicio); setMesVer(String(x.inicio).slice(0, 7)); }} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100" title="Ir a su día">{x.nombre} · {fmtDate(x.inicio)}{x.fin !== x.inicio ? `–${fmtDate(x.fin)}` : ""}</button>)}
+            </div>
+          </div>
         );
       })()}
       {onMeterEnPlanning && !SOLO_PLANNING_PONE_DIAS && (() => {
