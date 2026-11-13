@@ -5036,6 +5036,11 @@ export default function App() {
     showToast(`${faltan.length} obra${faltan.length === 1 ? "" : "s"} con instalación sin ficha: ya se han creado en Instalaciones`);
   }, [proyectos, instalaciones, currentUser?.id, loading]); // eslint-disable-line
   const uxDocsSyncRef = useRef(false);
+  // 14/11/2026: un pedido de Uxcar (persianas/compactos, cristales) lleva varios expedientes y un PDF por expediente («compactos 703.pdf»).
+  // Antes TODOS los PDF del pedido se metían en TODAS las obras del pedido (un montón de documentos ajenos).
+  // Ahora: si el nombre del PDF lleva el número de OTRO expediente del pedido y no el de esta obra, no se mete (y se quita si ya estaba).
+  const numsUx = (t) => (String(t || "").match(/\d{3,}/g) || []).map((n) => n.replace(/^0+/, ""));
+  const codigosExpUx = (e) => new Set([e.numero, e.presupuesto, e.presupuestoNumero, e.codigo, e.expediente].flatMap(numsUx));
   useEffect(() => {
     if (!currentUser || loading || uxDocsSyncRef.current) return;
     const cambios = [];
@@ -5044,23 +5049,36 @@ export default function App() {
       const exp = toArray(uxExpedientes).find((e) => e.id === pr.uxcarExpedienteId);
       if (!exp) continue;
       const delPedido = toArray(uxPedidos).filter((pd) => toArray(pd.expedientes).some((x) => (x.expedienteId || "") === exp.id));
+      const mios = codigosExpUx(exp);
+      const ajenas = new Set();
+      const delPedidoDocs = delPedido.flatMap((pd) => {
+        const otros = new Set(toArray(pd.expedientes).map((x) => x.expedienteId).filter((id) => id && id !== exp.id)
+          .flatMap((id) => { const e2 = toArray(uxExpedientes).find((q) => q.id === id); return e2 ? [...codigosExpUx(e2)] : []; }));
+        return toArray(pd.documentos).filter((d) => d && d.url && d.nombre).filter((d) => {
+          const ns = numsUx(d.nombre);
+          if (ns.some((n) => mios.has(n))) return true;
+          if (ns.some((n) => otros.has(n))) { ajenas.add(d.url); return false; }
+          return true; // sin número reconocible: es del pedido entero
+        }).map((d) => ({ nombre: d.nombre, url: d.url, tipo: pd.tipo === "Persianas" ? "Pedido de persianas/compactos" : "Listado de vidrios (pedido de cristales)" }));
+      });
       const candidatos = [
         ...toArray(exp.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: d.tipo || "" })),
-        ...delPedido.flatMap((pd) => toArray(pd.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: pd.tipo === "Persianas" ? "Pedido de persianas/compactos" : "Listado de vidrios (pedido de cristales)" }))),
+        ...delPedidoDocs,
       ].filter((d) => d && d.url && d.nombre);
+      const sobran = toArray(pr.documentos).filter((d) => d && d.deUxcar && ajenas.has(d.url)).map((d) => d.url);
       const vistos = new Set(toArray(pr.uxDocsVistos));
       const yaEnObra = new Set(toArray(pr.documentos).map((d) => d.url));
       const nuevos = candidatos.filter((d) => !vistos.has(d.url) && !yaEnObra.has(d.url));
       const unicos = [...new Map(nuevos.map((d) => [d.url, d])).values()];
       const nuevasVistas = candidatos.filter((d) => !vistos.has(d.url));
-      if (nuevasVistas.length) cambios.push({ id: pr.id, unicos, vistas: [...vistos, ...nuevasVistas.map((d) => d.url)] });
+      if (nuevasVistas.length || sobran.length) cambios.push({ id: pr.id, unicos, vistas: [...vistos, ...nuevasVistas.map((d) => d.url)], sobran: new Set(sobran) });
     }
     if (!cambios.length) return;
     uxDocsSyncRef.current = true;
     saveProyectos(toArray(proyectos).map((p) => {
       const c = cambios.find((x) => x.id === p.id);
       if (!c) return p;
-      return { ...p, documentos: [...toArray(p.documentos), ...c.unicos.map((d) => ({ id: uid(), nombre: d.tipo ? `${d.tipo} — ${d.nombre}` : d.nombre, url: d.url, subidoEn: Date.now(), deUxcar: true }))], uxDocsVistos: c.vistas };
+      return { ...p, documentos: [...toArray(p.documentos).filter((d) => !(d && d.deUxcar && c.sobran.has(d.url))), ...c.unicos.map((d) => ({ id: uid(), nombre: d.tipo ? `${d.tipo} — ${d.nombre}` : d.nombre, url: d.url, subidoEn: Date.now(), deUxcar: true }))], uxDocsVistos: c.vistas };
     }));
     setTimeout(() => { uxDocsSyncRef.current = false; }, 1500);
     // eslint-disable-next-line react-hooks/exhaustive-deps
