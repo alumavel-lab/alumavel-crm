@@ -52169,10 +52169,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const horasDia = parseFloat(cfg.horasDia) || 16;
   const hoy = new Date().toISOString().slice(0, 10);
   // «Planificar desde»: por defecto el próximo lunes, calculado SIEMPRE con la fecha de hoy (antes se quedaba fijo desde que se abría la pantalla
-  // y cada ordenador publicaba un planning distinto). Lo que se elija a mano solo cambia lo que se ve en esta pantalla.
+  // y cada ordenador publicaba un planning distinto). Si se elige a mano aquí se GUARDA (cfg.desdeManual) y manda también en Control del día;
+  // una fecha a mano ya pasada no cuenta (vuelve sola a automático).
   const desdeAuto = (() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); })();
-  const [desdeSel, setDesde] = useState("");
-  const desde = soloPublicar ? desdeAuto : (desdeSel || desdeAuto);
+  const desdeManual = cfg.desdeManual && cfg.desdeManual >= new Date().toISOString().slice(0, 10) ? cfg.desdeManual : "";
+  const desde = desdeManual || desdeAuto;
+  const setDesde = (v) => guardarCfg({ desdeManual: v || "" });
   const [verTiempos, setVerTiempos] = useState(false);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
   const [diaGolpe, setDiaGolpe] = useState("");
@@ -52312,7 +52314,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     return (o) => {
       let d = porClave[claveRefFb(o)];
       if (!d) { for (const c of presFab(o)) { if (porPres[c]) { d = porPres[c]; break; } } }
-      return d && d < desdeAuto ? d : "";
+      return d && d < desde ? d : "";
     };
   })();
   const diaElegido = (o) => fechasPlan[o.id] || o.diaTerm || ""; // las terminadas sin paletizar se quedan en su día (o el día en que se terminaron)
@@ -52545,12 +52547,37 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   );
 
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
+  // Obras que se han quedado en un día ya pasado sin terminar (ancladas o con día puesto a mano): se pasan desde aquí
+  const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
+  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; lista.forEach((o) => { n[o.id] = dia; }); guardarCfg({ fechasPlan: n }); };
   return (
     <div className="space-y-6">
+      {atascadas.length > 0 && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="font-bold text-amber-900">⏰ {atascadas.length} obra{atascadas.length > 1 ? "s" : ""} en días ya pasados sin terminar</p>
+            <button onClick={() => pasarObras(atascadas, primerLaborableDesde(hoy))} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700">Pasar todas a hoy</button>
+            <span className="text-xs text-amber-800">Ya no saltan solas de día: decide aquí a qué día van.</span>
+          </div>
+          <div className="divide-y divide-amber-200">
+            {atascadas.map((o) => (
+              <div key={o.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
+                <span className="font-semibold text-slate-800 min-w-[200px]">{o.nombre}</span>
+                <span className="text-xs text-amber-800">estaba el {fmtDia(plan1.obras[o.id].inicio)}{plan1.obras[o.id].fin !== plan1.obras[o.id].inicio ? ` – ${fmtDia(plan1.obras[o.id].fin)}` : ""}</span>
+                <button onClick={() => pasarObras([o], primerLaborableDesde(hoy))} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100">→ Hoy</button>
+                <input type="date" min={hoy} onChange={(e) => pasarObras([o], e.target.value)} className="border border-amber-300 rounded px-2 py-0.5 text-xs" title="Pasar a otro día" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {/* Ajustes */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-end gap-4">
         <Field label="Horas de trabajo al día (todo el taller)"><TextInput type="number" min="1" step="0.5" defaultValue={horasDia} onBlur={(e) => guardarCfg({ horasDia: parseFloat(e.target.value) || 8 })} className="!w-28" /></Field>
-        <Field label="Planificar desde"><TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="!w-40" /></Field>
+        <Field label={desdeManual ? "Planificar desde (a mano)" : "Planificar desde (automático: próximo lunes)"}>
+          <div className="flex items-center gap-2"><TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="!w-40" />
+            {desdeManual && <button onClick={() => setDesde("")} className="text-xs font-semibold text-slate-500 hover:underline" title="Volver al próximo lunes automático">Automático</button>}</div>
+        </Field>
         <Field label="Correo de fábrica (avisos)"><TextInput type="email" defaultValue={cfg.emailFabrica || ""} placeholder="fabrica@…" onBlur={(e) => guardarCfg({ emailFabrica: e.target.value.trim() })} className="!w-56" /></Field>
         {sumaPuestos > 0 && sumaPuestos !== horasDia && <button onClick={() => guardarCfg({ horasDia: sumaPuestos })} className="text-sm font-semibold text-[#2E8B57] hover:underline mb-2" title="Suma de las horas/día de los puestos (Fábrica → Puestos y partes)">Usar las horas de los puestos: {sumaPuestos} h/día</button>}
         <details className="mb-1 relative">
