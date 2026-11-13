@@ -62135,8 +62135,14 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     ].filter((x) => x.id === "parte" || x.id === "incidencias" || verTab(x.id));
   })();
   const actual = tabs.find((x) => x.id === tab) || tabs[0];
+  const permAviso = admin ? [] : toArray(puestosPermitidos).filter(Boolean);
   return (
     <div>
+      {permAviso.length > 0 && (
+        <div className="mb-3 px-3 py-2 rounded-md text-xs font-semibold border bg-amber-50 text-amber-900 border-amber-300">
+          👤 Estás con el usuario <b>{quien || "?"}</b> (no es administrador): solo ves las pantallas que tiene marcadas en «Pantallas y puestos de la Línea que puede usar». Para verlo todo, entra con el usuario administrador o márcalas en su ficha de usuario.
+        </div>
+      )}
       {tabs.length > 1 && (
         <div className="flex flex-wrap gap-1 border-b border-slate-200 mb-3">
           {tabs.map((x) => (
