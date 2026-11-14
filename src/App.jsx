@@ -47433,6 +47433,12 @@ const REGLAS_PUESTO_LINEA = {
 // Piezas que caben en cada hueco: 1 marco por estantería, 2 hojas por estantería (en puertas: 1 pieza por estantería, marco o hoja)
 const esZonaPuertas = (id) => id === "puertas" || id === "puertas2"; // los dos almacenes de puertas funcionan igual
 const capPieza = (z, esHoja) => (esZonaPuertas(z.id) ? 1 : z.cap || 1);
+// Igual que useObjetoFb pero sin ruta no escucha nada (para escuchar solo cuando hace falta)
+const useObjetoFbSi = (ruta) => {
+  const [o, setO] = useState({});
+  useEffect(() => { if (!ruta) { setO({}); return undefined; } return onValue(ref(fbDb, ruta), (s) => setO(s.val() || {}), () => setO({})); }, [ruta]);
+  return o;
+};
 const useObjetoFb = (ruta) => {
   const [o, setO] = useState({});
   useEffect(() => onValue(ref(fbDb, ruta), (s) => setO(s.val() || {}), () => setO({})), [ruta]);
@@ -57234,6 +57240,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     if (!hecho) {
       if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
       ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
+      if (puestoId) fbSet(ref(fbDb, `ticksLinea/${new Date().toISOString().slice(0, 10)}/${puestoId}/${String(x.id).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
       if (onPersianaPuesta) alert(`Persiana ${x.ref || ""} dada de baja.\n\n⚠ No encuentro la etiqueta de su ventana (o ya estaba leída en este puesto): la ventana NO se ha movido de hueco. Léela con la pistola o ponla a mano.`);
     }
     setFocoId(""); setCarroVer(null);
@@ -62246,6 +62253,13 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
   const hoy = new Date().toISOString().slice(0, 10);
   const vistos = new Set();
   escaneos.forEach((x) => { if (x.fecha === hoy && (puesto === "todos" || x.puestoId === puesto)) vistos.add(`${x.fab || ""}|${x.ventanaId}`); });
+  // TICADAS A MANO en este puesto (sin pistola: persiana puesta pinchando, etc.)
+  const ticksP = useObjetoFbSi(puestoContar ? `ticksLinea/${hoy}/${puestoContar}` : "");
+  Object.keys(ticksP || {}).forEach((k) => vistos.add(`tick|${k}`));
+  // Control de línea / Control del día: también las ventanas ticadas HOY en Control del día
+  const conCD = puestoContar === "lineaPers" || puestoContar === "controlDia";
+  const horasCDc = useObjetoFbSi(conCD ? "controlDiaHoras" : ""); const marcasCDc = useObjetoFbSi(conCD ? "controlDia" : "");
+  if (conCD) Object.entries(horasCDc || {}).forEach(([fd, obs]) => Object.entries(obs || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([idv, ms]) => { const t = Number(ms); if (!t || new Date(t).toLocaleDateString("sv-SE") !== hoy) return; if ((((marcasCDc || {})[fd] || {})[ko] || {})[idv] === 1) vistos.add(`cd|${ko}|${idv}`); })));
   const real = realProp !== undefined ? realProp : vistos.size;
   const fuera = !esHoy || minAhora < mIni;
   const terminado = esHoy && minAhora > mFin;
@@ -62268,7 +62282,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
       </div>
       {editar && admin && (
         <div className="mt-2 flex flex-wrap items-end gap-3 text-xs">
-          <span className="w-full opacity-70">El contador cuenta las ventanas que tocas en verde. Esperado ahora: {esperado} ({ritmo} por hora, de {inicio} a {fin}).</span>
+          <span className="w-full opacity-70">El contador cuenta las ventanas leídas con la pistola y las ticadas a mano{puestoContar === "lineaPers" ? " (también las ticadas hoy en Control del día)" : ""}. Esperado ahora: {esperado} ({ritmo} por hora, de {inicio} a {fin}).</span>
           <label>Ventanas por hora <input type="number" min="1" step="0.5" defaultValue={ritmo} onBlur={(e) => guardar({ ritmo: parseFloat(e.target.value) || 8 })} className="w-16 border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
           <label>Inicio <input type="time" defaultValue={inicio} onBlur={(e) => guardar({ inicio: e.target.value || "08:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
           <label>Fin <input type="time" defaultValue={fin} onBlur={(e) => guardar({ fin: e.target.value || "16:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
