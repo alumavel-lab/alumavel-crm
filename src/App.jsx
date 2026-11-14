@@ -7416,7 +7416,7 @@ export default function App() {
           />
         )}
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
-          <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
+          <IncFabricaCtx.Provider value={{ puede: !!currentUser, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
             paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
@@ -46225,7 +46225,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return obraOk && (i.ventanaId === v.id || posOk);
     });
     const botonVentana = (f, o, g) => (
-      <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
+      <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${incsDeVentana(o, f.x.v).length ? "bg-orange-500 border-orange-700 text-white" : f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
         <div>{f.c ? "✓ " : ""}{f.x.v.pos || "·"}</div>
         {f.x.v.medida ? <div className={`${g ? "text-sm" : "text-[10px]"} font-normal opacity-80`}>{f.x.v.medida}</div> : null}
         {f.c ? <div className={`${g ? "text-lg" : "text-[10px]"} font-semibold`}>{f.c.numero}</div> : null}
@@ -48091,8 +48091,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // Color de la ventana según su persiana (en TODOS los sitios donde sale el mapa): VERDE = persiana puesta y bien · NARANJA = con incidencia
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
+  const incFabZ = useObjetoFb("incidenciasFabrica");
+  const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -52585,9 +52587,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const hechasCDPl = useMemo(() => {
     const ult = {}; Object.keys(marcasCDPl || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcasCDPl[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { ult[`${k}|${id}`] = v; })));
     const out = [];
-    Object.entries(snapCDPl || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const hecha = vs.every((w) => ult[`${k}|${limpiaK(String(w.id))}`] === 1 || ult[`${k}|${String(w.id)}`] === 1); out.push({ tipo: sn.tipo, id: String(sn.id), bases: new Set(toArray(sn.codigos).map((c) => String(c).split("-")[0].replace(/\D/g, "")).filter((b) => b.length >= 3)), hecha }); });
+    Object.entries(snapCDPl || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const hecha = vs.every((w) => ult[`${k}|${limpiaK(String(w.id))}`] === 1 || ult[`${k}|${String(w.id)}`] === 1); out.push({ tipo: sn.tipo, id: String(sn.id), nombre: String(sn.nombre || "").trim(), ids: new Set(vs.map((w) => String(w.id))), bases: new Set(toArray(sn.codigos).map((c) => String(c).split("-")[0].replace(/\D/g, "")).filter((b) => b.length >= 3)), hecha }); });
     return out;
   }, [marcasCDPl, snapCDPl]);
+  const incFabPl = useObjetoFb("incidenciasFabrica");
+  const obraConIncPl = (o) => { if (!o || !o.ref) return false; const t = o.ref.tipo === "uxcar" ? "u" : "p"; let bs = []; try { bs = presFab(o).map((c) => String(c).split("-")[0].replace(/\D/g, "")); } catch (e) { bs = []; } const c = hechasCDPl.filter((x) => (x.tipo === t && x.id === String(o.ref.id)) || bs.some((b) => x.bases.has(b))); return toArray(incFabPl).some((i) => i && i.estado !== "Resuelta" && c.some((x) => (i.ventanaId && x.ids.has(String(i.ventanaId))) || (x.nombre && String(i.obra || "").trim() === x.nombre))); };
   const obraHechaCD = (o) => { if (!o || !o.ref) return false; const t = o.ref.tipo === "uxcar" ? "u" : "p"; let bs = []; try { bs = presFab(o).map((c) => String(c).split("-")[0].replace(/\D/g, "")); } catch (e) { bs = []; } const c = hechasCDPl.filter((x) => (x.tipo === t && x.id === String(o.ref.id)) || bs.some((b) => x.bases.has(b))); return c.length > 0 && c.some((x) => x.hecha); };
   const porKeyAlm = {}; todasObras.forEach((o) => { if (o.ref) porKeyAlm[`${o.ref.tipo === "uxcar" ? "u" : "p"}-${limpiaK(o.ref.id)}`] = o; });
   const abrirObraRef = (r) => { if (!r || !onVerProyecto) return; if (r.tipo === "proyecto") onVerProyecto(r.id); else if (r.tipo === "uxcar" && r.proyectoId) onVerProyecto(r.proyectoId); };
@@ -52948,8 +52952,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
-                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraConIncPl(o) ? "⚠ " : o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
                       <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
@@ -60828,6 +60832,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
   const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
   const valorUlt = (k, id) => valorGlobalCD(k, id); void diasMarcas;
+  const incVentCD = (o, v) => { const nom = String((o && o.d && o.d.nombre) || "").trim(); const pos = String(v.pos || "").toUpperCase().replace(/\s+/g, ""); return toArray(incsFabCD).some((i) => i && i.estado !== "Resuelta" && ((i.ventanaId && (String(i.ventanaId) === String(v.id) || limpia(String(i.ventanaId)) === limpia(String(v.id)))) || (nom && pos && String(i.obra || "").trim() === nom && String(i.ventanaBase || i.ventana || "").split("·")[0].trim().toUpperCase().replace(/\s+/g, "") === pos))); };
   const incsDeObraCD = (o) => { if (!o) return []; const ids = new Set(idsDe(o).map((x) => String(x))); const nom = String(o.d.nombre || "").trim(); return toArray(incsFabCD).filter((i) => i && i.estado !== "Resuelta" && ((nom && String(i.obra || "").trim() === nom) || (i.ventanaId && ids.has(limpia(String(i.ventanaId)))))); };
   // AVISO ARRIBA: incidencias abiertas y ventanas en NARANJA (problema) de las obras del día, en grande y diciendo qué es
   const avisoIncidenciasCD = (grande) => {
@@ -62261,7 +62266,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`px-3 py-1.5 mb-1 rounded-md border-2 text-sm font-semibold ${estilo[gc]}`}>{gc === "verde" ? "✓ " : ""}{g} <span className="font-normal text-xs">· {gv.filter((v) => v === 1).length}/{gv.length}</span></button>
                   {/* Las ventanas ya fabricadas (en verde) salen de esta lista y pasan a «ya fabricadas», debajo */}
                   <div className="flex flex-wrap gap-1.5">
-                    {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id); return (
+                    {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id) === 1 ? 1 : (valor(o.d.key, v.id) === 2 || incVentCD(o, v)) ? 2 : valor(o.d.key, v.id); return (
                       <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg bg-red-100 p-1" : ""}`}>
                       {esResaltada(o, v) && <div className="text-xs font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                       {lapizVentana(o, v, false)}
