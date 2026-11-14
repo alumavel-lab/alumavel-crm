@@ -48875,7 +48875,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const limpiaMapa = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
   const estadoCDk = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ultCDMapa[`${k}|${limpiaMapa(w.id)}`] ?? ultCDMapa[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
   const claveCDde = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
-  const colMapa = { verde: "bg-emerald-600 text-white", medio: "bg-emerald-100 text-emerald-900", naranja: "bg-orange-500 text-white", gris: "bg-slate-200 text-slate-800", "": "bg-slate-100 text-slate-400" };
+  const colMapa = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
+  const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
   const mapaMes = () => {
     const [yy, mm] = mesMapa.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
     const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
@@ -48887,7 +48888,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
           <button type="button" onClick={() => cambiaMes(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
           <b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b>
           <button type="button" onClick={() => cambiaMes(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
-          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-600 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 align-middle"></span> a medias · <span className="inline-block w-3 h-3 rounded-sm bg-orange-500 align-middle"></span> problema (como en Control del día) · toca un día para verlo abajo</span>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-sky-100 border border-sky-300 align-middle"></span> por hacer · <span className="inline-block w-3 h-3 rounded-sm bg-orange-300 align-middle"></span> problema (como en Control del día) · toca un día para verlo abajo</span>
         </div>
         <div className="grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
         {semanas.map((w, i) => (
@@ -48895,10 +48896,11 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); const sel = f === dia; return (
               <div key={f} onClick={() => setDia(f)} className={`min-h-[3.5rem] rounded border p-0.5 cursor-pointer ${sel ? "border-slate-900 ring-2 ring-slate-900" : f === hoy ? "border-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mesMapa ? "opacity-40" : ""}`}>
                 <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
-                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
-                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>{e === "verde" ? "✓ " : e === "naranja" ? "⚠ " : ""}{nom}</div>
+                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
+                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>
                 ); })}
-                {man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
+                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
                   <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>
                 ); })}
               </div>
@@ -61664,6 +61666,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     </div>
   );
   const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})${hechasOtrosDias ? ` · ${hechasOtrosDias} de obras de otros días` : ""}` : "Empieza a cero cada día"} />;
+  // Control del día PUBLICA su calendario tal cual (obras de cada día y su color) para que el mapa de TODOS los puestos salga igual
+  const calPublicado = useRef("");
+  const calCD = (() => { const out = {}; Object.entries(asignTodas || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((k, i) => { const ob = obraPorClave.get(k); const idsC = ob ? idsDe(ob) : []; const hecha = idsC.length > 0 && idsC.every((x) => valorUlt(k, x) === 1); const prob = !hecha && (idsC.some((x) => valorUlt(k, x) === 2) || (ob ? incsDeObraCD(ob).length > 0 : false)); let n = ob ? ob.d.nombre : k; try { const ps = ob ? [...presCrmDe(ob)] : []; if (ps.length) { const [b, v] = String(ps[0]).split("-"); n = pptoBonito(b) + (v ? "-" + v : ""); } } catch (e) { /* nombre */ } (out[f] = out[f] || {})[k] = { n: String(n || "").slice(0, 40), e: hecha ? "v" : prob ? "x" : "p", o: i }; }); }); return out; })();
+  const calCDtxt = JSON.stringify(calCD);
+  useEffect(() => { if (!Object.keys(calCD).length || calCDtxt === calPublicado.current) return; const t = setTimeout(() => { calPublicado.current = calCDtxt; fbSet(ref(fbDb, "controlDiaCalendario"), { dias: calCD, en: Date.now() }).catch(() => {}); }, 3000); return () => clearTimeout(t);
+  }, [calCDtxt]);
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -62649,7 +62657,8 @@ function MapaMesControlDia() {
   const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
   const estado = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ult[`${k}|${limpia(w.id)}`] ?? ult[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
   const claveDe = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
-  const col = { verde: "bg-emerald-600 text-white", medio: "bg-emerald-100 text-emerald-900", naranja: "bg-orange-500 text-white", gris: "bg-slate-200 text-slate-800", "": "bg-slate-100 text-slate-400" };
+  const col = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
+  const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
   const [yy, mm] = mes.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
   const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
   const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mes)) semanas.push(w); }
@@ -62659,7 +62668,7 @@ function MapaMesControlDia() {
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={() => setVer(!ver)} className="text-sm font-extrabold text-slate-800">{ver ? "▼" : "▶"} 📅 Mapa del mes · lo hecho y lo que falta</button>
         {ver && <><button type="button" onClick={() => cambia(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button><b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b><button type="button" onClick={() => cambia(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
-          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-600 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 align-middle"></span> a medias · <span className="inline-block w-3 h-3 rounded-sm bg-orange-500 align-middle"></span> problema</span></>}
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-sky-100 border border-sky-300 align-middle"></span> por hacer · <span className="inline-block w-3 h-3 rounded-sm bg-orange-300 align-middle"></span> problema</span></>}
       </div>
       {ver && <>
         <div className="mt-1 grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
@@ -62668,8 +62677,9 @@ function MapaMesControlDia() {
             {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); return (
               <div key={f} className={`min-h-[3.5rem] rounded border p-0.5 ${f === hoy ? "border-emerald-500 ring-1 ring-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mes ? "opacity-40" : ""}`}>
                 <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
-                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : e === "naranja" ? "⚠ " : ""}{nom}</div>; })}
-                {man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
+                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>; })}
+                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
               </div>
             ); })}
           </div>
