@@ -6507,7 +6507,8 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
-        {currentUser && currentUser.encargadoLinea && <PanelIncidenciasEncargado incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
@@ -56695,7 +56696,7 @@ function textoTiempoInc(ms) {
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
 // ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
 const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
-function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr }) {
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false }) {
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
   const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
@@ -56703,6 +56704,19 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
   useEffect(() => { if (abiertas.length > nPrev.current) { try { pitidoCRM(false); setTimeout(() => pitidoCRM(false), 400); } catch (e) { /* sin sonido */ } } nPrev.current = abiertas.length; }, [abiertas.length]);
   if (!abiertas.length) return null;
   const mmss = (ms) => { const s2 = Math.max(0, Math.round(Math.abs(ms) / 1000)); return `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, "0")}`; };
+  // Para el resto del equipo: una franja por incidencia (todos se enteran y pueden actuar)
+  if (compacto) return (
+    <div className="bg-slate-900 px-3 py-1.5 space-y-1">
+      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
+        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
+          <span>🚨 INCIDENCIA · {i.puesto || "?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}{i.obra ? ` · ${i.obra}` : ""}: <span className="font-semibold">{i.texto || i.tipo || ""}</span></span>
+          <span className="ml-auto font-black text-base">{tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          {i.asignadoA ? <span className="text-xs">{mia ? "VAS TÚ" : "ya va alguien"}</span> : <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">🏃 Voy yo</button>}
+          <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-2 py-0.5 rounded bg-emerald-600 text-white text-xs font-extrabold">✓ Resuelta</button>
+        </div>
+      ); })}
+    </div>
+  );
   return (
     <div className="p-3 bg-slate-900 space-y-2">
       <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
