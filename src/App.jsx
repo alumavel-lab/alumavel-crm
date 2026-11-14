@@ -48092,12 +48092,13 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
-  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
+  const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = u.et; });
+  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return etCDZ[cod] || cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
@@ -49962,6 +49963,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   }, [indice, ubic, hojasOv]);
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
+  const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50224,8 +50226,33 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
-            // «Persiana puesta» SIN LECTOR: se busca la etiqueta del MARCO de su ventana y se hace lo mismo que al leerla con la pistola
-            // (la ventana va a su hueco de Persiana A/B (salida) y la persiana se da de baja del carro)
+            // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
+            //    y se pone en su hueco de Persiana A/B (salida) con su nombre; la persiana se da de baja del carro
+            try {
+              const normV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+              const exps0 = numsExpediente(x.expediente).map((n) => n.replace(/^0+/, ""));
+              const uxs = toArray(uxExpedientes).filter((e) => e && exps0.includes(String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "")));
+              const bases = new Set([x.presupuesto, ...uxs.flatMap((e) => [e.presupuesto, e.presupuestoNumero])].map((t) => digitosPresu(String(t || "").split(/[·,;\s]+/)[0])).filter((b) => b && b.length >= 3));
+              const rv = normV(x.ref); let hit = null;
+              if (rv) Object.entries(snapCDLin || {}).forEach(([k, sn]) => {
+                if (hit || !sn) return;
+                const okObra = (sn.tipo === "u" && uxs.some((e) => String(e.id) === String(sn.id))) || toArray(sn.codigos).some((c) => bases.has(String(c).split("-")[0].replace(/\D/g, "")));
+                if (!okObra) return;
+                const w = toArray(sn.ventanas).find((w2) => normV(w2.pos) === rv) || toArray(sn.ventanas).find((w2) => normV(w2.g) === rv);
+                if (w) hit = { k, sn, w };
+              });
+              const zP = zonas.find((q) => q.id === puestoId);
+              if (hit && zP) {
+                const codCD = `cd_${hit.k}__${hit.w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+                const r = await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+                if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
+                ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
+                fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${codCD}`), Date.now()).catch(() => {});
+                avisar(true, r ? `✓ Persiana ${x.ref || ""} PUESTA · la ventana ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `✓ Persiana ${x.ref || ""} PUESTA (dada de baja del carro) · ⚠ ${zP.nombre} está LLENA: la ventana ${hit.w.pos} no tiene hueco`, false);
+                return true;
+              }
+            } catch (eCD) { /* sigue con la etiqueta */ }
+            // 2) Con etiquetas (cuando haya pistola): se busca la etiqueta del MARCO de su ventana y se hace lo mismo que al leerla
             const exps = numsExpediente(x.expediente);
             const cands = []; indice.forEach((h, cod) => { if (!h || !h.ventana || !toArray(h.ventana.piezas)[0] || String(cod) !== String(baseDe(h.ventana))) return; const d = datosVentanaLinea(h); if (exps.includes(d.exp) && d.casa(x.ref)) cands.push({ h, cod: String(cod) }); });
             const libre = cands.find((c) => !escaneos.some((e) => e.id === claveLecturaLinea(puestoId, c.h))) || null;
