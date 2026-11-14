@@ -48772,7 +48772,16 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   }, [ubicAlmP, cabsAlmP, indice]);
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
-  const marcasPP = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
+  const marcasTodosPP = useObjetoFb("marcasPuestoLinea"); // ticadas a mano en TODOS los puestos (para ver por dónde ha pasado cada ventana)
+  const marcasPP = (marcasTodosPP && marcasTodosPP[puestoId]) || {};
+  // Por dónde ha pasado cada ventana: puesto, fecha y hora (y quién), de lo ticado a mano y de lo leído con la pistola
+  const fmtTick = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
+  const pasosVentana = (c, v) => {
+    const out = []; const vistos = new Set();
+    Object.entries(marcasTodosPP || {}).forEach(([pu, ms]) => Object.values(ms || {}).forEach((m) => { if (!m) return; const okV = (m.ventanaId && String(m.ventanaId) === String(v.id)) || ([...c.bases].includes(basePresuDia(m.base)) && normP(m.pos) === normP(v.pos)); if (!okV || vistos.has(pu)) return; vistos.add(pu); out.push({ pu, ts: m.ts, por: m.por || "" }); }));
+    toArray(escaneos).forEach((x) => { if (!x || String(x.ventanaId) !== String(v.id) || vistos.has(x.puestoId)) return; vistos.add(x.puestoId); out.push({ pu: x.puestoId, ts: x.ts, por: x.por || "" }); });
+    return out.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+  };
   // Ventanas con incidencia abierta: salen en NARANJA en el dibujo
   const incsFabP = useObjetoFb("incidenciasFabrica");
   const incVentP = useMemo(() => { const ids = new Set(); const pp = new Set(); toArray(incsFabP).forEach((i) => { if (!i || i.estado === "Resuelta") return; if (i.ventanaId) ids.add(String(i.ventanaId)); const pos = String(i.ventanaBase || i.ventana || "").split("·")[0].trim().toUpperCase().replace(/\s+/g, ""); if (pos) pp.add(`${String(i.obra || "").trim()}|${pos}`); }); return { ids, pp }; }, [incsFabP]);
@@ -48841,6 +48850,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
                     {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                    {!enTv && (() => { const ps = pasosVentana(c, v); return ps.length ? <div className="w-full mt-0.5 space-y-0.5">{ps.slice(-4).map((pz, i) => <div key={i} title={pz.por ? `por ${pz.por}` : ""} className={`text-[9px] leading-tight rounded px-1 ${pz.pu === puestoId ? "bg-black/20 font-extrabold" : "bg-black/10"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pz.pu) || {}).corto || nombrePuestoLinea(pz.pu)} · {fmtTick(pz.ts)}</div>)}</div> : null; })()}
                     {!enTv && <div onClick={(e) => e.stopPropagation()} className="mt-0.5"><BotonIncidenciaFabrica prefill={{ obra: c.obra || c.nombre || (c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""), ventana: v.pos || "", ventanaId: String(v.id || ""), puesto: nombrePuestoLinea(puestoId) }} /></div>}
                   </div>
                 ); })}
@@ -62287,7 +62297,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   {(() => { const hv = vs.filter((v) => valor(o.d.key, v.id) === 1); if (!hv.length) return null; const kh = `${o.d.key}|${g}`; return (
                     <div className="mt-1.5">
                       <button type="button" onClick={() => setVerHechas((x) => ({ ...x, [kh]: !x[kh] }))} className="text-xs font-semibold text-emerald-800">{verHechas[kh] ? "▼" : "▶"} ✓ {hv.length} ya fabricada{hv.length === 1 ? "" : "s"}</button>
-                      {verHechas[kh] && <div className="mt-1 flex flex-wrap gap-1">{hv.map((v) => <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} title="Tócala para cambiarla (vuelve a la lista si no está hecha)" className="px-2 py-0.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-semibold">✓ {v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}</button>)}</div>}
+                      {verHechas[kh] && <div className="mt-1 flex flex-wrap gap-1">{hv.map((v) => <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} title="Tócala para cambiarla (vuelve a la lista si no está hecha)" className="px-2 py-0.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-semibold">✓ {v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}{(() => { const x = (idxMarcasCD[limpia(o.d.key)] || {})[v.id] || (idxMarcasCD[limpia(o.d.key)] || {})[String(v.id).replace(/[.#$/[\]]/g, "_")]; if (!x || !x.ts) return null; const d = new Date(x.ts); return <span className="font-normal text-emerald-700"> · C. día {d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} {d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>; })()}</button>)}</div>}
                     </div>
                   ); })()}
                 </div>
