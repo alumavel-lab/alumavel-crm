@@ -60073,6 +60073,18 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return idx;
   }, [marcasTodas, horasTodas, borradasCD]);
   const valorGlobalCD = (k, id) => { const x = (idxMarcasCD[k] || {})[id]; return x ? x.v : 0; };
+  // SIN PISTOLA: la ventana que Persiana A/B puso en su hueco (por la hoja de corte, código «cd_…») sale del hueco
+  // en cuanto Control de línea la tica en VERDE aquí (la echa a la línea)
+  const ubicCDL = useObjetoFb("ubicacionesLinea");
+  useEffect(() => {
+    const limpiaId = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+    Object.keys(ubicCDL || {}).forEach((c) => {
+      const m = /^cd_(.+)__([^_].*)$/.exec(c); if (!m) return;
+      const a2 = idxMarcasCD[m[1]] || {};
+      const id = Object.keys(a2).find((i) => limpiaId(i) === m[2]);
+      if (id && a2[id] && a2[id].v === 1) liberarCodigoLinea(c).catch(() => {});
+    });
+  }, [ubicCDL, idxMarcasCD]);
   const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
