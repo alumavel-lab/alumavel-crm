@@ -50121,6 +50121,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
+      {puestoId && puestoId !== "controlDia" && <ContadorRitmoLinea admin={admin} total={0} puestoContar={puestoId} detalle="Se cuenta solo, con cada ventana leída hoy en este puesto · empieza a cero cada día" />}
       <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
@@ -62228,14 +62229,14 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien, onAbrir = null, 
 }
 
 // Contador de ritmo de la línea: ventanas que han pasado hoy frente a las que deberían (ritmo por hora desde la hora de inicio)
-function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detalle = "" }) {
+function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detalle = "", puestoContar = "" }) {
   const escaneos = useEscaneosLinea();
   const cfg = useObjetoFb("configRitmoLinea");
   const [ahora, setAhora] = useState(Date.now());
   const [editar, setEditar] = useState(false);
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 20000); return () => clearInterval(t); }, []);
   const ritmo = parseFloat(cfg.ritmo) > 0 ? parseFloat(cfg.ritmo) : 8;
-  const inicio = cfg.inicio || "08:00"; const fin = cfg.fin || "16:00"; const puesto = cfg.puesto || "todos";
+  const inicio = cfg.inicio || "08:00"; const fin = cfg.fin || "16:00"; const puesto = puestoContar || cfg.puesto || "todos"; // en un puesto de la línea se cuenta SOLO ese puesto
   const aMin = (t) => { const [h, m] = String(t || "0:0").split(":"); return (parseInt(h, 10) || 0) * 60 + (parseInt(m, 10) || 0); };
   const d = new Date(ahora); const minAhora = d.getHours() * 60 + d.getMinutes();
   const mIni = aMin(inicio), mFin = Math.max(aMin(fin), mIni + 1);
@@ -62257,7 +62258,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
         <span className="text-4xl leading-none">{fuera ? "🕒" : mal ? "🔔" : "😀"}</span>
         <div>
-          <div className="text-3xl font-black leading-none">{real} <span className="text-lg font-bold">{realProp !== undefined ? "ventanas hechas" : "ventanas hoy"}</span></div>
+          <div className="text-3xl font-black leading-none">{real} <span className="text-lg font-bold">{realProp !== undefined ? "ventanas hechas" : puestoContar ? `ventanas hoy en ${nombrePuestoLinea(puestoContar)}` : "ventanas hoy"}</span></div>
           {detalle && <div className="text-xs font-semibold mt-1 opacity-80">{detalle}</div>}
         </div>
         <div className="text-sm font-bold">
