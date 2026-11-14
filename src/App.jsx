@@ -5331,7 +5331,7 @@ export default function App() {
   useEffect(() => {
     if (!currentUser || loading) return;
     const hoy = new Date().toISOString().slice(0, 10);
-    const claves = ["presupuestos", "proyectos", "clientes", "facturas", "pedidos", "leads", "instalaciones", "ingresos"];
+    const claves = ["presupuestos", "proyectos", "clientes", "facturas", "pedidos", "leads", "instalaciones", "ingresos", "configVentanas", "planFabrica"];
     (async () => {
       try {
         const r = await runTransaction(ref(fbDb, `copiasDiariasIndice/${hoy}`), (x) => (x ? undefined : Date.now()));
@@ -6507,7 +6507,8 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
-        {currentUser && currentUser.encargadoLinea && <PanelIncidenciasEncargado incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
@@ -48759,7 +48760,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const ubicAlmP = useObjetoFb("ubicacionesLinea"); const cabsAlmP = useObjetoFb("caballetesVentanas");
   const enAlmacen = useMemo(() => {
     const ids = new Map(), pp = new Map();
-    const apunta = (id, num, pos, donde) => { if (id) ids.set(String(id), donde); const b = basePresuDia(num); if (b && pos) pp.set(`${b}|${String(pos).toUpperCase().replace(/\s+/g, "")}`, donde); };
+    // por id SOLO si es un id largo (único): los ids cortos («1», «2»…) se repiten en todas las obras y marcaban «palet C-11» en ventanas de otras obras
+    const apunta = (id, num, pos, donde) => { if (id && String(id).length >= 8) ids.set(String(id), donde); const b = basePresuDia(num); if (b && pos) pp.set(`${b}|${String(pos).toUpperCase().replace(/\s+/g, "")}`, donde); };
     Object.values(cabsAlmP || {}).forEach((c) => { if (!c || (c.estado || "libre") === "fuera") return; toArray(c.ventanas).forEach((w) => { if (w) apunta(w.id, w.num, w.pos, `palet ${c.numero || ""}`.trim()); }); });
     Object.entries(ubicAlmP || {}).forEach(([cod, u]) => { if (!u || !["espera", "solape"].includes(u.zonaId)) return; const hh = indice && indice.get(cod); if (!hh || !hh.ventana) return; apunta(hh.ventana.id, hh.ventana.num, hh.ventana.pos, `${u.zonaId === "solape" ? "Solape" : "Terminadas"} ${u.hueco}`); });
     return { ids, pp };
@@ -48856,6 +48858,58 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     );
   };
   const vacio = <div className="text-sm text-slate-400">No hay obras en el calendario de este día (Almacén del día / Control del día).</div>;
+  // MAPA DEL MES: todas las obras del planning por días; en VERDE las que ya están hechas en este puesto. Tocar un día lo abre abajo.
+  const [mesMapa, setMesMapa] = useState(() => hoy.slice(0, 7));
+  const [verMapa, setVerMapa] = useEstadoLocal(`crm_panelDiaMapa_${puestoId}`, true);
+  const esPuertaMapa = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+  const obraHechaAqui = (ob) => {
+    const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return null;
+    const sns = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c))));
+    const vs = sns.flatMap((sn) => toArray(sn.ventanas)).filter((w) => puestoId !== "puerta" || esPuertaMapa(w));
+    if (!vs.length) return null;
+    const c0 = { bases: bs }; return vs.every((w) => esLeida(c0, w));
+  };
+  // MISMOS COLORES QUE EL CALENDARIO DE CONTROL DEL DÍA: verde = todas sus ventanas hechas, verde claro = a medias, naranja = con problema
+  const marcasCDMapa = useObjetoFb("controlDia");
+  const ultCDMapa = useMemo(() => { const u = {}; Object.keys(marcasCDMapa || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcasCDMapa[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { u[`${k}|${id}`] = v; }))); return u; }, [marcasCDMapa]);
+  const limpiaMapa = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  const estadoCDk = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ultCDMapa[`${k}|${limpiaMapa(w.id)}`] ?? ultCDMapa[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
+  const claveCDde = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
+  const colMapa = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
+  const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
+  const mapaMes = () => {
+    const [yy, mm] = mesMapa.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
+    const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
+    const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mesMapa)) semanas.push(w); }
+    const cambiaMes = (n) => { const d = new Date(yy, mm - 1 + n, 1, 12); setMesMapa(d.toLocaleDateString("sv-SE").slice(0, 7)); };
+    return (
+      <div className="mt-2 rounded-lg border border-slate-300 bg-white p-2">
+        <div className="flex items-center gap-2 mb-1">
+          <button type="button" onClick={() => cambiaMes(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
+          <b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b>
+          <button type="button" onClick={() => cambiaMes(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-sky-100 border border-sky-300 align-middle"></span> por hacer · <span className="inline-block w-3 h-3 rounded-sm bg-orange-300 align-middle"></span> problema (como en Control del día) · toca un día para verlo abajo</span>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
+        {semanas.map((w, i) => (
+          <div key={i} className="grid grid-cols-7 gap-1 mt-1">
+            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); const sel = f === dia; return (
+              <div key={f} onClick={() => setDia(f)} className={`min-h-[3.5rem] rounded border p-0.5 cursor-pointer ${sel ? "border-slate-900 ring-2 ring-slate-900" : f === hoy ? "border-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mesMapa ? "opacity-40" : ""}`}>
+                <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
+                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
+                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>
+                ); })}
+                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
+                  <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>
+                ); })}
+              </div>
+            ); })}
+          </div>
+        ))}
+      </div>
+    );
+  };
   if (tv) {
     const z = ultimo && ultimo.zona;
     return (
@@ -48884,6 +48938,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
         {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="text-xs font-semibold text-slate-600 underline">quitar</button>}
         <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
       </div>
+      {abierto && <div className="mt-1"><button type="button" onClick={() => setVerMapa(!verMapa)} className="text-xs font-bold text-slate-700 underline">{verMapa ? "▼ Ocultar el mapa del mes" : "▶ Ver el mapa del mes (todas las obras por días)"}</button>{verMapa && mapaMes()}</div>}
       {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
     </div>
   );
@@ -52544,19 +52599,25 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Obras que se han quedado en un día ya pasado sin terminar (ancladas o con día puesto a mano): se pasan desde aquí y se PUBLICAN
   // (planFabrica.atrasadas) para que el aviso salga a todos: barra de arriba del CRM y Control del día
   const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
+  // BORRADOR / PUBLICADO: los puestos, Control del día y Almacén del día solo ven el planning HASTA el día publicado.
+  // Lo que va después es borrador (solo se ve aquí). Sin publicar nada: hasta el domingo de esta semana.
+  const finSemanaActual = (() => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); return d.toLocaleDateString("sv-SE"); })();
+  const publicadoHasta = cfg.publicadoHasta && cfg.publicadoHasta >= hoy ? cfg.publicadoHasta : finSemanaActual;
   const publicadoFb = (() => {
-    const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
-    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas, orden: Object.keys(dias[f]).length }; }));
+    const porId0 = {}; firmes.forEach((o) => { porId0[o.id] = o; });
+    // una obra que EMPIEZA después de lo publicado no se publica (ni sus días)
+    const porId = {}; Object.entries(porId0).forEach(([id, o]) => { const r = plan1.obras[id]; if (!r || !r.inicio || r.inicio <= publicadoHasta) porId[id] = o; });
+    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o || f > publicadoHasta) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas, orden: Object.keys(dias[f]).length }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
     // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
     const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
     const atrasadas = {}; atascadas.forEach((o) => { const r = plan1.obras[o.id]; atrasadas[claveRefFb(o)] = { nombre: o.nombre, inicio: r.inicio, fin: r.fin, pres: presFab(o) }; });
-    return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas });
+    return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas, publicadoHasta });
   })();
   const ultimoPublicadoFb = useRef("");
   useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
     // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
-    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length) diasPP[f] = d.trozos.map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
+    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length && f <= publicadoHasta) diasPP[f] = d.trozos.filter((t) => { const r = plan1.obras[t.id]; return !r || !r.inicio || r.inicio <= publicadoHasta; }).map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
   }, [publicadoFb, planPrevioListo]);
   // Semanas del planning virtual
   const semanas = {};
@@ -52776,10 +52837,34 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     </div>
   );
 
+  const [selPl, setSelPl] = useState([]); // obras marcadas para moverlas juntas
+  const [diaSelPl, setDiaSelPl] = useState("");
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
-  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en }); };
+  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-indigo-400 bg-indigo-50 px-3 py-2 text-sm">
+        <span className="font-bold text-indigo-900">📢 Los puestos (Control del día, Almacén del día, Línea) ven el planning hasta el <span className="capitalize">{fmtDia(publicadoHasta)}</span>.</span>
+        <span className="text-xs text-indigo-800">Lo que va después es BORRADOR: solo lo ves tú aquí.</span>
+        <label className="ml-auto flex items-center gap-1 font-semibold text-indigo-900">Publicar hasta <input type="date" min={hoy} defaultValue={publicadoHasta} key={publicadoHasta} id="pubHastaPl" className="border border-indigo-300 rounded px-1.5 py-1 bg-white" /></label>
+        <button onClick={() => { const el = document.getElementById("pubHastaPl"); const v = el && el.value; if (!v) return; if (window.confirm(`¿Publicar el planning hasta el ${fmtDate(v)}? Los puestos lo verán.`)) guardarCfg({ publicadoHasta: v }); }} className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📢 Publicar</button>
+      </div>
+      {selPl.length > 0 && (
+        <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-500 bg-sky-50 px-3 py-2 text-sm shadow">
+          <b className="text-sky-900">✔ {selPl.length} obra{selPl.length === 1 ? "" : "s"} marcada{selPl.length === 1 ? "" : "s"}</b>
+          <span className="text-sky-900">→ mover al</span>
+          <input type="date" value={diaSelPl} onChange={(e) => setDiaSelPl(e.target.value)} className="border border-sky-400 rounded px-1.5 py-1 bg-white" />
+          <button disabled={!diaSelPl} onClick={() => { pasarObras(firmes.filter((o) => selPl.includes(o.id)), diaSelPl); setSelPl([]); }} className="px-3 py-1.5 rounded-md bg-sky-700 text-white text-sm font-bold disabled:opacity-40">Mover</button>
+          <button onClick={() => setSelPl([])} className="text-xs text-slate-600 underline">quitar marcas</button>
+        </div>
+      )}
+      {cfg.fechasPlanAnterior && Object.keys(fechasPlan).length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 text-sm">
+          <span className="font-semibold text-slate-700">↩ ¿Te has equivocado al pasar obras de día?</span>
+          <button onClick={() => { if (window.confirm("¿Dejar los días de las obras como estaban ANTES del último «pasar obras»?")) guardarCfg({ fechasPlan: cfg.fechasPlanAnterior, fechasPlanAnterior: null }); }} className="px-3 py-1.5 rounded-md bg-slate-800 text-white text-sm font-bold">Deshacer: volver a como estaba</button>
+          <button onClick={() => guardarCfg({ fechasPlanAnterior: null })} className="text-xs text-slate-500 underline">Está bien así</button>
+        </div>
+      )}
       {atascadas.length > 0 && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-2">
           <div className="flex flex-wrap items-center gap-3">
@@ -52944,7 +53029,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
               <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) { ponerDia(id, f); setMoviendo(null); } }}
                 className={`bg-white border rounded-lg p-3 ${moviendo ? "border-sky-400 ring-1 ring-sky-200" : "border-slate-200"}`}>
                 <div className="flex items-center gap-1">
-                  <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}</div>
+                  <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}{f > publicadoHasta ? <span className="ml-1 text-[10px] font-bold text-amber-700 normal-case">· BORRADOR</span> : null}</div>
+                  {d.trozos.length > 0 && <button type="button" title="Marcar todas las obras de este día para moverlas juntas" onClick={() => { const ids = [...new Set(d.trozos.map((t) => t.id))]; const todas = ids.every((x) => selPl.includes(x)); setSelPl(todas ? selPl.filter((x) => !ids.includes(x)) : [...new Set([...selPl, ...ids])]); }} className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-sky-400 text-sky-800 bg-white">✔ todo el día</button>}
                   {moviendo && <button type="button" onClick={() => { ponerDia(moviendo.id, f); setMoviendo(null); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white">Mover aquí</button>}
                 </div>
                 <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: pasaH ? "#dc2626" : "#2E8B57" }} /></div>
@@ -52957,6 +53043,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <label className="float-right ml-1" title="Marcar para moverla con otras" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selPl.includes(t.id)} onChange={(e) => setSelPl(e.target.checked ? [...new Set([...selPl, t.id])] : selPl.filter((x) => x !== t.id))} /></label>
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraConIncPl(o) ? "⚠ " : o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
@@ -56695,7 +56782,7 @@ function textoTiempoInc(ms) {
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
 // ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
 const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
-function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr }) {
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false }) {
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
   const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
@@ -56703,6 +56790,19 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
   useEffect(() => { if (abiertas.length > nPrev.current) { try { pitidoCRM(false); setTimeout(() => pitidoCRM(false), 400); } catch (e) { /* sin sonido */ } } nPrev.current = abiertas.length; }, [abiertas.length]);
   if (!abiertas.length) return null;
   const mmss = (ms) => { const s2 = Math.max(0, Math.round(Math.abs(ms) / 1000)); return `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, "0")}`; };
+  // Para el resto del equipo: una franja por incidencia (todos se enteran y pueden actuar)
+  if (compacto) return (
+    <div className="bg-slate-900 px-3 py-1.5 space-y-1">
+      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
+        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
+          <span>🚨 INCIDENCIA · {i.puesto || "?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}{i.obra ? ` · ${i.obra}` : ""}: <span className="font-semibold">{i.texto || i.tipo || ""}</span></span>
+          <span className="ml-auto font-black text-base">{tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          {i.asignadoA ? <span className="text-xs">{mia ? "VAS TÚ" : "ya va alguien"}</span> : <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">🏃 Voy yo</button>}
+          <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-2 py-0.5 rounded bg-emerald-600 text-white text-xs font-extrabold">✓ Resuelta</button>
+        </div>
+      ); })}
+    </div>
+  );
   return (
     <div className="p-3 bg-slate-900 space-y-2">
       <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
@@ -57518,10 +57618,14 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
+        const nAlm = items.filter((x) => almacenDe(x) === a.id).length;
+        // Puesto de persiana: CADA ALMACÉN en su desplegable (cerrado), para que no ocupe la pantalla; se abre el que se busca
+        const abrirAlm = !!(destacarPers && (destacarPers.almacenId || ALMACEN_PRINCIPAL_ID) === a.id) || (!!focoId && items.some((x) => x.id === focoId && almacenDe(x) === a.id));
         return (
-          <div key={a.id} className="mb-3">
-            {almacenes.length > 1 && <div className="text-xs font-bold text-slate-500 mb-1">{a.nombre}</div>}
-            <div className="flex flex-wrap gap-2">
+          <details key={a.id} open={!plegable || abrirAlm || undefined} className={plegable ? "mb-2 rounded-lg border border-slate-300 bg-slate-50" : "mb-3"}>
+            {plegable ? <summary className="cursor-pointer px-3 py-2 text-sm font-bold text-slate-800">📦 {a.nombre} <span className="font-normal text-slate-500">· {cs.length} carros · {nAlm} persianas</span></summary>
+              : (almacenes.length > 1 ? <summary className="list-none text-xs font-bold text-slate-500 mb-1">{a.nombre}</summary> : <summary className="hidden" />)}
+            <div className={`flex flex-wrap gap-2 ${plegable ? "p-2" : ""}`}>
               {cs.map((c) => {
                 const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
                 const its = items.filter((x) => almacenDe(x) === a.id && x.estante && x.estante.carro === c.numero);
@@ -57544,7 +57648,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 );
               })}
             </div>
-          </div>
+          </details>
         );
       })}
       </PlegableSi>
@@ -61562,6 +61666,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     </div>
   );
   const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})${hechasOtrosDias ? ` · ${hechasOtrosDias} de obras de otros días` : ""}` : "Empieza a cero cada día"} />;
+  // Control del día PUBLICA su calendario tal cual (obras de cada día y su color) para que el mapa de TODOS los puestos salga igual
+  const calPublicado = useRef("");
+  const calCD = (() => { const out = {}; Object.entries(asignTodas || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((k, i) => { const ob = obraPorClave.get(k); const idsC = ob ? idsDe(ob) : []; const hecha = idsC.length > 0 && idsC.every((x) => valorUlt(k, x) === 1); const prob = !hecha && (idsC.some((x) => valorUlt(k, x) === 2) || (ob ? incsDeObraCD(ob).length > 0 : false)); let n = ob ? ob.d.nombre : k; try { const ps = ob ? [...presCrmDe(ob)] : []; if (ps.length) { const [b, v] = String(ps[0]).split("-"); n = pptoBonito(b) + (v ? "-" + v : ""); } } catch (e) { /* nombre */ } (out[f] = out[f] || {})[k] = { n: String(n || "").slice(0, 40), e: hecha ? "v" : prob ? "x" : "p", o: i }; }); }); return out; })();
+  const calCDtxt = JSON.stringify(calCD);
+  useEffect(() => { if (!Object.keys(calCD).length || calCDtxt === calPublicado.current) return; const t = setTimeout(() => { calPublicado.current = calCDtxt; fbSet(ref(fbDb, "controlDiaCalendario"), { dias: calCD, en: Date.now() }).catch(() => {}); }, 3000); return () => clearTimeout(t);
+  }, [calCDtxt]);
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -62536,6 +62646,48 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
 
 // Para abrir Línea (pistola) directamente en una pantalla (p.ej. «almacen» desde un aviso de arriba)
 const tabInicialLinea = { actual: null };
+// MAPA DEL MES (como el calendario de Control del día) para los puestos que no tienen «Obras del día»: Auxiliares, Mosquiteras y postigos,
+// Almacén del día, Almacén de ventanas, Cargas… Así TODOS ven lo que está hecho y lo que no.
+function MapaMesControlDia() {
+  const hoy = new Date().toLocaleDateString("sv-SE");
+  const [ver, setVer] = useEstadoLocal("crm_mapaMesCD", true);
+  const [mes, setMes] = useState(hoy.slice(0, 7));
+  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra"); const marcas = useObjetoFb("controlDia");
+  const ult = useMemo(() => { const u = {}; Object.keys(marcas || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcas[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { u[`${k}|${id}`] = v; }))); return u; }, [marcas]);
+  const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  const estado = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ult[`${k}|${limpia(w.id)}`] ?? ult[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
+  const claveDe = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
+  const col = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
+  const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
+  const [yy, mm] = mes.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
+  const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
+  const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mes)) semanas.push(w); }
+  const cambia = (n) => { const d = new Date(yy, mm - 1 + n, 1, 12); setMes(d.toLocaleDateString("sv-SE").slice(0, 7)); };
+  return (
+    <div className="mb-3 rounded-lg border-2 border-slate-300 bg-white p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setVer(!ver)} className="text-sm font-extrabold text-slate-800">{ver ? "▼" : "▶"} 📅 Mapa del mes · lo hecho y lo que falta</button>
+        {ver && <><button type="button" onClick={() => cambia(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button><b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b><button type="button" onClick={() => cambia(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-sky-100 border border-sky-300 align-middle"></span> por hacer · <span className="inline-block w-3 h-3 rounded-sm bg-orange-300 align-middle"></span> problema</span></>}
+      </div>
+      {ver && <>
+        <div className="mt-1 grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
+        {semanas.map((w, i) => (
+          <div key={i} className="grid grid-cols-7 gap-1 mt-1">
+            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); return (
+              <div key={f} className={`min-h-[3.5rem] rounded border p-0.5 ${f === hoy ? "border-emerald-500 ring-1 ring-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mes ? "opacity-40" : ""}`}>
+                <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
+                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>; })}
+                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
+              </div>
+            ); })}
+          </div>
+        ))}
+      </>}
+    </div>
+  );
+}
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -62587,6 +62739,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
           ))}
         </div>
       )}
+      {["auxiliares", "mosqpost", "almacenDia", "almacen", "cargas", "estanterias", "parte", "incidencias"].includes(actual.id) && <MapaMesControlDia />}
       {actual.aviso && tabs.length > 1 && (
         <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
       )}
