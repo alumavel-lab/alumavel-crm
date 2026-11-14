@@ -57532,10 +57532,14 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
+        const nAlm = items.filter((x) => almacenDe(x) === a.id).length;
+        // Puesto de persiana: CADA ALMACÉN en su desplegable (cerrado), para que no ocupe la pantalla; se abre el que se busca
+        const abrirAlm = !!(destacarPers && (destacarPers.almacenId || ALMACEN_PRINCIPAL_ID) === a.id) || (!!focoId && items.some((x) => x.id === focoId && almacenDe(x) === a.id));
         return (
-          <div key={a.id} className="mb-3">
-            {almacenes.length > 1 && <div className="text-xs font-bold text-slate-500 mb-1">{a.nombre}</div>}
-            <div className="flex flex-wrap gap-2">
+          <details key={a.id} open={!plegable || abrirAlm || undefined} className={plegable ? "mb-2 rounded-lg border border-slate-300 bg-slate-50" : "mb-3"}>
+            {plegable ? <summary className="cursor-pointer px-3 py-2 text-sm font-bold text-slate-800">📦 {a.nombre} <span className="font-normal text-slate-500">· {cs.length} carros · {nAlm} persianas</span></summary>
+              : (almacenes.length > 1 ? <summary className="list-none text-xs font-bold text-slate-500 mb-1">{a.nombre}</summary> : <summary className="hidden" />)}
+            <div className={`flex flex-wrap gap-2 ${plegable ? "p-2" : ""}`}>
               {cs.map((c) => {
                 const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
                 const its = items.filter((x) => almacenDe(x) === a.id && x.estante && x.estante.carro === c.numero);
@@ -57558,7 +57562,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 );
               })}
             </div>
-          </div>
+          </details>
         );
       })}
       </PlegableSi>
