@@ -57177,6 +57177,8 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
+  const [bPres, setBPres] = useState(""); const [bVent, setBVent] = useState(""); // buscar persiana: presupuesto + nº de ventana (sin lector)
+  const [focoId, setFocoId] = useState(""); // persiana buscada: se marca en rojo en el dibujo del carro
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
@@ -57204,6 +57206,43 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(por presupuesto · incidencia y baja)</span></h4>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, vivienda o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
       </div>
+      {(() => {
+        // BUSCAR UNA PERSIANA SIN LECTOR: presupuesto (o expediente) + nº de ventana → en qué carro, lado y estante está
+        const dP = String(bPres || "").split("-")[0].replace(/\D/g, "");
+        const dV = String(bVent || "").replace(/\D/g, "").replace(/^0+/, "");
+        // expedientes de Uxcar de ese presupuesto (muchas persianas no traen el presupuesto, solo el EXP)
+        const expsP = new Set(); if (dP.length >= 3) toArray(ctx.uxExpedientes).forEach((e) => { if (e && [e.presupuesto, e.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === dP))) { const n = String(e.numero || "").replace(/\D/g, "").replace(/^0+/, ""); if (n) expsP.add(n); } });
+        const res = (dP.length >= 3 || dV.length >= 1) ? items.filter((x) => {
+          const pres = digitosPresu(String(x.presupuesto || "").split(/[·,;\s]+/)[0]); const exp = String(x.expediente || "").replace(/\D/g, "").replace(/^0+/, "");
+          const okP = dP.length < 3 || pres === dP || exp === dP.replace(/^0+/, "") || expsP.has(exp);
+          const rv = String(x.ref || "").replace(/\D/g, "").replace(/^0+/, "");
+          const okV = !dV || rv === dV || rv.endsWith(dV);
+          return okP && okV && (dP.length >= 3);
+        }).slice(0, 30) : [];
+        return (
+          <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <b className="text-sm text-sky-900 w-full">🔎 Buscar una persiana (sin lector)</b>
+              <label className="text-xs font-semibold text-slate-600">Presupuesto o expediente<input value={bPres} onChange={(e) => { setBPres(e.target.value); setFocoId(""); }} inputMode="numeric" placeholder="7132 o 182" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+              <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bVent} onChange={(e) => { setBVent(e.target.value); setFocoId(""); }} placeholder="V01.301 o 301" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+              {(bPres || bVent) && <button type="button" onClick={() => { setBPres(""); setBVent(""); setFocoId(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
+            </div>
+            {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No hay ninguna persiana de ese presupuesto{dV ? " con ese nº de ventana" : ""} en los carros.</div>}
+            {res.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {res.map((x) => (
+                  <div key={x.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ${focoId === x.id ? "bg-rose-600 text-white" : "bg-white border border-sky-200"}`}>
+                    <b className="text-lg">{x.ref || "—"}</b>
+                    <span className="text-sm">{etiquetaPptoPers(clavePptoPers(x))} · EXP {x.expediente || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} mm</span>
+                    <b className="text-base">📍 Carro {x.estante.carro} · lado {x.estante.lado} · estante {x.estante.nivel}{x.estante.fila === "exterior" ? " · fila exterior" : ""}</b>
+                    <button type="button" onClick={() => { setFocoId(x.id); setCarroVer({ almacenId: almacenDe(x), numero: x.estante.carro }); }} className={`ml-auto text-sm font-bold px-3 py-1.5 rounded ${focoId === x.id ? "bg-white text-rose-700" : "bg-sky-700 text-white"}`}>Ver en el carro</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57248,6 +57287,40 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 <button type="button" onClick={() => setCarroVer(null)} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
               </div>
               <div className="overflow-y-auto p-4">
+                {its.length > 0 && (() => {
+                  // EL MISMO DIBUJO DEL CARRO QUE EN EL ALMACÉN DE PERSIANAS: lados, estantes y cada persiana en su sitio (la buscada en rojo)
+                  const estC = estantesAlmacenPersianas(carros.filter((c) => almacenDe(c) === carroVer.almacenId)).filter((e) => e.carro === carroVer.numero);
+                  if (!estC.length) return null;
+                  const esFocoX = (x) => focoId ? x.id === focoId : (!!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel && (!foco.ref || foco.ref === x.ref));
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                      {LADOS_CARRO.map((lado) => (
+                        <div key={lado}>
+                          <div className="text-xs font-bold text-slate-600 mb-1">Lado {lado}</div>
+                          {estC.filter((e) => e.lado === lado).map((e) => {
+                            const dentro = its.filter((x) => x.estante.lado === lado && x.estante.nivel === e.nivel);
+                            return (
+                              <div key={e.key} className="mb-1.5">
+                                <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
+                                {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
+                                  <div key={fi} className="flex h-7 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
+                                    {fila.map((x) => (
+                                      <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                                        className={`h-7 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-rose-200 text-slate-900" : "bg-[#86D325] text-slate-900"}`}
+                                        style={{ width: `${Math.min(100, e.porUds ? 100 / (e.capacidad || 1) : (largoPersiana(x) / (e.largo || 1)) * 100)}%` }}>
+                                        <span className="flex flex-col items-center leading-none"><span className="text-[8px] opacity-80">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref || ""}</span></span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
                 {!its.length ? <p className="text-sm text-slate-500">Este carro está vacío.</p> : (
 (() => {
                     const hoyB = new Date().toISOString().slice(0, 10);
@@ -57266,7 +57339,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                           <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 px-2">Lado</th><th className="px-2">Estante</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Expediente</th><th className="px-2">Medida (mm)</th><th className="px-2"></th></tr></thead>
                           <tbody>
                             {xs.map((x) => {
-                              const esFoco = !!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel;
+                              const esFoco = focoId ? x.id === focoId : (!!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel);
                               return (
                                 <React.Fragment key={x.id}>
                                   <tr className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : ""} ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
