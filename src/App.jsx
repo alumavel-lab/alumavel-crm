@@ -59914,6 +59914,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
   const [dia, setDia] = useState(hoy); // día elegido en el calendario
+  const [diaInforme, setDiaInforme] = useState(""); // día del «Informe de ventanas salidas» (vacío = el día elegido en el calendario)
   const [mesVer, setMesVer] = useState(hoy.slice(0, 7));
   const [buscar, setBuscar] = useState("");
   const planImgs = useObjetoFb("controlDiaPlanningImg"); // foto/hoja del planning subido, por mes: { "2026-11": { url, nombre } }
@@ -61717,7 +61718,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
                 <button type="button" onClick={() => imprimirDias(semana, tSem)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                 <button type="button" onClick={() => imprimirDias([dia], new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }))} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border border-slate-400 bg-white text-slate-700"><Printer size={13} /> Imprimir el día elegido</button>
-                <button type="button" onClick={() => informeSalidas(dia)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-600 bg-white text-indigo-800">📄 Informe de ventanas salidas del día</button>
+                <span className="flex items-center gap-1 rounded-md border-2 border-indigo-600 bg-white pl-2">
+                  <input type="date" value={diaInforme || dia} max={hoy} onChange={(e) => setDiaInforme(e.target.value)} title="Elige el día del informe" className="text-xs font-bold text-indigo-800 border-0 bg-transparent py-1" />
+                  <button type="button" onClick={() => informeSalidas(diaInforme || dia)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 bg-indigo-600 text-white">📄 Informe de ventanas salidas de ese día</button>
+                </span>
                 <span className="text-[11px] text-slate-500">para comprobarlo en fábrica con el papel</span>
               </div>
             );
