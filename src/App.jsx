@@ -48869,6 +48869,13 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     if (!vs.length) return null;
     const c0 = { bases: bs }; return vs.every((w) => esLeida(c0, w));
   };
+  // MISMOS COLORES QUE EL CALENDARIO DE CONTROL DEL DÍA: verde = todas sus ventanas hechas, verde claro = a medias, naranja = con problema
+  const marcasCDMapa = useObjetoFb("controlDia");
+  const ultCDMapa = useMemo(() => { const u = {}; Object.keys(marcasCDMapa || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcasCDMapa[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { u[`${k}|${id}`] = v; }))); return u; }, [marcasCDMapa]);
+  const limpiaMapa = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  const estadoCDk = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ultCDMapa[`${k}|${limpiaMapa(w.id)}`] ?? ultCDMapa[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
+  const claveCDde = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
+  const colMapa = { verde: "bg-emerald-600 text-white", medio: "bg-emerald-100 text-emerald-900", naranja: "bg-orange-500 text-white", gris: "bg-slate-200 text-slate-800", "": "bg-slate-100 text-slate-400" };
   const mapaMes = () => {
     const [yy, mm] = mesMapa.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
     const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
@@ -48880,16 +48887,19 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
           <button type="button" onClick={() => cambiaMes(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
           <b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b>
           <button type="button" onClick={() => cambiaMes(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
-          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha en {nombrePuestoLinea(puestoId)} · toca un día para verlo abajo</span>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-600 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 align-middle"></span> a medias · <span className="inline-block w-3 h-3 rounded-sm bg-orange-500 align-middle"></span> problema (como en Control del día) · toca un día para verlo abajo</span>
         </div>
         <div className="grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
         {semanas.map((w, i) => (
           <div key={i} className="grid grid-cols-7 gap-1 mt-1">
-            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const sel = f === dia; return (
+            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); const sel = f === dia; return (
               <div key={f} onClick={() => setDia(f)} className={`min-h-[3.5rem] rounded border p-0.5 cursor-pointer ${sel ? "border-slate-900 ring-2 ring-slate-900" : f === hoy ? "border-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mesMapa ? "opacity-40" : ""}`}>
                 <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
-                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const h = obraHechaAqui(ob); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
-                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${h === true ? "bg-emerald-500 text-white" : h === false ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`}>{h === true ? "✓ " : ""}{nom}</div>
+                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
+                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>{e === "verde" ? "✓ " : e === "naranja" ? "⚠ " : ""}{nom}</div>
+                ); })}
+                {man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
+                  <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>
                 ); })}
               </div>
             ); })}
