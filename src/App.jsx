@@ -50148,24 +50148,26 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
   const esPuestoPers = puestoId === "persianaA" || puestoId === "persianaB";
-  const esPuestoSimple = esPuestoPers || puestoId === "puerta"; // tocar la ventana = hecha Y va a su hueco (persianas, puerta)
+  const esPuestoSimple = esPuestoPers || puestoId === "puerta" || puestoId === "cristales"; // tocar la ventana = hecha Y va a su hueco (persianas, puerta; cristales → Solape si lleva)
   const layoutSimple = !!puestoId && puestoId !== "controlDia"; // TODOS los puestos: huecos arriba, buscador, dibujos abajo (sin lo que sobra)
-  const conBuscadorViejo = puestoId === "cristales" || puestoId === "solape"; // estos siguen con su buscador (baja de cristal, solape)
+  const conBuscadorViejo = puestoId === "solape"; // estos siguen con su buscador (baja de cristal, solape)
   const limpiaCodL = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   // PERSIANA PUESTA SIN PISTOLA (desde la persiana o desde la ventana): la ventana va a su hueco de Persiana (salida), se pone en verde
   // en «Obras del día», suma en el contador y, si se sabe, su persiana se da de baja del carro (se puede deshacer)
   const ponerPersianaCD = async (hit, x) => {
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId; // Puerta: la puerta hecha va a «Puertas terminadas»
-    const zP = zonas.find((q) => q.id === zonaDest); if (!zP) return false;
+    // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
+    const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId;
+    const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
-    const r = (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+    const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
     if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sin solape: se queda en la LÍNEA para paletizar` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -60441,6 +60443,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const limpiaId = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
     Object.keys(ubicCDL || {}).forEach((c) => {
       const m = /^cd_(.+)__([^_].*)$/.exec(c); if (!m) return;
+      if (!["persianaA", "persianaB", "puertasTerminadas"].includes((ubicCDL[c] || {}).zonaId)) return; // Solape NO: esa la vacía el puesto Solape
       const a2 = idxMarcasCD[m[1]] || {};
       const id = Object.keys(a2).find((i) => limpiaId(i) === m[2]);
       if (id && a2[id] && a2[id].v === 1) liberarCodigoLinea(c).catch(() => {});
