@@ -48137,7 +48137,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
         );
       })}
       {abierto && (
-        <HuecoLineaModal zonaNombre={abierto.z.nombre} hueco={abierto.hu} piezas={abierto.piezas} indice={indice} admin={admin} control={control}
+        <HuecoLineaModal zonaId={abierto.z.id} zonaNombre={abierto.z.nombre} hueco={abierto.hu} piezas={abierto.piezas} indice={indice} admin={admin} control={control}
           onLiberar={() => { const { z, hu, piezas } = abierto; setAbierto(null); liberar(z, hu, piezas); }} onCerrar={() => setAbierto(null)} />
       )}
     </div>
@@ -48145,8 +48145,27 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
 }
 
 // Detalle de una estantería: la ventana completa (dibujo, piezas, dónde está cada una, historial) y reimprimir la pegatina de cada pieza
-function HuecoLineaModal({ zonaNombre, hueco, piezas, indice, admin, control = false, onLiberar, onCerrar }) {
+function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin, control = false, onLiberar, onCerrar }) {
   const escaneos = useEscaneosLinea();
+  // Ventanas puestas SIN pistola (por la hoja de corte, código «cd_…»): sus datos, su hoja de corte y DEVOLVERLA (deshacer)
+  const snapCDh = useObjetoFb("controlDiaVentanasObra"); const hojasCDh = useObjetoFb("controlDiaHojaCorte"); const hojasAuxH = useObjetoFb("auxiliaresHojas");
+  const ctxH = React.useContext(IncidenciasCristalCtx) || {};
+  const limpiaH = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  const ventanasCD = piezas.filter((x) => String(x.cod).startsWith("cd_")).map((x) => {
+    const m = /^cd_(.+)__(.+)$/.exec(String(x.cod)); if (!m) return null; const sn = snapCDh && snapCDh[m[1]]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaH(q.id) === m[2]) : null;
+    const bases = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
+    const hoja = (hojasCDh && hojasCDh[m[1]] && hojasCDh[m[1]].url) || (bases.map((b) => hojasAuxH && hojasAuxH[b] && hojasAuxH[b].url).find(Boolean)) || "";
+    return { cod: String(x.cod), k: m[1], wid: m[2], sn, w, hoja };
+  }).filter(Boolean);
+  const devolverCD = async (vc) => {
+    if (!window.confirm(`¿DEVOLVER ${vc.w ? vc.w.pos : "esta ventana"}?\n\nSale de ${zonaNombre} · estantería ${hueco}, se quita de hechas en ${zonaNombre.replace(/ \(salida\)$/, "")} y, si se dio de baja su persiana, vuelve a su sitio del carro.`)) return;
+    try { await liberarCodigoLinea(vc.cod); } catch (e) { /* nada */ }
+    const claveM = vc.cod.replace(/^cd_/, ""); const hoyH = new Date().toISOString().slice(0, 10);
+    ["persianaA", "persianaB", zonaId].filter(Boolean).forEach((pu) => { fbSet(ref(fbDb, `marcasPuestoLinea/${pu}/${claveM}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyH}/${pu}/${claveM}`), null).catch(() => {}); });
+    const px = toArray(ctxH.persianasAlmacen).find((y) => y && y.ventanaId === vc.cod && y.estanteAnterior);
+    if (px && ctxH.savePersianasAlmacen) ctxH.savePersianasAlmacen(toArray(ctxH.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
+    onCerrar();
+  };
   const ubic = useObjetoFb("ubicacionesLinea");
   const hojasOv = useObjetoFb("hojasLinea");
   const pilOv = useObjetoFb("pilastraLinea");
@@ -48166,7 +48185,26 @@ function HuecoLineaModal({ zonaNombre, hueco, piezas, indice, admin, control = f
           <button type="button" onClick={onCerrar} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
         </div>
         <div className="overflow-y-auto p-4 space-y-5">
-          {ventanas.length === 0 && <p className="text-sm text-slate-500">No encuentro los datos de esta pieza (su PDF de etiquetas no está cargado).</p>}
+          {ventanasCD.map((vc) => (
+            <div key={vc.cod} className="border-2 border-sky-300 rounded-lg p-3 space-y-2 bg-sky-50">
+              <div className="flex flex-wrap items-start gap-3">
+                {vc.w && vc.w.dib ? <div className="bg-white rounded border border-slate-200"><DibujoPlan hash={vc.w.dib} alto={160} /></div> : null}
+                <div className="flex-1 min-w-[200px]">
+                  <div className="text-xl font-extrabold text-slate-900">{vc.w ? vc.w.pos : "Ventana"}</div>
+                  <div className="text-sm font-semibold text-slate-700">{vc.sn ? vc.sn.nombre : ""}{vc.sn && toArray(vc.sn.codigos).length ? ` · Ppto ${toArray(vc.sn.codigos).join(" / ")}` : ""}</div>
+                  {vc.w && <div className="text-sm text-slate-700 mt-1">{vc.w.medida ? <b>{vc.w.medida} mm</b> : null}{vc.w.g ? ` · ${vc.w.g}` : ""}{vc.w.color ? ` · ${vc.w.color}` : ""}</div>}
+                  {vc.w && vc.w.desc ? <div className="text-xs text-slate-600 mt-1 whitespace-pre-line">{vc.w.desc}</div> : null}
+                  {vc.w && toArray(vc.w.ex).length > 0 && <div className="mt-1 flex flex-wrap gap-1">{toArray(vc.w.ex).map((x) => <span key={x} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">LLEVA {x}</span>)}</div>}
+                  {!vc.w && <div className="text-xs text-slate-500">No encuentro sus datos en la hoja de corte.</div>}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {vc.hoja ? <a href={vc.hoja} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Ver la hoja de corte</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
+                <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">↩ Devolver (me he equivocado)</button>
+              </div>
+            </div>
+          ))}
+          {ventanas.length === 0 && ventanasCD.length === 0 && <p className="text-sm text-slate-500">No encuentro los datos de esta pieza (su PDF de etiquetas no está cargado).</p>}
           {ventanas.map((h) => {
             const v = h.ventana;
             const pzs = piezasSoldadora([{ v, lote: h.lote, dueno: h.dueno }], hojasOv, pilOv);
