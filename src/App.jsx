@@ -48803,11 +48803,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const c = cajas.find((x) => x.fuente !== "cd" && ((b && x.bases.has(b)) || x.keys.has(kd))); if (!c) return;
       c.fuente = "et"; c.vs.push({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", dib: "", fab: h.lote.fab, tip: v.tipo || v.pos || "", ex: [], color: v.color || "", g: v.grupo || "", nLote: dibDe(v) }); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    return cajas.map((c, i) => { const vs = c.vs.sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
-      .filter((c) => c.vs.length || c.nombre);
+    // Puesto PUERTA: solo las puertas (P… y A…, o las marcadas como puerta); el resto de la obra no le interesa
+    const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
+      .filter((c) => (puestoId === "puerta" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
+  const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
+  const qPD = String(qPresDia || "").replace(/\D/g, "");
   const columnas = (enTv) => {
-    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
+    const lista = cols.filter((c) => !grande || c.k === grande).filter((c) => qPD.length < 3 || [c.num, ...[...(c.bases || [])]].some((b) => basePresuDia(b).includes(qPD))); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
     return (
       <div className="flex flex-wrap gap-2 items-start">
         {lista.map((c) => {
@@ -48860,8 +48864,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   return (
     <div className="mt-3 rounded-lg border-2 border-slate-300 bg-slate-50 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Obras del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
-        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs" />
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 {puestoId === "puerta" ? "Puertas del día" : "Obras del día"} · {puestoId === "puerta" ? "leídas en Puerta" : `ventanas leídas en ${nombrePuestoLinea(puestoId)}`}</button>
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-sm font-bold" />
+        <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="Presupuesto…" className="border border-slate-300 rounded px-2 py-0.5 text-sm w-32" />
+        {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="text-xs font-semibold text-slate-600 underline">quitar</button>}
         <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
       </div>
       {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
