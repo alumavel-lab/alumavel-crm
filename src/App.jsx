@@ -50046,6 +50046,49 @@ function PendientesConfirmarCristales({ quien }) {
     </div>
   );
 }
+// BUSCADOR SIN PISTOLA (puesto Puerta y los que no tienen carro de persianas): presupuesto + nº de ventana → la ventana de la hoja de corte,
+// dónde está, su hoja de corte y el botón para darla por HECHA (igual que tocarla en el dibujo)
+function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }) {
+  const [bP, setBP] = useState(""); const [bV, setBV] = useState("");
+  const snapCD = useObjetoFb("controlDiaVentanasObra"); const hojasCD = useObjetoFb("controlDiaHojaCorte"); const hojasAux = useObjetoFb("auxiliaresHojas");
+  const marcas = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
+  const limpiaB = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  const esPuerta = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
+  const dP = String(bP || "").split("-")[0].replace(/\D/g, ""); const dV = String(bV || "").replace(/\D/g, "").replace(/^0+/, "");
+  const res = [];
+  if (dP.length >= 3) Object.entries(snapCD || {}).forEach(([k, sn]) => {
+    if (!sn || !(toArray(sn.codigos).some((c) => basePresuDia(c) === dP) || String(sn.nombre || "").replace(/\./g, "").includes(dP))) return;
+    toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
+  });
+  return (
+    <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <b className="text-sm text-sky-900 w-full">🔎 Buscar {soloPuertas ? "una puerta" : "una ventana"} (presupuesto + ventana) · hoja de corte</b>
+        <label className="text-xs font-semibold text-slate-600">Presupuesto<input value={bP} onChange={(e) => setBP(e.target.value)} inputMode="numeric" placeholder="6487" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+        <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bV} onChange={(e) => setBV(e.target.value)} placeholder="P01.004 o 004" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+        {(bP || bV) && <button type="button" onClick={() => { setBP(""); setBV(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
+      </div>
+      {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No encuentro {soloPuertas ? "puertas" : "ventanas"} de ese presupuesto en la hoja de corte{dV ? " con ese número" : ""}.</div>}
+      {res.length > 0 && <div className="mt-2 space-y-1">
+        {res.slice(0, 30).map(({ k, sn, w }) => {
+          const claveM = limpiaB(`${k}__${w.id}`); const cod = limpiaB(`cd_${k}__${w.id}`); const hecha = !!(marcas && marcas[claveM]); const u = ubic && ubic[cod];
+          const bases = toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
+          const hoja = (hojasCD && hojasCD[k] && hojasCD[k].url) || bases.map((b) => hojasAux && hojasAux[b] && hojasAux[b].url).find(Boolean) || "";
+          return (
+            <div key={`${k}_${w.id}`} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ${hecha ? "bg-emerald-600 text-white" : "bg-white border border-sky-200"}`}>
+              {w.dib ? <div className="bg-white rounded"><DibujoPlan hash={w.dib} alto={50} /></div> : null}
+              <b className="text-lg">{w.pos}</b>
+              <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
+              {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
+              {hoja && <a href={hoja} target="_blank" rel="noreferrer" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte</a>}
+              <button type="button" onClick={() => onTocar({ q: bases[0] || dP, id: w.id })} className={`${hoja ? "" : "ml-auto "}text-sm font-bold px-3 py-1.5 rounded ${hecha ? "bg-white text-rose-700" : "bg-emerald-600 text-white"}`}>{hecha ? "↩ Quitar (me he equivocado)" : "✓ Hecha"}</button>
+            </div>
+          );
+        })}
+      </div>}
+    </div>
+  );
+}
 function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [abrirReq, setAbrirReq] = useState(null); // tocar una ventana en «Obras del día» → abre su ficha en el buscador por presupuesto
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
@@ -50412,6 +50455,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={esPuestoSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        {puestoId === "puerta" && <div style={{ order: -2 }}><BuscadorVentanaCD puestoId={puestoId} onTocar={ventanaPersianaPuesta} ubic={ubic} soloPuertas /></div>}
         <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
             // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
