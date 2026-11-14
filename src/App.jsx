@@ -57577,6 +57577,16 @@ function CaballeteSoloLectura({ cristales, ubic, onCerrar, onUpdateCristal = nul
 }
 function CaballeteFilas({ c, marcar = "", onUpdateCristal = null, quien = "" }) {
   const piezas = toArray(c.piezas);
+  // POR PRESUPUESTO (como en el mapa): el presupuesto sale del cristal o, si no lo trae, del expediente de Uxcar; y su hoja de corte para descargar
+  const ctxCF = React.useContext(IncidenciasCristalCtx) || {};
+  const hojasCDcf = useObjetoFb("controlDiaHojaCorte"); const hojasAuxCF = useObjetoFb("auxiliaresHojas");
+  const pptoDeP = (p) => { const d = digitosPresu(String(p.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]); if (d.length >= 3) return d; const ex = String(p.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); if (!ex) return ""; const e = toArray(ctxCF.uxExpedientes).find((u) => u && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === ex); return e ? digitosPresu(String(e.presupuesto || e.presupuestoNumero || "").split(/[·,;\s]+/)[0]) : ""; };
+  const hojaDe = (pp, ex) => {
+    if (pp) { const h = hojasAuxCF && hojasAuxCF[pp]; if (h && h.url) return h.url; const hc = Object.values(hojasCDcf || {}).find((x) => x && x.url && digitosPresu(x.pres) === pp); if (hc) return hc.url; }
+    const exN = String(ex || "").replace(/\D/g, "").replace(/^0+/, ""); const e = toArray(ctxCF.uxExpedientes).find((u) => u && ((exN && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === exN) || (pp && digitosPresu(String(u.presupuesto || "").split(/[·,;\s]+/)[0]) === pp)));
+    const d = e ? toArray(e.documentos).find((x) => x && x.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${x.tipo || ""} ${x.nombre || ""}`)) : null; return d ? d.url : "";
+  };
+  const grupos = []; piezas.forEach((p, i) => { const pp = pptoDeP(p); const ex = String(p.expediente || c.expediente || "").trim(); const k = pp ? `P${pp}` : `E${ex}`; let g = grupos.find((x) => x.k === k); if (!g) { g = { k, pp, ex, is: [] }; grupos.push(g); } g.is.push(i); });
   const pendientes = piezas.filter((p) => !p.puesto).length;
   const presu = presupuestoCab(c);
   const cambiar = (i, quitar) => {
@@ -57595,12 +57605,22 @@ function CaballeteFilas({ c, marcar = "", onUpdateCristal = null, quien = "" }) 
         <div className="text-sm font-bold text-slate-800">Caballete {c.lote || c.numero || "—"} <span className="font-normal text-slate-500">· {c.cliente || ""}{c.proveedor ? ` · ${c.proveedor}` : ""} · exp. {textoExpedientes(c, 10)}{presu ? ` · ppto. ${presu}` : ""} · {pendientes} de {piezas.length} por poner</span></div>
         {onUpdateCristal && <button type="button" onClick={vaciar} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-700 text-white">🗑 Vaciar caballete</button>}
       </div>
-      <table className="w-full text-xs mt-1"><thead><tr className="text-left text-slate-500"><th className="py-0.5">Vivienda / ref</th><th>Expediente</th><th>Presupuesto</th><th>Medida (mm)</th><th>Uds</th><th>Estado</th>{onUpdateCristal && <th></th>}</tr></thead>
-        <tbody>{piezas.map((p, i) => (
-          <tr key={i} className={`border-t border-slate-100 ${p.puesto ? "text-slate-400" : ""} ${marcar && normBusq(`${p.ref} ${p.expediente || c.expediente} ${p.presupuesto || ""}`).includes(normBusq(marcar)) ? "bg-rose-100 font-bold" : ""}`}><td className="py-0.5">{p.ref || "—"}</td><td>{p.expediente || c.expediente || ""}</td><td>{p.presupuesto || c.presupuesto || ""}</td><td>{p.ancho || "?"} × {p.alto || "?"}</td><td>{p.cantidad || 1}</td><td>{p.puesto ? `✓ puesto${p.quitadoAMano ? " (a mano)" : ""}` : "por poner"}</td>
+      {grupos.map((g) => { const hoja = hojaDe(g.pp, g.ex); const pend = g.is.filter((i) => !piezas[i].puesto); return (
+      <div key={g.k} className="mt-2 rounded-lg border-2 border-slate-200 overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2 bg-slate-100 px-2 py-1.5">
+          <b className="text-sm text-slate-900">{g.pp ? `Ppto ${pptoBonito(g.pp)}` : "Sin nº de presupuesto"}</b>
+          <span className="text-xs text-slate-600">{g.ex ? `EXP ${String(g.ex).replace(/^EXP\s*/i, "")}` : ""} · {pend.length} de {g.is.length} por poner</span>
+          {hoja ? <a href={hoja} target="_blank" rel="noreferrer" className="ml-auto text-xs font-bold px-2 py-1 rounded bg-indigo-700 text-white">📄 Hoja de corte ⬇</a> : <span className="ml-auto text-[11px] text-slate-400">sin hoja de corte guardada</span>}
+          {onUpdateCristal && pend.length > 0 && <button type="button" onClick={() => { if (!window.confirm(`¿Dar de baja los ${pend.length} cristales de ${g.pp ? `Ppto ${pptoBonito(g.pp)}` : "este expediente"} en este caballete?`)) return; const set = new Set(pend); onUpdateCristal(c.id, { piezas: piezas.map((q, j) => (set.has(j) ? { ...q, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : q)) }); }} className="text-xs font-bold px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white">Dar de baja todo el presupuesto</button>}
+        </div>
+      <table className="w-full text-xs"><thead><tr className="text-left text-slate-500"><th className="py-0.5 px-2">Vivienda / ref</th><th>Expediente</th><th>Presupuesto</th><th>Medida (mm)</th><th>Uds</th><th>Estado</th>{onUpdateCristal && <th></th>}</tr></thead>
+        <tbody>{g.is.map((i) => { const p = piezas[i]; return (
+          <tr key={i} className={`border-t border-slate-100 ${p.puesto ? "text-slate-400" : ""} ${marcar && normBusq(`${p.ref} ${p.expediente || c.expediente} ${p.presupuesto || ""} ${pptoDeP(p)}`).includes(normBusq(marcar)) ? "bg-rose-100 font-bold" : ""}`}><td className="py-0.5 px-2">{p.ref || "—"}</td><td>{p.expediente || c.expediente || ""}</td><td>{p.presupuesto || c.presupuesto || (pptoDeP(p) ? pptoBonito(pptoDeP(p)) : "")}</td><td>{p.ancho || "?"} × {p.alto || "?"}</td><td>{p.cantidad || 1}</td><td>{p.puesto ? `✓ puesto${p.quitadoAMano ? " (a mano)" : ""}` : "por poner"}</td>
             {onUpdateCristal && <td className="text-right">{p.puesto ? <button type="button" onClick={() => cambiar(i, false)} className="text-[11px] underline text-slate-500">↩ volver</button> : <button type="button" onClick={() => cambiar(i, true)} className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">Dar de baja</button>}</td>}
           </tr>
-        ))}</tbody></table>
+        ); })}</tbody></table>
+      </div>
+      ); })}
     </div>
   );
 }
