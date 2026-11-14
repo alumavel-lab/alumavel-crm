@@ -7632,6 +7632,22 @@ export default function App() {
           <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
             onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
         )}
+        {modulo === "mipuesto" && currentUser && (() => {
+          // Puesto de CORTE (Mosquiteras y postigos / Auxiliares): el operario lo ve aquí mismo, sin necesitar el módulo «Línea (pistola)»
+          const cortes = [...new Set([currentUser.puestoFijo, ...toArray(currentUser.puestosLinea)].filter((x) => x === "mosqpost" || x === "auxiliares"))];
+          if (!cortes.length) return null;
+          const quienMP = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim();
+          return (
+            <div className="p-4 sm:p-8 pt-0 sm:pt-0 max-w-4xl space-y-6">
+              {cortes.map((c) => (
+                <div key={c}>
+                  <div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ {c === "mosqpost" ? `Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles (${AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).` : "Puesto AUXILIARES (doble cabezal)"}</div>
+                  <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quienMP} admin={isAdmin} puestoCorte={c === "mosqpost" ? "mosqpost" : undefined} />
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {modulo === "albaranes" && (
           <AlbaranesChofer
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
@@ -62290,6 +62306,8 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
               <option value="">Sin puesto fijo (puede cambiar de puesto)</option>
               {PUESTOS_LINEA.filter((q) => q.id !== "carga").map((q) => <option key={q.id} value={q.id}>{q.nombre}</option>)}
               <option value="almacenventanas">Almacén de ventanas (carga y caballetes)</option>
+              <option value="mosqpost">✂ Mosquiteras y postigos (corte)</option>
+              <option value="auxiliares">Auxiliares (corte, doble cabezal)</option>
             </Select>
             <p className="text-xs text-slate-500 mt-1">Si lo eliges, en Línea (pistola) solo verá ese puesto y no podrá leer en otros.</p>
           </Field>
