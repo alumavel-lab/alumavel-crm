@@ -46370,6 +46370,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const porPersonaAD = new Map(); entranAD.forEach((r) => { const k = r.por || "sin nombre"; porPersonaAD.set(k, (porPersonaAD.get(k) || 0) + 1); });
     const horaAD = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
     const bloqueRegistro = (g) => (
+      <>
+      {!g && <ContadorRitmoLinea admin={!!isAdmin} real={metidasDia} total={0} esHoy={diaAD === new Date().toLocaleDateString("sv-SE")} detalle="PALET: ventanas metidas en palet este día (se cuenta solo)" />}
       <div className={`rounded-xl border-2 border-slate-300 bg-white p-3 space-y-1 text-slate-800 ${g ? "text-xl" : "text-sm"}`}>
         <div className="font-extrabold text-slate-900">📋 Informe del día · <span className="capitalize">{etiquetaDia}</span></div>
         {resumen(g)}
@@ -46383,6 +46385,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </>
         )}
       </div>
+      </>
     );
     const avisoSinEt = sinEt.length > 0 && (
       <div className={`${g0()} rounded-lg border-2 border-dashed border-amber-400 bg-amber-50 px-3 py-2 text-amber-900`}>
@@ -49124,6 +49127,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (!onUpdateCristal) { setMsg("No tengo acceso al almacén de cristales desde aquí."); return; }
     onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (completa ? { ...q2, uPuestas: uds, uMarc: mn, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: w.id, ventanaPos: w.pos } : { ...q2, uPuestas: nuevas, uMarc: mn }) : q2)) });
     setMsg(`✓ Cristal ${x.p.ref || ""}${uds > 1 ? ` (${nuevas} de ${uds})` : ""} del caballete ${x.c.lote || x.c.numero || ""} dado de baja${quien ? ` (${quien})` : ""}.`);
+    if (puesto && puesto !== "almacen") fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${String(w.id || w.pos).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
   };
   const darBajaPersiana = (x) => {
     if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
@@ -49131,6 +49135,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
     guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
+    if (puesto && puesto !== "almacen") fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${String(w.id || w.pos).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
   };
   if (!abierto) return <div className="mb-3"><button type="button" onClick={() => setAbierto(true)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-[#2E8B57] bg-white text-[#2E8B57]">{soloDonde ? "🔎 ¿Dónde está cada ventana? (buscar por presupuesto)" : "🔎 Buscar por presupuesto (sin etiqueta)"}</button></div>;
   return (
