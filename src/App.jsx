@@ -48092,12 +48092,13 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
-  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
+  const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = u.et; });
+  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return etCDZ[cod] || cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
@@ -49133,7 +49134,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
     const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
-    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
+    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
     if (puesto && puesto !== "almacen") fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${String(w.id || w.pos).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
   };
@@ -49281,7 +49282,7 @@ function cruzarPersianaVentana(items, guardarItems, h) {
   if (!x) return { ok: false, texto: "no he encontrado su persiana en el almacén (o ya estaba marcada)" };
   if (!guardarItems) return { ok: false, texto: "no tengo acceso al almacén de persianas desde aquí" };
   const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? "ya estaba en el puesto" : "sin sitio asignado";
-  guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
+  guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
   return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro, lado: x.estante.lado, nivel: x.estante.nivel, ref: x.ref || "" } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
 }
 
@@ -49962,6 +49963,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   }, [indice, ubic, hojasOv]);
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
+  const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50224,8 +50226,33 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
-            // «Persiana puesta» SIN LECTOR: se busca la etiqueta del MARCO de su ventana y se hace lo mismo que al leerla con la pistola
-            // (la ventana va a su hueco de Persiana A/B (salida) y la persiana se da de baja del carro)
+            // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
+            //    y se pone en su hueco de Persiana A/B (salida) con su nombre; la persiana se da de baja del carro
+            try {
+              const normV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+              const exps0 = numsExpediente(x.expediente).map((n) => n.replace(/^0+/, ""));
+              const uxs = toArray(uxExpedientes).filter((e) => e && exps0.includes(String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "")));
+              const bases = new Set([x.presupuesto, ...uxs.flatMap((e) => [e.presupuesto, e.presupuestoNumero])].map((t) => digitosPresu(String(t || "").split(/[·,;\s]+/)[0])).filter((b) => b && b.length >= 3));
+              const rv = normV(x.ref); let hit = null;
+              if (rv) Object.entries(snapCDLin || {}).forEach(([k, sn]) => {
+                if (hit || !sn) return;
+                const okObra = (sn.tipo === "u" && uxs.some((e) => String(e.id) === String(sn.id))) || toArray(sn.codigos).some((c) => bases.has(String(c).split("-")[0].replace(/\D/g, "")));
+                if (!okObra) return;
+                const w = toArray(sn.ventanas).find((w2) => normV(w2.pos) === rv) || toArray(sn.ventanas).find((w2) => normV(w2.g) === rv);
+                if (w) hit = { k, sn, w };
+              });
+              const zP = zonas.find((q) => q.id === puestoId);
+              if (hit && zP) {
+                const codCD = `cd_${hit.k}__${hit.w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
+                const r = await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+                if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
+                ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
+                fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${codCD}`), Date.now()).catch(() => {});
+                avisar(true, r ? `✓ Persiana ${x.ref || ""} PUESTA · la ventana ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `✓ Persiana ${x.ref || ""} PUESTA (dada de baja del carro) · ⚠ ${zP.nombre} está LLENA: la ventana ${hit.w.pos} no tiene hueco`, false);
+                return true;
+              }
+            } catch (eCD) { /* sigue con la etiqueta */ }
+            // 2) Con etiquetas (cuando haya pistola): se busca la etiqueta del MARCO de su ventana y se hace lo mismo que al leerla
             const exps = numsExpediente(x.expediente);
             const cands = []; indice.forEach((h, cod) => { if (!h || !h.ventana || !toArray(h.ventana.piezas)[0] || String(cod) !== String(baseDe(h.ventana))) return; const d = datosVentanaLinea(h); if (exps.includes(d.exp) && d.casa(x.ref)) cands.push({ h, cod: String(cod) }); });
             const libre = cands.find((c) => !escaneos.some((e) => e.id === claveLecturaLinea(puestoId, c.h))) || null;
@@ -57215,6 +57242,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
   const [bPres, setBPres] = useState(""); const [bVent, setBVent] = useState(""); // buscar persiana: presupuesto + nº de ventana (sin lector)
   const [focoId, setFocoId] = useState(""); // persiana buscada: se marca en rojo en el dibujo del carro
+  const hojasCDP = useObjetoFb("controlDiaHojaCorte"); const hojasAuxP2 = useObjetoFb("auxiliaresHojas"); // para descargar la hoja de corte del presupuesto buscado
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
@@ -57244,11 +57272,37 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     if (onPersianaPuesta) { try { hecho = await onPersianaPuesta(x); } catch (e) { hecho = false; } }
     if (!hecho) {
       if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
-      ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
+      ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
       if (puestoId) fbSet(ref(fbDb, `ticksLinea/${new Date().toISOString().slice(0, 10)}/${puestoId}/${String(x.id).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
       if (onPersianaPuesta) alert(`Persiana ${x.ref || ""} dada de baja.\n\n⚠ No encuentro la etiqueta de su ventana (o ya estaba leída en este puesto): la ventana NO se ha movido de hueco. Léela con la pistola o ponla a mano.`);
     }
     setFocoId(""); setCarroVer(null);
+  };
+  // DESHACER «persiana puesta» (por si se ha pinchado la que no era): vuelve a su sitio del carro y la ventana sale de su hueco
+  const hoyP = new Date().toISOString().slice(0, 10);
+  const puestasHoy = toArray(ctx.persianasAlmacen).filter((x) => x && x.colocadaVentana && x.estanteAnterior && x.fechaSalida === hoyP).sort((a, b) => String(b.ventanaPos || "").localeCompare(String(a.ventanaPos || "")));
+  const deshacerPuesta = async (x) => {
+    const e = x.estanteAnterior;
+    if (!window.confirm(`¿DESHACER «persiana puesta» de ${x.ref || ""} (EXP ${x.expediente || "—"})?\n\nVuelve al carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${String(x.ventanaId || "").startsWith("cd_") ? " y su ventana sale del hueco de Persiana (salida)" : ""}.`)) return;
+    if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
+    ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: e, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
+    const vId = String(x.ventanaId || "");
+    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } }
+    if (puestoId) { [vId, String(x.id).replace(/[.#$\[\]\/]/g, "_")].filter(Boolean).forEach((kk) => fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${kk}`), null).catch(() => {})); }
+  };
+  const listaDeshacer = (soloCarro) => {
+    const xs = puestasHoy.filter((x) => !soloCarro || (String(x.estanteAnterior.carro) === String(soloCarro.numero) && (x.almacenAnterior || ALMACEN_PRINCIPAL_ID) === soloCarro.almacenId));
+    if (!xs.length) return null;
+    return (
+      <div className="mb-3 rounded-lg border-2 border-amber-300 bg-amber-50 p-2">
+        <div className="text-xs font-bold text-amber-900 mb-1">↩ Puestas hoy{soloCarro ? " de este carro" : ""}: si te has equivocado, devuélvela al carro</div>
+        <div className="flex flex-wrap gap-1.5">
+          {xs.slice(0, 20).map((x) => (
+            <button key={x.id} type="button" onClick={() => deshacerPuesta(x)} className="px-2 py-1 rounded border border-amber-400 bg-white text-xs font-bold text-amber-900 hover:bg-amber-100" title="Devolverla a su sitio del carro">↩ {x.ref || "—"} · EXP {x.expediente || "—"} <span className="font-normal">(carro {x.estanteAnterior.carro} · {x.estanteAnterior.lado}{x.estanteAnterior.nivel})</span></button>
+          ))}
+        </div>
+      </div>
+    );
   };
   return (
     <div className="mt-6">
@@ -57277,6 +57331,22 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
               <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bVent} onChange={(e) => { setBVent(e.target.value); setFocoId(""); }} placeholder="V01.301 o 301" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
               {(bPres || bVent) && <button type="button" onClick={() => { setBPres(""); setBVent(""); setFocoId(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
             </div>
+            {dP.length >= 3 && (() => {
+              // HOJA DE CORTE del presupuesto (o del expediente) buscado: para abrirla o descargarla
+              const bs = new Set([dP]); toArray(ctx.uxExpedientes).forEach((e) => { if (e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === dP.replace(/^0+/, "")) [e.presupuesto, e.presupuestoNumero].forEach((t) => { const b = digitosPresu(String(t || "").split(/[·,;\s]+/)[0]); if (b.length >= 3) bs.add(b); }); });
+              const urls = [];
+              const add = (url, nombre) => { if (url && !urls.some((u) => u.url === url)) urls.push({ url, nombre: nombre || "Hoja de corte" }); };
+              Object.entries(hojasAuxP2 || {}).forEach(([k, h]) => { if (h && h.url && bs.has(digitosPresu(k))) add(h.url, `Hoja de corte Ppto ${pptoBonito(k)}`); });
+              Object.values(hojasCDP || {}).forEach((h) => { if (h && h.url && bs.has(digitosPresu(h.pres))) add(h.url, `Hoja de corte Ppto ${pptoBonito(digitosPresu(h.pres))}`); });
+              toArray(ctx.uxExpedientes).forEach((e) => { if (!e) return; const suyos = [e.presupuesto, e.presupuestoNumero, ...Object.keys(e.hojasCorteAux || {})].map((t) => digitosPresu(String(t || "").split(/[·,;\s]+/)[0])); if (!suyos.some((b) => bs.has(b))) return; toArray(e.documentos).forEach((d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d.url, `Hoja de corte EXP ${e.numero || ""}`); }); });
+              toArray(ctx.proyectos).forEach((pr) => { if (!pr) return; const suyos = [pr.presupuestoNumero, presupuestoDeObra(pr)].map((t) => digitosPresu(t)); if (!suyos.some((b) => bs.has(b))) return; toArray(pr.documentos).forEach((d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d.url, `Hoja de corte #${pr.numero || ""}`); }); });
+              return (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {urls.length ? urls.slice(0, 4).map((u, i) => <a key={i} href={u.url} target="_blank" rel="noreferrer" download className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 {u.nombre} ⬇</a>)
+                    : <span className="text-xs font-semibold text-slate-500">📄 No encuentro la hoja de corte de ese presupuesto en el CRM.</span>}
+                </div>
+              );
+            })()}
             {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No hay ninguna persiana de ese presupuesto{dV ? " con ese nº de ventana" : ""} en los carros.</div>}
             {res.length > 0 && (
               <div className="mt-2 space-y-1">
@@ -57294,6 +57364,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })()}
+      {listaDeshacer(null)}
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57338,6 +57409,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 <button type="button" onClick={() => setCarroVer(null)} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
               </div>
               <div className="overflow-y-auto p-4">
+                {listaDeshacer(carroVer)}
                 {its.length > 0 && (() => {
                   // EL MISMO DIBUJO DEL CARRO QUE EN EL ALMACÉN DE PERSIANAS: lados, estantes y cada persiana en su sitio (la buscada en rojo)
                   const estC = estantesAlmacenPersianas(carros.filter((c) => almacenDe(c) === carroVer.almacenId)).filter((e) => e.carro === carroVer.numero);
@@ -60001,6 +60073,18 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return idx;
   }, [marcasTodas, horasTodas, borradasCD]);
   const valorGlobalCD = (k, id) => { const x = (idxMarcasCD[k] || {})[id]; return x ? x.v : 0; };
+  // SIN PISTOLA: la ventana que Persiana A/B puso en su hueco (por la hoja de corte, código «cd_…») sale del hueco
+  // en cuanto Control de línea la tica en VERDE aquí (la echa a la línea)
+  const ubicCDL = useObjetoFb("ubicacionesLinea");
+  useEffect(() => {
+    const limpiaId = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+    Object.keys(ubicCDL || {}).forEach((c) => {
+      const m = /^cd_(.+)__([^_].*)$/.exec(c); if (!m) return;
+      const a2 = idxMarcasCD[m[1]] || {};
+      const id = Object.keys(a2).find((i) => limpiaId(i) === m[2]);
+      if (id && a2[id] && a2[id].v === 1) liberarCodigoLinea(c).catch(() => {});
+    });
+  }, [ubicCDL, idxMarcasCD]);
   const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
