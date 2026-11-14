@@ -50048,38 +50048,57 @@ function PendientesConfirmarCristales({ quien }) {
 }
 // BUSCADOR SIN PISTOLA (puesto Puerta y los que no tienen carro de persianas): presupuesto + nº de ventana → la ventana de la hoja de corte,
 // dónde está, su hoja de corte y el botón para darla por HECHA (igual que tocarla en el dibujo)
+// HOJA DE CORTE (PDF) de una obra, buscándola en TODOS los sitios: Auxiliares, Control del día, expediente de Uxcar y documentos del proyecto
+const esHojaCorteDoc = (d) => d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`);
+function urlHojaCorte({ pp = "", expNum = "", uxExpedientes = [], proyectos = [], hojasCD = {}, hojasAux = {} }) {
+  const P = String(pp || ""); const X = String(expNum || "").replace(/\D/g, "").replace(/^0+/, "");
+  if (P) { const h = hojasAux && hojasAux[P]; if (h && h.url) return h.url; const hc = Object.values(hojasCD || {}).find((x) => x && x.url && digitosPresu(x.pres) === P); if (hc) return hc.url; }
+  const exps = toArray(uxExpedientes).filter((u) => u && ((X && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === X) || (P && [u.presupuesto, u.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === P)))));
+  for (const e of exps) { const d = toArray(e.documentos).find(esHojaCorteDoc); if (d) return d.url; if (!P) { const pe = digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]); const h = pe && hojasAux && hojasAux[pe]; if (h && h.url) return h.url; } }
+  const prs = toArray(proyectos).filter((pr) => pr && ((P && [pr.presupuestoNumero, presupuestoDeObra(pr)].some((t) => digitosPresu(t) === P)) || exps.some((e) => e.proyectoId === pr.id || pr.uxcarExpedienteId === e.id)));
+  for (const pr of prs) { const d = toArray(pr.documentos).find(esHojaCorteDoc); if (d) return d.url; }
+  return "";
+}
 function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }) {
   const [bP, setBP] = useState(""); const [bV, setBV] = useState("");
+  const ctxB = React.useContext(IncidenciasCristalCtx) || {};
   const snapCD = useObjetoFb("controlDiaVentanasObra"); const hojasCD = useObjetoFb("controlDiaHojaCorte"); const hojasAux = useObjetoFb("auxiliaresHojas");
   const marcas = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
   const limpiaB = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   const esPuerta = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
   const dP = String(bP || "").split("-")[0].replace(/\D/g, ""); const dV = String(bV || "").replace(/\D/g, "").replace(/^0+/, "");
+  // PRESUPUESTO O EXPEDIENTE: el número puede ser el presupuesto (6487) o el expediente de Uxcar (637)
+  const uxsB = dP.length >= 2 ? toArray(ctxB.uxExpedientes).filter((u) => u && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === dP.replace(/^0+/, "")) : [];
+  const basesB = new Set([dP, ...uxsB.flatMap((u) => [u.presupuesto, u.presupuestoNumero]).map((t) => digitosPresu(String(t || "").split(/[·,;\s]+/)[0]))].filter((b) => b && b.length >= 3));
   const res = [];
-  if (dP.length >= 3) Object.entries(snapCD || {}).forEach(([k, sn]) => {
-    if (!sn || !(toArray(sn.codigos).some((c) => basePresuDia(c) === dP) || String(sn.nombre || "").replace(/\./g, "").includes(dP))) return;
+  if (dP.length >= 2) Object.entries(snapCD || {}).forEach(([k, sn]) => {
+    if (!sn || !((sn.tipo === "u" && uxsB.some((u) => String(u.id) === String(sn.id))) || toArray(sn.codigos).some((c) => basesB.has(basePresuDia(c))) || (dP.length >= 3 && String(sn.nombre || "").replace(/\./g, "").includes(dP)))) return;
     toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
   });
   return (
     <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
       <div className="flex flex-wrap items-end gap-2">
         <b className="text-sm text-sky-900 w-full">🔎 Buscar {soloPuertas ? "una puerta" : "una ventana"} (presupuesto + ventana) · hoja de corte</b>
-        <label className="text-xs font-semibold text-slate-600">Presupuesto<input value={bP} onChange={(e) => setBP(e.target.value)} inputMode="numeric" placeholder="6487" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+ <label className="text-xs font-semibold text-slate-600">Presupuesto o expediente<input value={bP} onChange={(e) => setBP(e.target.value)} inputMode="numeric" placeholder="6487 o 637" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
         <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bV} onChange={(e) => setBV(e.target.value)} placeholder="P01.004 o 004" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
         {(bP || bV) && <button type="button" onClick={() => { setBP(""); setBV(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
       </div>
-      {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No encuentro {soloPuertas ? "puertas" : "ventanas"} de ese presupuesto en la hoja de corte{dV ? " con ese número" : ""}.</div>}
+      {dP.length >= 2 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No encuentro {soloPuertas ? "puertas" : "ventanas"} de ese presupuesto en la hoja de corte{dV ? " con ese número" : ""}.</div>}
       {res.length > 0 && <div className="mt-2 space-y-1">
         {res.slice(0, 30).map(({ k, sn, w }) => {
           const claveM = limpiaB(`${k}__${w.id}`); const cod = limpiaB(`cd_${k}__${w.id}`); const hecha = !!(marcas && marcas[claveM]); const u = ubic && ubic[cod];
           const bases = toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
-          const hoja = (hojasCD && hojasCD[k] && hojasCD[k].url) || bases.map((b) => hojasAux && hojasAux[b] && hojasAux[b].url).find(Boolean) || "";
+          const exN = sn.tipo === "u" ? String(((toArray(ctxB.uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}).numero || "") : "";
+          const hoja = (hojasCD && hojasCD[k] && hojasCD[k].url) || urlHojaCorte({ pp: bases[0] || "", expNum: exN, uxExpedientes: ctxB.uxExpedientes, proyectos: ctxB.proyectos, hojasCD, hojasAux });
+          // Cristales: en qué caballete está su cristal (misma obra y misma vivienda)
+          const crs = puestoId === "cristales" ? toArray(ctxB.cristalesCaballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => { if (!pz || String(pz.ref || "").toUpperCase().replace(/\s+/g, "") !== String(w.pos || "").toUpperCase().replace(/\s+/g, "")) return false; const ex = String(pz.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pr = digitosPresu(String(pz.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]); return (exN && ex === exN.replace(/\D/g, "").replace(/^0+/, "")) || (pr && bases.includes(pr)); }) : [];
           return (
             <div key={`${k}_${w.id}`} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ${hecha ? "bg-emerald-600 text-white" : "bg-white border border-sky-200"}`}>
               {w.dib ? <div className="bg-white rounded"><DibujoPlan hash={w.dib} alto={50} /></div> : null}
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
+              {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
               {hoja && <a href={hoja} target="_blank" rel="noreferrer" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte</a>}
               <button type="button" onClick={() => onTocar({ q: bases[0] || dP, id: w.id })} className={`${hoja ? "" : "ml-auto "}text-sm font-bold px-3 py-1.5 rounded ${hecha ? "bg-white text-rose-700" : "bg-emerald-600 text-white"}`}>{hecha ? "↩ Quitar (me he equivocado)" : "✓ Hecha"}</button>
             </div>
@@ -57582,6 +57601,7 @@ function CaballeteFilas({ c, marcar = "", onUpdateCristal = null, quien = "" }) 
   const hojasCDcf = useObjetoFb("controlDiaHojaCorte"); const hojasAuxCF = useObjetoFb("auxiliaresHojas");
   const pptoDeP = (p) => { const d = digitosPresu(String(p.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]); if (d.length >= 3) return d; const ex = String(p.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); if (!ex) return ""; const e = toArray(ctxCF.uxExpedientes).find((u) => u && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === ex); return e ? digitosPresu(String(e.presupuesto || e.presupuestoNumero || "").split(/[·,;\s]+/)[0]) : ""; };
   const hojaDe = (pp, ex) => {
+    const u0 = urlHojaCorte({ pp, expNum: ex, uxExpedientes: ctxCF.uxExpedientes, proyectos: ctxCF.proyectos, hojasCD: hojasCDcf, hojasAux: hojasAuxCF }); if (u0) return u0;
     if (pp) { const h = hojasAuxCF && hojasAuxCF[pp]; if (h && h.url) return h.url; const hc = Object.values(hojasCDcf || {}).find((x) => x && x.url && digitosPresu(x.pres) === pp); if (hc) return hc.url; }
     const exN = String(ex || "").replace(/\D/g, "").replace(/^0+/, ""); const e = toArray(ctxCF.uxExpedientes).find((u) => u && ((exN && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === exN) || (pp && digitosPresu(String(u.presupuesto || "").split(/[·,;\s]+/)[0]) === pp)));
     const d = e ? toArray(e.documentos).find((x) => x && x.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${x.tipo || ""} ${x.nombre || ""}`)) : null; return d ? d.url : "";
