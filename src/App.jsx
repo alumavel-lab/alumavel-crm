@@ -58196,6 +58196,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cfgRaw = useObjetoFb("auxiliaresConfig");
   const hojas = useObjetoFb("auxiliaresHojas");
   const hojasCDAux = useObjetoFb("controlDiaHojaCorte"); // hojas de corte de Control del día (con el enlace del PDF): para releerlas aquí
+  const [hojaVista, setHojaVista] = useState(""); // «refK|ppto»: hoja de corte abierta dentro de la tarjeta del perfil
   const est = useObjetoFb("auxiliaresPiezas");
   const estBase = est; // (alias: dentro de «cortar» se puede usar otro estado, el de una tanda en curso)
   const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
@@ -58381,7 +58382,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
         if (claveObra) await fbSet(ref(fbDb, `auxiliaresObraPres/${claveObra}`), digitosPresu(r.presupuesto)).catch(() => {});
-        const datoHoja = JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10), manual: true, subidaEn: Date.now() }));
+        let urlPdf = ""; try { urlPdf = await subirArchivoAStorage(f, "auxiliares-hojas"); } catch (eU) { /* sin enlace: la hoja se lee igual */ }
+        const datoHoja = JSON.parse(JSON.stringify({ ...r, archivo: f.name, url: urlPdf, fecha: new Date().toISOString().slice(0, 10), manual: true, subidaEn: Date.now() }));
         fbSet(ref(fbDb, `auxiliaresHojasManual/${r.presupuesto}`), datoHoja).catch(() => {}); // copia protegida: si otro ordenador (versión vieja) la pisa con la de Uxcar, se recupera sola
         await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), datoHoja), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
         setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.${toArray(r.repetidos).length ? ` (${toArray(r.repetidos).length} página${toArray(r.repetidos).length === 1 ? "" : "s"} repetida${toArray(r.repetidos).length === 1 ? "" : "s"} no contada${toArray(r.repetidos).length === 1 ? "" : "s"}: ${toArray(r.repetidos).join(", ")})` : ""}` : (() => {
@@ -58975,6 +58977,25 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
                       <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {(() => {
+                      // HOJA DE CORTE del presupuesto que se está cortando: se ve aquí mismo, sin buscarla
+                      const pps = [...new Set(r.filas.filter((x) => !(est && est[x.id] && est[x.id].cortada)).map((x) => x.ppto).filter(Boolean))];
+                      if (!pps.length) return null;
+                      const urlDe = (pp) => { const h = hojas && hojas[pp]; if (h && h.url) return h.url; try { const o = hojasUxDe(pp); return o.length ? o[0].d.url : ""; } catch (e) { return ""; } };
+                      const abierta = pps.find((pp) => hojaVista === `${r.k}|${pp}`);
+                      return (
+                        <div className="mt-1 mb-2 rounded-lg border-2 border-sky-300 bg-sky-50 px-2 py-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <b className="text-sm text-sky-900">📄 Hoja de corte:</b>
+                            {pps.map((pp) => { const u = urlDe(pp); const on = abierta === pp; return u
+                              ? <button key={pp} type="button" onClick={() => setHojaVista(on ? "" : `${r.k}|${pp}`)} className={`px-2.5 py-1 rounded-md text-sm font-bold border ${on ? "bg-sky-700 text-white border-sky-700" : "bg-white text-sky-900 border-sky-400 hover:bg-sky-100"}`}>{on ? "✕ Cerrar" : "Ver"} Ppto {pptoBonito(pp)}</button>
+                              : <span key={pp} className="px-2 py-1 rounded-md text-xs font-semibold bg-white border border-slate-300 text-slate-500" title="Esta hoja se subió antes de guardar el PDF: vuelve a subirla y ya se podrá ver aquí">Ppto {pptoBonito(pp)}: sin PDF guardado</span>; })}
+                            {abierta && <a href={urlDe(abierta)} target="_blank" rel="noreferrer" className="ml-auto text-xs font-semibold text-sky-800 underline">Abrir en otra pestaña ↗</a>}
+                          </div>
+                          {abierta && <iframe title={`Hoja de corte ${abierta}`} src={urlDe(abierta)} className="mt-2 w-full rounded border border-sky-300 bg-white" style={{ height: "75vh" }} />}
+                        </div>
+                      );
+                    })()}
                     {(() => {
                       // RESUMEN DE IGUALES: misma medida (mismo perfil y color) → se pueden cortar varias de golpe, con sus etiquetas seguidas
                       const gr = {}; r.filas.forEach((x) => { if (est && est[x.id] && est[x.id].cortada) return; const k = `${Math.round((Number(x.lCorte) || 0) * 10)}|${x.angulo || ""}`; (gr[k] = gr[k] || []).push(x); });
