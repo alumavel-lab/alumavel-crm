@@ -50218,8 +50218,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
       {puestoId && puestoId !== "controlDia" && <ContadorRitmoLinea admin={admin} total={0} puestoContar={puestoId} detalle="Se cuenta solo, con cada ventana leída hoy en este puesto · empieza a cero cada día" />}
-      <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
+      {!esPuestoPers && <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />}
+      {/* Puesto de PERSIANA: arriba del todo el banco y Persiana (salida), luego el almacén de persianas (plegable) y abajo el dibujo de las obras */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5" style={esPuestoPers ? { display: "flex", flexDirection: "column" } : undefined}>
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
@@ -50233,7 +50234,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           ))}
         </div>
         {verMosqPost ? <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div> : verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className={`flex flex-wrap items-center gap-2 mb-3 ${esPuestoPers ? "hidden" : ""}`}>
           <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
@@ -50300,14 +50301,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <PanelDiaPuesto puestoId={puestoId} onAbrir={esPuestoPers ? ventanaPersianaPuesta : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
+        <div style={esPuestoPers ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={esPuestoPers ? ventanaPersianaPuesta : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} /></div>
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
-        {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
+        {!esPuestoPers && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
-        <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
+        <div className="mt-4" style={esPuestoPers ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
+        <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
             // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
             //    y se pone en su hueco de Persiana A/B (salida) con su nombre; la persiana se da de baja del carro
@@ -50342,7 +50343,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
             const libre = cands.find((c) => !escaneos.some((e) => e.id === claveLecturaLinea(puestoId, c.h))) || null;
             if (libre) { await procesar(libre.cod); return true; }
             return false;
-          } : null} />
+          } : null} /></div>
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -57318,9 +57319,14 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal, onUpdateCris
   );
 }
 // Presupuesto de una persiana de carro (si no lo trae, se agrupa por expediente)
+// Envuelve en un desplegable solo cuando hace falta (puesto de persiana: pantalla más recogida)
+function PlegableSi({ activo, titulo, abierto = false, children }) {
+  if (!activo) return <>{children}</>;
+  return <details open={abierto} className="mb-2 rounded-lg border-2 border-slate-300 bg-white"><summary className="cursor-pointer px-3 py-2 font-bold text-slate-800">{titulo}</summary><div className="p-2">{children}</div></details>;
+}
 const clavePptoPers = (x) => { const d = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => t.replace(/\D/g, "")).find((t) => t.length >= 3) || ""; return d ? `P${d}` : `E${String(x.expediente || "—").trim()}`; };
 const etiquetaPptoPers = (k) => (k[0] === "P" ? `Ppto ${pptoBonito(k.slice(1))}` : `EXP ${k.slice(1)} (sin nº de presupuesto)`);
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "", onPersianaPuesta = null }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "", onPersianaPuesta = null, plegable = false }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
@@ -57394,6 +57400,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(por presupuesto · incidencia y baja)</span></h4>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, vivienda o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
       </div>
+      <PlegableSi activo={plegable} titulo="🔎 Buscar una persiana (presupuesto + ventana) · hoja de corte" abierto>
       {(() => {
         // BUSCAR UNA PERSIANA SIN LECTOR: presupuesto (o expediente) + nº de ventana → en qué carro, lado y estante está
         const dP = String(bPres || "").split("-")[0].replace(/\D/g, "");
@@ -57448,7 +57455,9 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })()}
+      </PlegableSi>
       {listaDeshacer(null)}
+      <PlegableSi activo={plegable} titulo={`🛒 Carros de persianas (${items.length} persianas)`}>
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57481,6 +57490,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })}
+      </PlegableSi>
       {carroVer && (() => {
         const its = items.filter((x) => (almacenDe(x) === carroVer.almacenId) && x.estante && x.estante.carro === carroVer.numero)
           .sort((x, y) => String(x.estante.lado).localeCompare(String(y.estante.lado)) || (x.estante.nivel - y.estante.nivel) || partePersiana(x).localeCompare(partePersiana(y)) || String(x.ref || "").localeCompare(String(y.ref || "")));
