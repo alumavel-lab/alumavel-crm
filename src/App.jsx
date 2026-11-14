@@ -5997,7 +5997,8 @@ export default function App() {
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
-    if (id === "lineapistola" && currentUser && (toArray(currentUser.puestosLinea).some((x) => x && x !== "mosqpost" && x !== "auxiliares") || (currentUser.puestoFijo && !["mosqpost", "auxiliares"].includes(currentUser.puestoFijo)))) return true;
+    // (también Mosquiteras y postigos y Auxiliares: TODOS trabajan desde el mismo sitio, «Línea (pistola)»)
+    if (id === "lineapistola" && currentUser && (toArray(currentUser.puestosLinea).some(Boolean) || !!currentUser.puestoFijo)) return true;
     if (id === "incfabrica") return veFabrica;
     if (id === "portalclientes") return modulosPermitidos.includes("clientes");
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
@@ -7639,22 +7640,7 @@ export default function App() {
           <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
             onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
         )}
-        {modulo === "mipuesto" && currentUser && (() => {
-          // Puesto de CORTE (Mosquiteras y postigos / Auxiliares): el operario lo ve aquí mismo, sin necesitar el módulo «Línea (pistola)»
-          const cortes = [...new Set([currentUser.puestoFijo, ...toArray(currentUser.puestosLinea)].filter((x) => x === "mosqpost" || x === "auxiliares"))];
-          if (!cortes.length) return null;
-          const quienMP = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim();
-          return (
-            <div className="p-4 sm:p-8 pt-0 sm:pt-0 max-w-4xl space-y-6">
-              {cortes.map((c) => (
-                <div key={c}>
-                  <div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ {c === "mosqpost" ? `Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles (${AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).` : "Puesto AUXILIARES (doble cabezal)"}</div>
-                  <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quienMP} admin={isAdmin} puestoCorte={c === "mosqpost" ? "mosqpost" : undefined} />
-                </div>
-              ))}
-            </div>
-          );
-        })()}
+        {/* Mosquiteras y postigos / Auxiliares: se trabaja desde «Línea (pistola)», como todos los puestos */}
         {modulo === "albaranes" && (
           <AlbaranesChofer
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
