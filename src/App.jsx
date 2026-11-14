@@ -52587,19 +52587,25 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Obras que se han quedado en un día ya pasado sin terminar (ancladas o con día puesto a mano): se pasan desde aquí y se PUBLICAN
   // (planFabrica.atrasadas) para que el aviso salga a todos: barra de arriba del CRM y Control del día
   const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
+  // BORRADOR / PUBLICADO: los puestos, Control del día y Almacén del día solo ven el planning HASTA el día publicado.
+  // Lo que va después es borrador (solo se ve aquí). Sin publicar nada: hasta el domingo de esta semana.
+  const finSemanaActual = (() => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); return d.toLocaleDateString("sv-SE"); })();
+  const publicadoHasta = cfg.publicadoHasta && cfg.publicadoHasta >= hoy ? cfg.publicadoHasta : finSemanaActual;
   const publicadoFb = (() => {
-    const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
-    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas, orden: Object.keys(dias[f]).length }; }));
+    const porId0 = {}; firmes.forEach((o) => { porId0[o.id] = o; });
+    // una obra que EMPIEZA después de lo publicado no se publica (ni sus días)
+    const porId = {}; Object.entries(porId0).forEach(([id, o]) => { const r = plan1.obras[id]; if (!r || !r.inicio || r.inicio <= publicadoHasta) porId[id] = o; });
+    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o || f > publicadoHasta) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas, orden: Object.keys(dias[f]).length }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
     // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
     const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
     const atrasadas = {}; atascadas.forEach((o) => { const r = plan1.obras[o.id]; atrasadas[claveRefFb(o)] = { nombre: o.nombre, inicio: r.inicio, fin: r.fin, pres: presFab(o) }; });
-    return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas });
+    return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas, publicadoHasta });
   })();
   const ultimoPublicadoFb = useRef("");
   useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
     // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
-    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length) diasPP[f] = d.trozos.map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
+    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length && f <= publicadoHasta) diasPP[f] = d.trozos.filter((t) => { const r = plan1.obras[t.id]; return !r || !r.inicio || r.inicio <= publicadoHasta; }).map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
   }, [publicadoFb, planPrevioListo]);
   // Semanas del planning virtual
   const semanas = {};
@@ -52819,10 +52825,27 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     </div>
   );
 
+  const [selPl, setSelPl] = useState([]); // obras marcadas para moverlas juntas
+  const [diaSelPl, setDiaSelPl] = useState("");
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
   const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-indigo-400 bg-indigo-50 px-3 py-2 text-sm">
+        <span className="font-bold text-indigo-900">📢 Los puestos (Control del día, Almacén del día, Línea) ven el planning hasta el <span className="capitalize">{fmtDia(publicadoHasta)}</span>.</span>
+        <span className="text-xs text-indigo-800">Lo que va después es BORRADOR: solo lo ves tú aquí.</span>
+        <label className="ml-auto flex items-center gap-1 font-semibold text-indigo-900">Publicar hasta <input type="date" min={hoy} defaultValue={publicadoHasta} key={publicadoHasta} id="pubHastaPl" className="border border-indigo-300 rounded px-1.5 py-1 bg-white" /></label>
+        <button onClick={() => { const el = document.getElementById("pubHastaPl"); const v = el && el.value; if (!v) return; if (window.confirm(`¿Publicar el planning hasta el ${fmtDate(v)}? Los puestos lo verán.`)) guardarCfg({ publicadoHasta: v }); }} className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📢 Publicar</button>
+      </div>
+      {selPl.length > 0 && (
+        <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-500 bg-sky-50 px-3 py-2 text-sm shadow">
+          <b className="text-sky-900">✔ {selPl.length} obra{selPl.length === 1 ? "" : "s"} marcada{selPl.length === 1 ? "" : "s"}</b>
+          <span className="text-sky-900">→ mover al</span>
+          <input type="date" value={diaSelPl} onChange={(e) => setDiaSelPl(e.target.value)} className="border border-sky-400 rounded px-1.5 py-1 bg-white" />
+          <button disabled={!diaSelPl} onClick={() => { pasarObras(firmes.filter((o) => selPl.includes(o.id)), diaSelPl); setSelPl([]); }} className="px-3 py-1.5 rounded-md bg-sky-700 text-white text-sm font-bold disabled:opacity-40">Mover</button>
+          <button onClick={() => setSelPl([])} className="text-xs text-slate-600 underline">quitar marcas</button>
+        </div>
+      )}
       {cfg.fechasPlanAnterior && Object.keys(fechasPlan).length > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 text-sm">
           <span className="font-semibold text-slate-700">↩ ¿Te has equivocado al pasar obras de día?</span>
@@ -52994,7 +53017,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
               <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) { ponerDia(id, f); setMoviendo(null); } }}
                 className={`bg-white border rounded-lg p-3 ${moviendo ? "border-sky-400 ring-1 ring-sky-200" : "border-slate-200"}`}>
                 <div className="flex items-center gap-1">
-                  <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}</div>
+                  <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}{f > publicadoHasta ? <span className="ml-1 text-[10px] font-bold text-amber-700 normal-case">· BORRADOR</span> : null}</div>
+                  {d.trozos.length > 0 && <button type="button" title="Marcar todas las obras de este día para moverlas juntas" onClick={() => { const ids = [...new Set(d.trozos.map((t) => t.id))]; const todas = ids.every((x) => selPl.includes(x)); setSelPl(todas ? selPl.filter((x) => !ids.includes(x)) : [...new Set([...selPl, ...ids])]); }} className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-sky-400 text-sky-800 bg-white">✔ todo el día</button>}
                   {moviendo && <button type="button" onClick={() => { ponerDia(moviendo.id, f); setMoviendo(null); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white">Mover aquí</button>}
                 </div>
                 <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: pasaH ? "#dc2626" : "#2E8B57" }} /></div>
@@ -53007,6 +53031,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <label className="float-right ml-1" title="Marcar para moverla con otras" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selPl.includes(t.id)} onChange={(e) => setSelPl(e.target.checked ? [...new Set([...selPl, t.id])] : selPl.filter((x) => x !== t.id))} /></label>
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraConIncPl(o) ? "⚠ " : o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
