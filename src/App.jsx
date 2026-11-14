@@ -52451,6 +52451,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const mnAlm = useObjetoFb("controlDiaObras"); // obras que se meten a un día desde Control del día / Almacén del día
   const extraAlm = (() => { const r = {}; [extraAlm0, mnAlm].forEach((m) => Object.entries(m || {}).forEach(([f, o]) => Object.entries(o || {}).forEach(([k, v]) => { if (v) { (r[f] = r[f] || {})[k] = true; } }))); return r; })();
   const limpiaK = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  // Obras TERMINADAS en Control del día (todas sus ventanas en verde): en el planning salen en verde
+  const snapCDPl = useObjetoFb("controlDiaVentanasObra");
+  const hechasCDPl = useMemo(() => {
+    const ult = {}; Object.keys(marcasCDPl || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcasCDPl[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { ult[`${k}|${id}`] = v; })));
+    const out = [];
+    Object.entries(snapCDPl || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const hecha = vs.every((w) => ult[`${k}|${limpiaK(String(w.id))}`] === 1 || ult[`${k}|${String(w.id)}`] === 1); out.push({ tipo: sn.tipo, id: String(sn.id), bases: new Set(toArray(sn.codigos).map((c) => String(c).split("-")[0].replace(/\D/g, "")).filter((b) => b.length >= 3)), hecha }); });
+    return out;
+  }, [marcasCDPl, snapCDPl]);
+  const obraHechaCD = (o) => { if (!o || !o.ref) return false; const t = o.ref.tipo === "uxcar" ? "u" : "p"; let bs = []; try { bs = presFab(o).map((c) => String(c).split("-")[0].replace(/\D/g, "")); } catch (e) { bs = []; } const c = hechasCDPl.filter((x) => (x.tipo === t && x.id === String(o.ref.id)) || bs.some((b) => x.bases.has(b))); return c.length > 0 && c.some((x) => x.hecha); };
   const porKeyAlm = {}; todasObras.forEach((o) => { if (o.ref) porKeyAlm[`${o.ref.tipo === "uxcar" ? "u" : "p"}-${limpiaK(o.ref.id)}`] = o; });
   const abrirObraRef = (r) => { if (!r || !onVerProyecto) return; if (r.tipo === "proyecto") onVerProyecto(r.id); else if (r.tipo === "uxcar" && r.proyectoId) onVerProyecto(r.proyectoId); };
   const pptoTxt = (o) => { try { const l = presFab(o); return l.length ? `Ppto ${l[0]}` : o.nombre; } catch (e) { return o.nombre; } };
@@ -52810,8 +52819,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
-                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className="block w-full text-left text-sm font-bold text-slate-800 hover:text-[#2E8B57]">{o ? pptoTxt(o) : t.nombre}</button>
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
                       <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
@@ -59915,6 +59924,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const hoy = new Date().toISOString().slice(0, 10);
   const [dia, setDia] = useState(hoy); // día elegido en el calendario
   const [diaInforme, setDiaInforme] = useState(""); // día del «Informe de ventanas salidas» (vacío = el día elegido en el calendario)
+  // MODO SENCILLO (operario): en cada obra solo el nombre y sus ventanas para ticar; sin material, cristales, Fábrica, PDF… El administrador puede verlo igual con el botón.
+  const [sencilloAdm, setSencilloAdm] = useEstadoLocal("cdModoSencilloAdmin", false);
+  const sencillo = !admin || sencilloAdm;
   const [mesVer, setMesVer] = useState(hoy.slice(0, 7));
   const [buscar, setBuscar] = useState("");
   const planImgs = useObjetoFb("controlDiaPlanningImg"); // foto/hoja del planning subido, por mes: { "2026-11": { url, nombre } }
@@ -61387,6 +61399,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     <div>
       {inputCarga}
       {modalNota}
+      <div className="sticky top-0 z-20 -mx-1 px-3 py-2 mb-2 rounded-lg bg-slate-900 text-white flex flex-wrap items-center gap-3 shadow">
+        <span className="text-2xl font-extrabold capitalize">📅 {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}{dia === hoy ? " · HOY" : ""}</span>
+        {dia !== hoy && <button type="button" onClick={() => { setDia(hoy); setMesVer(hoy.slice(0, 7)); }} className="px-3 py-1.5 rounded-md bg-amber-400 text-slate-900 text-sm font-bold">Volver a hoy</button>}
+        <button type="button" onClick={() => setTv(true)} className="ml-auto px-4 py-2 rounded-md bg-white text-slate-900 text-base font-extrabold">📺 Pantalla grande (tele)</button>
+      </div>
       <div className="flex flex-wrap items-center gap-3 mb-2">
         <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}{horasDelDia > 0 ? ` · ${fmtHoras(horasDelDia)} del planning` : ""}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
@@ -61397,6 +61414,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {(() => {
         // AVISO: obras que Fábrica tiene en este día y que aquí no se han podido enlazar (si no, desaparecían sin decir nada)
+        if (sencillo) return null;
         const delDia = (planF && planF.dias && planF.dias[dia]) || {};
         const sinEnlace = Object.keys(delDia).filter((k) => !koDeFab.has(k));
         const hace = planF && planF.en ? Math.round((Date.now() - planF.en) / 60000) : null;
@@ -61414,6 +61432,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         );
       })()}
       {(() => {
+        if (sencillo) return null;
         const atr = Object.values((planF && planF.atrasadas) || {}).filter((x) => x && x.nombre).sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)));
         if (!atr.length) return null;
         return (
@@ -61718,6 +61737,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
                 <button type="button" onClick={() => imprimirDias(semana, tSem)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                 <button type="button" onClick={() => imprimirDias([dia], new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }))} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border border-slate-400 bg-white text-slate-700"><Printer size={13} /> Imprimir el día elegido</button>
+                {admin && <button type="button" onClick={() => setSencilloAdm(!sencilloAdm)} title="Así lo ve el operario: solo las obras y sus ventanas para ticar" className={`text-xs font-bold px-2.5 py-1 rounded-md border-2 ${sencilloAdm ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-700 border-slate-400"}`}>{sencilloAdm ? "👁 Ver todo" : "👷 Ver como el operario (sencillo)"}</button>}
                 <span className="flex items-center gap-1 rounded-md border-2 border-indigo-600 bg-white pl-2">
                   <input type="date" value={diaInforme || dia} max={hoy} onChange={(e) => setDiaInforme(e.target.value)} title="Elige el día del informe" className="text-xs font-bold text-indigo-800 border-0 bg-transparent py-1" />
                   <button type="button" onClick={() => informeSalidas(diaInforme || dia)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 bg-indigo-600 text-white">📄 Informe de ventanas salidas de ese día</button>
@@ -61730,7 +61750,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
           <div className="grid grid-cols-7 gap-1">
             {diasMes.map((f, i) => { if (!f) return <span key={i} />; const ks = Object.keys((asignTodas && asignTodas[f]) || {}); const sel = f === dia; return (
-              <div key={f} onClick={() => { if (pinSel) moverObraDia(pinSel.k, pinSel.de, f); else setDia(f); }}
+              <div key={f} onClick={() => { if (pinSel && !SOLO_PLANNING_PONE_DIAS) moverObraDia(pinSel.k, pinSel.de, f); else { setPinSel(null); setDia(f); } }}
                 onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); if (pinSel) moverObraDia(pinSel.k, pinSel.de, f); }}
                 className={`rounded-md border-2 p-1 min-h-[4.5rem] cursor-pointer ${pinSel ? "border-dashed border-amber-400" : ""} ${sel ? "bg-slate-900 text-white border-slate-900" : f === hoy ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
                 <div className="text-xs font-bold text-left">{Number(f.slice(8))}</div>
@@ -61738,8 +61758,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
                   const hecha = idsC.length > 0 && idsC.every((i) => valorUlt(k, i) === 1); const prob = idsC.some((i) => valorUlt(k, i) === 2) || incsDeObraCD(ob).length > 0; return (
                   <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ENTRAR en la obra (marcar, incidencia, quitar) y ver su material (arrástrala para moverla de día)`}
-                    onDragStart={() => setPinSel({ k, de: f })}
-                    onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; }
+                    draggable={!SOLO_PLANNING_PONE_DIAS} onDragStart={() => { if (!SOLO_PLANNING_PONE_DIAS) setPinSel({ k, de: f }); }}
+                    onClick={(e) => { e.stopPropagation(); if (pinSel && !SOLO_PLANNING_PONE_DIAS) { moverObraDia(pinSel.k, pinSel.de, f); return; }
                       // ENTRAR EN LA OBRA: se va a su día, se abre su tarjeta (incidencia, quitar, marcar…) y se baja hasta ella; y sale dónde está su material
                       const ob2 = obraPorClave.get(k); setDia(f); setMesVer(f.slice(0, 7)); if (ob2) setCerradas((c) => ({ ...c, [ob2.d.key]: false })); setObraInfo(k); setTimeout(() => setIrObra(k), 250); }}
                     className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : papel && papel[k] ? "bg-purple-600 border-purple-800 text-white" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"} ${qBusqPl.trim() && ob && (() => { const nz2 = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.#\-_/]/g, ""); const ws = nz2(qBusqPl).split(/\s+/).filter(Boolean); const h2 = nz2(`${ob.d.nombre} ${[...presCrmDe(ob)].join(" ")} ${ob.d.numero || ""}`); return ws.length && ws.every((w) => h2.includes(w)); })() ? "ring-2 ring-fuchsia-600" : ""}`}>{hecha ? "✓" : "📌"} {(() => { const ps = ob ? [...presCrmDe(ob)] : []; if (!ps.length) return nom; const f1 = (c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? `-${v}` : ""); }; return ps.slice(0, 1).map(f1).join("") + (ps.length > 1 ? ` +${ps.length - 1}` : ""); })()}</button>
@@ -61757,7 +61777,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {obraInfo && obraPorClave.get(obraInfo) && (() => { const oi = obraPorClave.get(obraInfo); return (
         <PanelObraPlanning obra={oi} pptos={[...pptosPresupuesto(oi)]} motivoMaterial={(() => { const m = materialObra(oi); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra}
-          onMover={() => { const de = Object.keys(asignTodas || {}).find((f) => (asignTodas[f] || {})[obraInfo]) || dia; setPinSel({ k: obraInfo, de: (asignTodas && asignTodas[dia] && asignTodas[dia][obraInfo]) ? dia : de }); }} onCerrar={() => setObraInfo(null)} />
+          onMover={() => { if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; } const de = Object.keys(asignTodas || {}).find((f) => (asignTodas[f] || {})[obraInfo]) || dia; setPinSel({ k: obraInfo, de: (asignTodas && asignTodas[dia] && asignTodas[dia][obraInfo]) ? dia : de }); }} onCerrar={() => setObraInfo(null)} />
       ); })()}
       {verPlanImg && planImgs && planImgs[mesVer] && (
         <div className="fixed inset-0 z-50 bg-black/80 overflow-auto p-3" onClick={() => setVerPlanImg(false)}>
@@ -61772,7 +61792,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
-        <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
+        {!sencillo && <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
           <summary className="cursor-pointer text-sm font-semibold text-slate-600">⚙ Herramientas (borrar, copias de seguridad) — solo para arreglar errores</summary>
           <div className="mt-2 space-y-1 text-[11px] text-slate-500">
             <p><b>Quitar del calendario las obras metidas a mano:</b> saca de todos los días las obras que se pusieron a mano aquí. Las del planning de Fábrica NO se quitan (salen solas). Se guarda copia antes.</p>
@@ -61797,9 +61817,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         )}
           </div>
-        </details>
+        </details>}
       </div>
-      {(() => {
+      {!sencillo && (() => {
         // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
         const vistosT = new Set(); const porDia = {};
         Object.values(registro || {}).forEach((r) => { if (!r || !r.hechoEn || r.borrado || !r.obraKey || vistosT.has(r.obraKey)) return; vistosT.add(r.obraKey); (porDia[r.hechoEn] = porDia[r.hechoEn] || []).push(r); });
@@ -61822,7 +61842,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {Object.keys(registro || {}).length > 0 && (() => {
+      {!sencillo && Object.keys(registro || {}).length > 0 && (() => {
         // Lista fija de todo lo planificado: ventanas hechas (marcas en verde de cualquier día) y ✓ HECHO cuando está acabada
         const lun = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); })();
         const dom = (() => { const d = new Date(lun + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toLocaleDateString("sv-SE"); })();
@@ -61862,7 +61882,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {(() => {
+      {!sencillo && (() => {
         const listasF = (planF && planF.listas) || {};
         if (!Object.keys(listasF).length) return null;
         const asignadas = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => asignadas.add(k)));
@@ -61883,7 +61903,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         );
       })()}
-      <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
+      <p className={`text-xs text-slate-500 mb-3 ${sencillo ? "hidden" : ""}`}>Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
       {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Sube tu planning con «Subir planning (PDF, Excel o foto)» y aquí se reproduce.</p>}
       {informe && (() => {
         const tot = cuentaInforme(todasFilasInforme), vis = cuentaInforme(filasInforme);
@@ -61927,7 +61947,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {!informe && (() => {
+      {!informe && !sencillo && (() => {
         const nq = qLimp.replace(/\D/g, "");
         const cand = (nq ? [...obras.values()].filter((o) => o.d.tipo !== "pl" || true).filter((o) => { const sp = new Set([...pptosDe(o)]); (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => sp.add(digitosPresu(pr.pres))); return [...sp].some((x) => x.includes(nq)); }) : lista).slice(0, 40);
         const filasL = cand.map((o) => { const verdes = idsDe(o).filter((i) => valor(o.d.key, i) === 1).length; const tot = idsDe(o).length; const k = limpia(o.d.key); const marcado = selLimp[k] !== undefined ? selLimp[k] : (tot > 0 && verdes === tot); return { o, k, dm: dondeMaterial(o), verdes, tot, marcado, dias: Object.keys(asignTodas || {}).filter((d) => asignTodas[d] && asignTodas[d][k]).sort() }; });
@@ -61961,7 +61981,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {!informe && (() => { const vs = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde"); return vs.length > 0 ? (
+      {!informe && !sencillo && (() => { const vs = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde"); return vs.length > 0 ? (
         <details className="mb-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-900">
           <summary className="cursor-pointer font-bold">✅ {vs.length} obra{vs.length === 1 ? "" : "s"} terminada{vs.length === 1 ? "" : "s"} aquí: ya solo salen en Almacén del día</summary>
           {vs.map((o) => <div key={o.d.key} className="mt-0.5">· {o.d.nombre}</div>)}
@@ -61976,9 +61996,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <div key={o.d.key} id={"obra-" + limpia(o.d.key)} className={`${resalt === limpia(o.d.key) ? "ring-8 ring-rose-400 " : ""}rounded-lg border-2 mb-3 ${papel && papel[limpia(o.d.key)] ? "border-purple-600 bg-purple-50 " : ""}${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
-              {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir hoja de corte o carga de material</button>}
-              {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
-              {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
+              {!sencillo && !o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir hoja de corte o carga de material</button>}
+              {!sencillo && o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
+              {!sencillo && o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
               {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
                 ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
@@ -61988,7 +62008,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 : enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
                 : SOLO_PLANNING_PONE_DIAS ? null : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
             </div>
-            {(() => {
+            {!sencillo && (() => {
               const k = claveFabDe(o); const f = k && planF && planF.obras && planF.obras[k];
               if (!f) return <div className="px-3 pb-1 text-[11px] text-slate-500">🏭 Fábrica: esta obra no está planificada (aún no está en verde, o no se ha podido enlazar)</div>;
               const dentro = dia >= f.inicio && dia <= f.fin; const pet = peticiones && peticiones[k];
@@ -62000,7 +62020,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 </div>
               );
             })()}
-            {(() => {
+            {!sencillo && (() => {
               const m = materialObra(o); const dm = dondeMaterial(o);
               return (
                 <div className="px-3 pb-1 text-[11px] font-semibold flex flex-col gap-0.5">
@@ -62012,6 +62032,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             })()}
             <div className="px-3 pb-1 text-xs font-semibold text-slate-600">
               {vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}
+              {!sencillo && <>
               {o.fuente === "hoja" ? <span className="font-normal text-emerald-700"> · de la hoja de corte{(() => { const h = hojaDeObra(o); const nd = h ? toArray(h.modelos).filter((m) => m.dib).length : 0; return h && !nd ? <b className="text-rose-700"> (no he podido sacar los dibujos: vuelve a subirla)</b> : h ? ` (${h.pres || ""}, ${nd} dibujos)` : ""; })()}</span> : null}
               {o.d.tipo !== "pl" && !["etiquetas", "carga", "hoja"].includes(o.fuente) && (() => { const e = hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error; const hay = docsHojaDe(o).length;
                 return <span className="block mt-0.5 text-[11px] font-bold text-rose-700">{estadoCarga[o.d.key] === "leyendo" ? "⏳ Leyendo la hoja de corte…" : e ? `⚠ No he podido leer la hoja de corte (${e}): súbela con «Subir hoja de corte o carga de material»` : hay ? "⏳ La hoja de corte se leerá enseguida" : "⚠ FALTA LA HOJA DE CORTE: pídesela a Uxcar / a oficina, o súbela con «Subir hoja de corte o carga de material»"}</span>; })()}
@@ -62019,8 +62040,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {estadoCarga[o.d.key] === "leyendo" ? <span className="font-normal text-amber-700"> · leyendo la carga de material…</span> : null}
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
               {(presDeObra.get(limpia(o.d.key)) || []).map((pr, i) => <div key={i} className="font-normal text-slate-600">Planning: presupuesto {pr.pres} · {fmtHoras(Number(pr.horas) || 0)}{pr.cliente ? ` · ${String(pr.cliente).replace(/^\d+-/, "")}` : ""}{pr.ref ? ` · ${pr.ref}` : ""}</div>)}
+              </>}
             </div>
-            {abierta && (() => { const dm = dondeMaterial(o); return (
+            {abierta && !sencillo && (() => { const dm = dondeMaterial(o); return (
               <div className="mx-3 mb-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
                 <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material{col === "verde" && dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="ml-3 px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Obra terminada: dar de baja sus {dm.pers.length} persianas del almacén</button>}</div>
                 {dm.filas.length ? (() => {
