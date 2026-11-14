@@ -57242,6 +57242,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
   const [bPres, setBPres] = useState(""); const [bVent, setBVent] = useState(""); // buscar persiana: presupuesto + nº de ventana (sin lector)
   const [focoId, setFocoId] = useState(""); // persiana buscada: se marca en rojo en el dibujo del carro
+  const hojasCDP = useObjetoFb("controlDiaHojaCorte"); const hojasAuxP2 = useObjetoFb("auxiliaresHojas"); // para descargar la hoja de corte del presupuesto buscado
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
@@ -57330,6 +57331,22 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
               <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bVent} onChange={(e) => { setBVent(e.target.value); setFocoId(""); }} placeholder="V01.301 o 301" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
               {(bPres || bVent) && <button type="button" onClick={() => { setBPres(""); setBVent(""); setFocoId(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
             </div>
+            {dP.length >= 3 && (() => {
+              // HOJA DE CORTE del presupuesto (o del expediente) buscado: para abrirla o descargarla
+              const bs = new Set([dP]); toArray(ctx.uxExpedientes).forEach((e) => { if (e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === dP.replace(/^0+/, "")) [e.presupuesto, e.presupuestoNumero].forEach((t) => { const b = digitosPresu(String(t || "").split(/[·,;\s]+/)[0]); if (b.length >= 3) bs.add(b); }); });
+              const urls = [];
+              const add = (url, nombre) => { if (url && !urls.some((u) => u.url === url)) urls.push({ url, nombre: nombre || "Hoja de corte" }); };
+              Object.entries(hojasAuxP2 || {}).forEach(([k, h]) => { if (h && h.url && bs.has(digitosPresu(k))) add(h.url, `Hoja de corte Ppto ${pptoBonito(k)}`); });
+              Object.values(hojasCDP || {}).forEach((h) => { if (h && h.url && bs.has(digitosPresu(h.pres))) add(h.url, `Hoja de corte Ppto ${pptoBonito(digitosPresu(h.pres))}`); });
+              toArray(ctx.uxExpedientes).forEach((e) => { if (!e) return; const suyos = [e.presupuesto, e.presupuestoNumero, ...Object.keys(e.hojasCorteAux || {})].map((t) => digitosPresu(String(t || "").split(/[·,;\s]+/)[0])); if (!suyos.some((b) => bs.has(b))) return; toArray(e.documentos).forEach((d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d.url, `Hoja de corte EXP ${e.numero || ""}`); }); });
+              toArray(ctx.proyectos).forEach((pr) => { if (!pr) return; const suyos = [pr.presupuestoNumero, presupuestoDeObra(pr)].map((t) => digitosPresu(t)); if (!suyos.some((b) => bs.has(b))) return; toArray(pr.documentos).forEach((d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d.url, `Hoja de corte #${pr.numero || ""}`); }); });
+              return (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {urls.length ? urls.slice(0, 4).map((u, i) => <a key={i} href={u.url} target="_blank" rel="noreferrer" download className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 {u.nombre} ⬇</a>)
+                    : <span className="text-xs font-semibold text-slate-500">📄 No encuentro la hoja de corte de ese presupuesto en el CRM.</span>}
+                </div>
+              );
+            })()}
             {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No hay ninguna persiana de ese presupuesto{dV ? " con ese nº de ventana" : ""} en los carros.</div>}
             {res.length > 0 && (
               <div className="mt-2 space-y-1">
