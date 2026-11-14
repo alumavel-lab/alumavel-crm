@@ -2083,7 +2083,7 @@ export default function App() {
     if (p.estadoTrabajo !== "En proceso") { const ok = await iniciarFabricacionObra(proyectoId); if (!ok) return false; }
     const exp = p.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === p.uxcarExpedienteId) : null;
     const ids = [`p-${proyectoId}`, ...(exp ? [`u-${exp.id}`] : [])];
-    setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const fp = { ...(pl.fechasPlan || {}) }; if (fecha) ids.forEach((i) => { fp[i] = fecha; }); const next = { ...c, planning: { ...pl, fechasPlan: fp, quitadasPlan: toArray(pl.quitadasPlan).filter((i) => !ids.includes(i)) } }; persist("configVentanas", next); return next; });
+    setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const fp = { ...(pl.fechasPlan || {}) }; const fen = { ...(pl.fechasPlanEn || {}) }; if (fecha) ids.forEach((i) => { fp[i] = fecha; fen[i] = Date.now(); }); const next = { ...c, planning: { ...pl, fechasPlan: fp, fechasPlanEn: fen, quitadasPlan: toArray(pl.quitadasPlan).filter((i) => !ids.includes(i)) } }; persist("configVentanas", next); return next; });
     showToast(`#${p.numero} metida en el planning${fecha ? ` (empieza el ${fmtDate(fecha)})` : ""}`);
     return true;
   };
@@ -2101,7 +2101,7 @@ export default function App() {
   };
   // Control del día mueve una obra de día → cambia el día de inicio en el planning de Fábrica (el mismo dato que «Empezar el»)
   // (sobre el valor más reciente: «Mover todo el día» mueve varias seguidas y no deben pisarse)
-  const moverDiaPlanningFab = (oid, fecha) => setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const next = { ...c, planning: { ...pl, fechasPlan: { ...(pl.fechasPlan || {}), [oid]: fecha } } }; persist("configVentanas", next); return next; });
+  const moverDiaPlanningFab = (oid, fecha) => setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const next = { ...c, planning: { ...pl, fechasPlan: { ...(pl.fechasPlan || {}), [oid]: fecha }, fechasPlanEn: { ...(pl.fechasPlanEn || {}), [oid]: Date.now() } } }; persist("configVentanas", next); return next; });
   const saveTarifasCristal = (next) => { setTarifasCristal(next); persist("tarifasCristal", next); };
   // Descuenta varias referencias del stock de una sola vez (una única escritura, para
   // no pisar cambios como pasaría llamando a addMovimiento en bucle).
@@ -31739,7 +31739,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
       const resolver = (tipo, id) => (tipo === "proyecto" || tipo === "p" ? porId.get(String(id)) : tipo === "uxcar" || tipo === "u" ? deUx(id) : null) || null;
       const obrasP = (planF && planF.obras) || {}; const diasP = (planF && planF.dias) || {};
       const diasDe = {}; // clave obra -> [fechas]
-      Object.keys(diasP).sort().forEach((fch) => Object.keys(diasP[fch] || {}).forEach((k) => { (diasDe[k] = diasDe[k] || []).push(fch); }));
+      Object.keys(diasP).sort().forEach((fch) => clavesDiaOrden(diasP[fch]).forEach((k) => { (diasDe[k] = diasDe[k] || []).push(fch); }));
       const puestos = new Set(); // "fecha|proyectoId o clave"
       const meter = (fch, pr, nombre, extra, origen) => {
         if (pr && filtroEstado && pr.estadoTrabajo !== filtroEstado) return;
@@ -46089,7 +46089,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                         ? <label className="text-xs text-slate-600 flex items-center gap-1">Cambiar a
                             <input type="date" defaultValue={f} onChange={(e) => { if (e.target.value) { moverObraDia(o, f, e.target.value); setVerDiaAD(null); } }} className="border border-slate-300 rounded px-1 py-0.5 text-xs" /></label>
                         : <span className="text-[11px] text-slate-400">su día se cambia en Fábrica</span>}
-                      {ex[ko] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${f}/${ko}`), null).catch(() => {}); }} className="text-xs text-rose-600 underline">quitar de este día</button>}
+                      {ex[ko] && !SOLO_PLANNING_PONE_DIAS && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${f}/${ko}`), null).catch(() => {}); }} className="text-xs text-rose-600 underline">quitar de este día</button>}
                     </div>
                   </div>
                 );
@@ -46115,7 +46115,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).forEach((k) => {
+      clavesDiaOrden(planDias[f]).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
         const esPrimero = !primerDiaPlan[k] || primerDiaPlan[k] === f;
         // si el planning la pone en varios días: sale en el primero y, en los siguientes, MIENTRAS LE QUEDEN VENTANAS (sigue de otro día)
@@ -46201,7 +46201,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const delDia = itemsDia(diaAD);
     const obrasDelDia = delDia.filter((i) => i.o).map((i) => i.o);
     const sinEt = delDia.filter((i) => i.sinEtiquetas);
-    const stDiaAll = obrasDelDia.map((o) => ({ o, ...stats(o) })).sort((a, b) => (b.pend > 0 ? 1 : 0) - (a.pend > 0 ? 1 : 0));
+    const stDiaAll = obrasDelDia.map((o) => ({ o, ...stats(o) })); // en el MISMO orden que el planning de Fábrica (antes se ponían primero las pendientes)
     // la misma obra dos veces (por proyecto y por expediente de Uxcar): se queda la que tiene más ventanas en palet
     const gemelaMejor = (x) => stDiaAll.some((y) => y.o.key !== x.o.key && y.n > x.n && y.o.codigos.some((c) => x.o.codigos.some((m) => mismoP(m, c))));
     const stDia = stDiaAll.filter((x) => !gemelaMejor(x));
@@ -46331,7 +46331,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold px-2 rounded bg-emerald-600 text-white`}>🟢 {pend} montada{pend === 1 ? "" : "s"} en la línea · pendiente{pend === 1 ? "" : "s"} de paletizar</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
-            {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
+            {!g && !SOLO_PLANNING_PONE_DIAS && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
             {!g && <button type="button" onClick={() => sacarSinPaletizarAD(o)} title="El cliente se la lleva por sus propios medios: sale sin palet, pasa a «Recogida en fábrica» y, con el albarán firmado, a facturación" className="text-xs font-bold px-2 py-1 rounded-md border-2 border-amber-500 text-amber-800 bg-amber-50 hover:bg-amber-100">🚶 Sacar sin paletizar (la recoge el cliente)</button>}
           </div>
           <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
@@ -48766,7 +48766,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
     const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[dia] || {};
     const pedidas = []; // { nombre, bases:Set, keys:Set }
-    Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
+    clavesDiaOrden(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
     // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
     Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
     Object.values(extras || {}).forEach((x) => { const b = basePresuDia(x && x.base); if (!b || b.length < 3) return; if (pedidas.some((pd) => pd.bases.has(b))) return; pedidas.push({ nombre: String(x.nombre || `Ppto ${b}`), bases: new Set([b]), keys: new Set() }); });
@@ -52171,8 +52171,11 @@ const horasObra = (recuento, totales, horasManual, tiempos, horasListado) => {
   return { horas: Math.round(h * 10) / 10, aMano: false };
 };
 // 13/11/2026: los días de las obras SOLO se ponen en Fábrica → Planning (así nadie lo pisa desde Control del día / Almacén del día).
-// Desde las otras pantallas se puede ver, marcar ventanas y QUITAR una obra puesta a mano, pero no ponerla ni moverla de día.
+// Desde las otras pantallas solo se CONSULTA y se marcan ventanas: no se pone, ni se mueve, ni se quita ninguna obra de un día.
 const SOLO_PLANNING_PONE_DIAS = true;
+// Claves de las obras de un día del planning EN SU ORDEN (el orden en que se metieron en Fábrica → Planning). Firebase devuelve las claves
+// ordenadas por nombre, así que hay que ordenarlas por «orden» en TODAS las pantallas para que salgan siempre igual.
+const clavesDiaOrden = (delDia) => Object.keys(delDia || {}).sort((a, b) => { const oa = delDia[a] && typeof delDia[a].orden === "number" ? delDia[a].orden : 9999; const ob = delDia[b] && typeof delDia[b].orden === "number" ? delDia[b].orden : 9999; return oa - ob; });
 const avisoSoloPlanning = () => window.alert("📅 Los días de las obras se ponen SOLO en Fábrica → Planning.\n\nPídeselo a quien lleva el planning (o hazlo tú allí): desde aquí ya no se puede, para que no se pisen.");
 const esLaborable = (d) => d.getDay() !== 0 && d.getDay() !== 6;
 const sigLaborable = (fechaStr) => { const d = new Date(fechaStr + "T12:00:00"); do { d.setDate(d.getDate() + 1); } while (!esLaborable(d)); return d.toISOString().slice(0, 10); };
@@ -52268,7 +52271,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const n = { ...horasRap }; if (v === null || v === undefined) delete n[ref.id]; else n[ref.id] = v;
     guardarCfg({ horasRapido: n });
   };
-  const ponerDia = (id, v) => { const n = { ...fechasPlan }; if (v) n[id] = v; else delete n[id]; guardarCfg({ fechasPlan: n }); };
+  // fechasPlanEn: cuándo se puso cada obra en su día → dentro del día salen EN EL ORDEN EN QUE SE METIERON (la primera que metes, la primera)
+  const ponerDia = (id, v) => { const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; if (v) { if (n[id] !== v) en[id] = Date.now(); n[id] = v; } else { delete n[id]; delete en[id]; } guardarCfg({ fechasPlan: n, fechasPlanEn: en }); };
   // Horas del taller por día: lo normal y, si algún día hay menos gente, ese día concreto (se guarda como "horas ya ocupadas")
   const horasEsp = cfg.horasDiaEsp || {};
   // Un día puede tener MENOS horas (menos gente) o MÁS (p. ej. 157 h para meter 2 h más ese día): se guarda como «ya ocupado», negativo si son más
@@ -52376,7 +52380,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   })();
   const diaElegido = (o) => fechasPlan[o.id] || o.diaTerm || ""; // las terminadas sin paletizar se quedan en su día (o el día en que se terminaron)
   const diaFijo = (o) => diaElegido(o) || anclaDe(o);
-  const conDia = firmes.filter((o) => diaFijo(o)).sort((a, b) => diaFijo(a).localeCompare(diaFijo(b)));
+  const enPlan = cfg.fechasPlanEn || {};
+  const conDia = firmes.filter((o) => diaFijo(o)).sort((a, b) => diaFijo(a).localeCompare(diaFijo(b)) || (diaElegido(a) && enPlan[a.id] || 0) - (diaElegido(b) && enPlan[b.id] || 0));
   const sinDia = firmes.filter((o) => !diaFijo(o));
   // las nuevas (sin día) rellenan huecos desde hoy como muy pronto: nunca en días ya pasados (si no, al día siguiente se quedarían ancladas atrás)
   const desdeEf = [desde, ...conDia.map((o) => diaFijo(o)).filter((f) => f >= hoy)].sort()[0];
@@ -52391,7 +52396,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const atascadas = firmes.filter((o) => !o.terminada && !o.diaTerm && plan1.obras[o.id] && plan1.obras[o.id].fin < hoy).sort((a, b) => plan1.obras[a.id].inicio.localeCompare(plan1.obras[b.id].inicio));
   const publicadoFb = (() => {
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
-    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
+    const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas, orden: Object.keys(dias[f]).length }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
     // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
     const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
@@ -52399,7 +52404,10 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas });
   })();
   const ultimoPublicadoFb = useRef("");
-  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb, planPrevioListo]);
+  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
+    // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
+    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length) diasPP[f] = d.trozos.map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
+  }, [publicadoFb, planPrevioListo]);
   // Semanas del planning virtual
   const semanas = {};
   Object.entries(plan2.dias).forEach(([f, d]) => {
@@ -52608,7 +52616,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   );
 
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
-  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; lista.forEach((o) => { n[o.id] = dia; }); guardarCfg({ fechasPlan: n }); };
+  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en }); };
   return (
     <div className="space-y-6">
       {atascadas.length > 0 && (
@@ -57169,6 +57177,8 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
+  const [bPres, setBPres] = useState(""); const [bVent, setBVent] = useState(""); // buscar persiana: presupuesto + nº de ventana (sin lector)
+  const [focoId, setFocoId] = useState(""); // persiana buscada: se marca en rojo en el dibujo del carro
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
@@ -57196,6 +57206,43 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(por presupuesto · incidencia y baja)</span></h4>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, vivienda o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
       </div>
+      {(() => {
+        // BUSCAR UNA PERSIANA SIN LECTOR: presupuesto (o expediente) + nº de ventana → en qué carro, lado y estante está
+        const dP = String(bPres || "").split("-")[0].replace(/\D/g, "");
+        const dV = String(bVent || "").replace(/\D/g, "").replace(/^0+/, "");
+        // expedientes de Uxcar de ese presupuesto (muchas persianas no traen el presupuesto, solo el EXP)
+        const expsP = new Set(); if (dP.length >= 3) toArray(ctx.uxExpedientes).forEach((e) => { if (e && [e.presupuesto, e.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === dP))) { const n = String(e.numero || "").replace(/\D/g, "").replace(/^0+/, ""); if (n) expsP.add(n); } });
+        const res = (dP.length >= 3 || dV.length >= 1) ? items.filter((x) => {
+          const pres = digitosPresu(String(x.presupuesto || "").split(/[·,;\s]+/)[0]); const exp = String(x.expediente || "").replace(/\D/g, "").replace(/^0+/, "");
+          const okP = dP.length < 3 || pres === dP || exp === dP.replace(/^0+/, "") || expsP.has(exp);
+          const rv = String(x.ref || "").replace(/\D/g, "").replace(/^0+/, "");
+          const okV = !dV || rv === dV || rv.endsWith(dV);
+          return okP && okV && (dP.length >= 3);
+        }).slice(0, 30) : [];
+        return (
+          <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <b className="text-sm text-sky-900 w-full">🔎 Buscar una persiana (sin lector)</b>
+              <label className="text-xs font-semibold text-slate-600">Presupuesto o expediente<input value={bPres} onChange={(e) => { setBPres(e.target.value); setFocoId(""); }} inputMode="numeric" placeholder="7132 o 182" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+              <label className="text-xs font-semibold text-slate-600">Nº de ventana<input value={bVent} onChange={(e) => { setBVent(e.target.value); setFocoId(""); }} placeholder="V01.301 o 301" className="block mt-0.5 w-40 text-lg font-bold border border-sky-300 rounded-lg px-3 py-2" /></label>
+              {(bPres || bVent) && <button type="button" onClick={() => { setBPres(""); setBVent(""); setFocoId(""); }} className="text-xs font-semibold px-2 py-2 rounded border border-slate-300 bg-white">Borrar</button>}
+            </div>
+            {dP.length >= 3 && !res.length && <div className="mt-2 text-sm font-bold text-rose-700">No hay ninguna persiana de ese presupuesto{dV ? " con ese nº de ventana" : ""} en los carros.</div>}
+            {res.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {res.map((x) => (
+                  <div key={x.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ${focoId === x.id ? "bg-rose-600 text-white" : "bg-white border border-sky-200"}`}>
+                    <b className="text-lg">{x.ref || "—"}</b>
+                    <span className="text-sm">{etiquetaPptoPers(clavePptoPers(x))} · EXP {x.expediente || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} mm</span>
+                    <b className="text-base">📍 Carro {x.estante.carro} · lado {x.estante.lado} · estante {x.estante.nivel}{x.estante.fila === "exterior" ? " · fila exterior" : ""}</b>
+                    <button type="button" onClick={() => { setFocoId(x.id); setCarroVer({ almacenId: almacenDe(x), numero: x.estante.carro }); }} className={`ml-auto text-sm font-bold px-3 py-1.5 rounded ${focoId === x.id ? "bg-white text-rose-700" : "bg-sky-700 text-white"}`}>Ver en el carro</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57240,6 +57287,40 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 <button type="button" onClick={() => setCarroVer(null)} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
               </div>
               <div className="overflow-y-auto p-4">
+                {its.length > 0 && (() => {
+                  // EL MISMO DIBUJO DEL CARRO QUE EN EL ALMACÉN DE PERSIANAS: lados, estantes y cada persiana en su sitio (la buscada en rojo)
+                  const estC = estantesAlmacenPersianas(carros.filter((c) => almacenDe(c) === carroVer.almacenId)).filter((e) => e.carro === carroVer.numero);
+                  if (!estC.length) return null;
+                  const esFocoX = (x) => focoId ? x.id === focoId : (!!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel && (!foco.ref || foco.ref === x.ref));
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                      {LADOS_CARRO.map((lado) => (
+                        <div key={lado}>
+                          <div className="text-xs font-bold text-slate-600 mb-1">Lado {lado}</div>
+                          {estC.filter((e) => e.lado === lado).map((e) => {
+                            const dentro = its.filter((x) => x.estante.lado === lado && x.estante.nivel === e.nivel);
+                            return (
+                              <div key={e.key} className="mb-1.5">
+                                <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
+                                {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
+                                  <div key={fi} className="flex h-7 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
+                                    {fila.map((x) => (
+                                      <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                                        className={`h-7 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-rose-200 text-slate-900" : "bg-[#86D325] text-slate-900"}`}
+                                        style={{ width: `${Math.min(100, e.porUds ? 100 / (e.capacidad || 1) : (largoPersiana(x) / (e.largo || 1)) * 100)}%` }}>
+                                        <span className="flex flex-col items-center leading-none"><span className="text-[8px] opacity-80">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref || ""}</span></span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
                 {!its.length ? <p className="text-sm text-slate-500">Este carro está vacío.</p> : (
 (() => {
                     const hoyB = new Date().toISOString().slice(0, 10);
@@ -57258,7 +57339,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                           <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 px-2">Lado</th><th className="px-2">Estante</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Expediente</th><th className="px-2">Medida (mm)</th><th className="px-2"></th></tr></thead>
                           <tbody>
                             {xs.map((x) => {
-                              const esFoco = !!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel;
+                              const esFoco = focoId ? x.id === focoId : (!!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel);
                               return (
                                 <React.Fragment key={x.id}>
                                   <tr className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : ""} ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
@@ -60501,7 +60582,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     for (const k of ks) await moverObraDia(k, dia, destDia);
     setDia(destDia); setMesVer(destDia.slice(0, 7)); setDestDia("");
   };
-  const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
+  // Mismo orden que en el planning de Fábrica (el orden en que se metieron); lo que no está en el planning va detrás, por nombre
+  const ordenFabDia = {}; Object.entries((planF && planF.dias && planF.dias[dia]) || {}).forEach(([k, v]) => { const ko = koDeFab.get(k); if (ko && v && typeof v.orden === "number" && ordenFabDia[ko] === undefined) ordenFabDia[ko] = v.orden; });
+  const ordenObras = (a, b) => { const oa = ordenFabDia[limpia(a.d.key)], ob = ordenFabDia[limpia(b.d.key)]; if (oa !== undefined || ob !== undefined) return (oa === undefined ? 9999 : oa) - (ob === undefined ? 9999 : ob); return String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true }); };
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
   // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
   const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
@@ -60535,7 +60618,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   // Claves antiguas de la MISMA obra (el expediente de Uxcar de este proyecto): al quitar o mover, se limpian también
   const gemelasDe = (k) => { const c = canonK(k); return Object.entries(uxAProy).filter(([, pid]) => `p-${pid}`.replace(/[.#$\/\[\]]/g, "_") === c).map(([eid]) => `u-${eid}`.replace(/[.#$\/\[\]]/g, "_")); };
-  const asignar = async (o, si) => { if (si && SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; } try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); if (!si) for (const g of gemelasDe(limpia(o.d.key))) await fbSet(ref(fbDb, `controlDiaObras/${dia}/${g}`), null); } catch (e) { /* nada */ } };
+  const asignar = async (o, si) => { if (SOLO_PLANNING_PONE_DIAS) { avisoSoloPlanning(); return; } try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); if (!si) for (const g of gemelasDe(limpia(o.d.key))) await fbSet(ref(fbDb, `controlDiaObras/${dia}/${g}`), null); } catch (e) { /* nada */ } };
   // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
   const mandarAReparto = (o) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -61869,7 +61952,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} />
               {arrastradas[limpia(o.d.key)] && !(asignTodas[dia] || {})[limpia(o.d.key)] ? <span title="No se terminó: sigue saliendo cada día hasta que esté terminada" className="px-2 py-2 text-[11px] font-bold text-amber-700">⏩ Sin terminar desde el {fmtDate(arrastradas[limpia(o.d.key)])}</span>
                 : enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
-                : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
+                : SOLO_PLANNING_PONE_DIAS ? null : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
             </div>
             {(() => {
               const k = claveFabDe(o); const f = k && planF && planF.obras && planF.obras[k];
