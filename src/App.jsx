@@ -48835,6 +48835,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
                     {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                    {!enTv && <div onClick={(e) => e.stopPropagation()} className="mt-0.5"><BotonIncidenciaFabrica prefill={{ obra: c.obra || c.nombre || (c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""), ventana: v.pos || "", ventanaId: String(v.id || ""), puesto: nombrePuestoLinea(puestoId) }} /></div>}
                   </div>
                 ); })}
               </div>
