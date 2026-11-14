@@ -5994,6 +5994,8 @@ export default function App() {
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
+    // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
+    if (id === "lineapistola" && currentUser && (toArray(currentUser.puestosLinea).some((x) => x && x !== "mosqpost" && x !== "auxiliares") || (currentUser.puestoFijo && !["mosqpost", "auxiliares"].includes(currentUser.puestoFijo)))) return true;
     if (id === "incfabrica") return veFabrica;
     if (id === "portalclientes") return modulosPermitidos.includes("clientes");
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
