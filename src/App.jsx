@@ -50152,6 +50152,25 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const layoutSimple = !!puestoId && puestoId !== "controlDia"; // TODOS los puestos: huecos arriba, buscador, dibujos abajo (sin lo que sobra)
   const conBuscadorViejo = puestoId === "solape"; // estos siguen con su buscador (baja de cristal, solape)
   const limpiaCodL = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  // CRISTALES DE UNA VENTANA (sin etiqueta): misma obra (expediente de Uxcar o presupuesto) y misma vivienda/ref que la ventana
+  const normVC = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+  const cristalesDeVentana = (sn, w) => {
+    const uxN = sn && sn.tipo === "u" ? String(((toArray(uxExpedientes).find((e) => String(e.id) === String(sn.id)) || {}).numero) || "").replace(/\D/g, "").replace(/^0+/, "") : "";
+    const bases = new Set(toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); const rv = normVC(w && w.pos); if (!rv) return [];
+    const out = [];
+    toArray(cristales).forEach((c) => toArray(c && c.piezas).forEach((p, i) => {
+      if (!p || normVC(p.ref) !== rv) return;
+      const exp = String(p.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pres = digitosPresu(String(p.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]);
+      if ((uxN && exp === uxN) || (pres && bases.has(pres))) out.push({ c, i, p });
+    }));
+    return out;
+  };
+  const bajaCristalesVentana = (pzs, codCD, quitar) => {
+    if (!onUpdateCristal || !pzs.length) return 0; const porCab = new Map(); pzs.forEach((x) => { if (!porCab.has(x.c.id)) porCab.set(x.c.id, { c: x.c, is: new Set() }); porCab.get(x.c.id).is.add(x.i); });
+    let n = 0;
+    porCab.forEach(({ c, is }) => { onUpdateCristal(c.id, { piezas: toArray(c.piezas).map((q, j) => { if (!is.has(j)) return q; if (quitar && !q.puesto) { n++; return { ...q, puesto: true, fechaPuesto: hoyISO(), ventanaId: codCD, quitadoAMano: { por: quien || "", ts: Date.now(), porVentana: true } }; } if (!quitar && q.ventanaId === codCD) { n++; return { ...q, puesto: false, fechaPuesto: "", ventanaId: "", quitadoAMano: null }; } return q; }) }); });
+    return n;
+  };
   // PERSIANA PUESTA SIN PISTOLA (desde la persiana o desde la ventana): la ventana va a su hueco de Persiana (salida), se pone en verde
   // en «Obras del día», suma en el contador y, si se sabe, su persiana se da de baja del carro (se puede deshacer)
   const ponerPersianaCD = async (hit, x) => {
@@ -50166,8 +50185,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+    const nCr = puestoId === "cristales" ? bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, true) : 0; // tocar la ventana en Cristales = sus cristales dados de baja
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sin solape: se queda en la LÍNEA para paletizar` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sin solape: se queda en la LÍNEA para paletizar` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -50192,6 +50212,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
         try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ }
+        if (puestoId === "cristales") bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
         const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior);
         if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
         avisar(true, `${hit.w.pos}: quitada${px ? ` · la persiana ${px.ref || ""} vuelve al carro ${px.estanteAnterior.carro}` : ""}.`, false);
@@ -50222,6 +50243,21 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
+  // CRISTALES: cuando se dan de baja TODOS los cristales de una ventana (en el caballete), la ventana se da por HECHA sola (como tocarla)
+  const marcasCrist = useObjetoFb(`marcasPuestoLinea/${puestoId === "cristales" ? "cristales" : "_ninguno"}`);
+  const hechasCrAuto = useRef(new Set());
+  useEffect(() => {
+    if (puestoId !== "cristales" || !onUpdateCristal) return;
+    const hoyC = hoyISO();
+    const conHoy = new Set(); toArray(cristales).forEach((c) => toArray(c && c.piezas).forEach((p) => { if (p && p.puesto && p.fechaPuesto === hoyC && p.ref) conHoy.add(normVC(p.ref)); }));
+    if (!conHoy.size) return;
+    Object.entries(snapCDLin || {}).forEach(([k, sn]) => toArray(sn && sn.ventanas).forEach((w) => {
+      if (!conHoy.has(normVC(w.pos))) return;
+      const claveM = limpiaCodL(`${k}__${w.id}`); if ((marcasCrist && marcasCrist[claveM]) || hechasCrAuto.current.has(claveM)) return;
+      const pzs = cristalesDeVentana(sn, w); if (!pzs.length || !pzs.every((x) => x.p.puesto)) return;
+      hechasCrAuto.current.add(claveM); ponerPersianaCD({ k, sn, w }, null);
+    }));
+  }, [cristales, snapCDLin, marcasCrist, puestoId]);
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50482,7 +50518,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         {layoutSimple && !esPuestoPers && <div style={{ order: -2 }}><BuscadorVentanaCD puestoId={puestoId} onTocar={tocarVentanaPuesto} ubic={ubic} soloPuertas={puestoId === "puerta"} /></div>}
-        <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
+        <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin || puestoId === "cristales" ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
             // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
             //    y se pone en su hueco de Persiana A/B (salida) con su nombre; la persiana se da de baja del carro
