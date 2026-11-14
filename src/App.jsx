@@ -5992,8 +5992,13 @@ export default function App() {
   const sinArea = !areasUsuario.montaje && !areasUsuario.fabrica;
   const veMontaje = isAdmin || sinArea || !!areasUsuario.montaje;
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
+  // OPERARIO DE LA LÍNEA: usuario (no administrador) con su puesto de la línea marcado → solo ve lo suyo (sin avisos generales)
+  const soloOperario = !isAdmin && !!currentUser && (toArray(currentUser.puestosLinea).filter(Boolean).length > 0 || !!currentUser.puestoFijo);
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
+    // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
+    // (también Mosquiteras y postigos y Auxiliares: TODOS trabajan desde el mismo sitio, «Línea (pistola)»)
+    if (id === "lineapistola" && currentUser && (toArray(currentUser.puestosLinea).some(Boolean) || !!currentUser.puestoFijo)) return true;
     if (id === "incfabrica") return veFabrica;
     if (id === "portalclientes") return modulosPermitidos.includes("clientes");
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
@@ -6502,6 +6507,9 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
+        {currentUser && currentUser.encargadoLinea && <PanelIncidenciasEncargado incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
+        {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
           <button
             onClick={() => setModulo("portalclientes")}
@@ -6976,6 +6984,7 @@ export default function App() {
             </button>
           );
         })()}
+        </>}
         {modulo === "portalclientes" && (
           <PortalClientesModulo
             clientes={clientes}
@@ -7632,22 +7641,7 @@ export default function App() {
           <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
             onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
         )}
-        {modulo === "mipuesto" && currentUser && (() => {
-          // Puesto de CORTE (Mosquiteras y postigos / Auxiliares): el operario lo ve aquí mismo, sin necesitar el módulo «Línea (pistola)»
-          const cortes = [...new Set([currentUser.puestoFijo, ...toArray(currentUser.puestosLinea)].filter((x) => x === "mosqpost" || x === "auxiliares"))];
-          if (!cortes.length) return null;
-          const quienMP = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim();
-          return (
-            <div className="p-4 sm:p-8 pt-0 sm:pt-0 max-w-4xl space-y-6">
-              {cortes.map((c) => (
-                <div key={c}>
-                  <div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ {c === "mosqpost" ? `Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles (${AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).` : "Puesto AUXILIARES (doble cabezal)"}</div>
-                  <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quienMP} admin={isAdmin} puestoCorte={c === "mosqpost" ? "mosqpost" : undefined} />
-                </div>
-              ))}
-            </div>
-          );
-        })()}
+        {/* Mosquiteras y postigos / Auxiliares: se trabaja desde «Línea (pistola)», como todos los puestos */}
         {modulo === "albaranes" && (
           <AlbaranesChofer
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
@@ -56699,6 +56693,50 @@ function textoTiempoInc(ms) {
 }
 
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
+// ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
+const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr }) {
+  const [ahora, setAhora] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
+  const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
+  const nPrev = useRef(abiertas.length);
+  useEffect(() => { if (abiertas.length > nPrev.current) { try { pitidoCRM(false); setTimeout(() => pitidoCRM(false), 400); } catch (e) { /* sin sonido */ } } nPrev.current = abiertas.length; }, [abiertas.length]);
+  if (!abiertas.length) return null;
+  const mmss = (ms) => { const s2 = Math.max(0, Math.round(Math.abs(ms) / 1000)); return `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, "0")}`; };
+  return (
+    <div className="p-3 bg-slate-900 space-y-2">
+      <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+        {abiertas.map((i) => {
+          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0;
+          const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id;
+          return (
+            <div key={i.id} className={`rounded-xl border-4 p-3 ${tarde ? "bg-red-600 border-red-900 text-white animate-pulse" : "bg-amber-300 border-amber-600 text-slate-900"}`}>
+              <div className="flex flex-wrap items-start gap-2">
+                <div className="flex-1 min-w-[12rem]">
+                  <div className="text-2xl font-black leading-tight">{i.puesto || "Puesto ?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}</div>
+                  <div className="text-base font-bold">{i.obra || ""}</div>
+                  <div className="text-lg font-semibold mt-1">{i.texto || i.tipo || ""}</div>
+                  <div className="text-xs mt-1 opacity-90">{i.creadaPor && i.creadaPor.nombre ? `Avisa: ${i.creadaPor.nombre} · ` : ""}{i.creadaTs ? new Date(i.creadaTs).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}{i.asignadoA ? (mia ? " · VAS TÚ" : " · ya va alguien") : ""}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-4xl font-black leading-none">{tarde ? `+${mmss(resta)}` : mmss(resta)}</div>
+                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div>
+                </div>
+              </div>
+              {i.foto && <img src={i.foto} alt="" className="mt-2 max-h-40 rounded border border-black/20" />}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {!mia && <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-base font-extrabold">🏃 Voy yo</button>}
+                <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-base font-extrabold">✓ Resuelta</button>
+                {onIr && <button type="button" onClick={onIr} className="px-3 py-2 rounded-lg bg-white/80 text-slate-900 text-sm font-bold">Ver todas</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function BotonIncidenciaFabrica({ prefill, flotante }) {
   const ctx = React.useContext(IncFabricaCtx);
   if (!ctx || !ctx.puede) return null;
@@ -62512,9 +62550,10 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
   ] : (() => {
     // Todo en un sitio y en el orden del camino de la ventana. Con pantallas marcadas en su usuario, cada uno ve solo las suyas.
-    const perm = toArray(puestosPermitidos).filter(Boolean);
+    const perm0 = toArray(puestosPermitidos).filter(Boolean);
+    const perm = perm0.length ? perm0 : (puestoFijo && !soloAlmacen ? [puestoFijo] : []); // con solo «puesto fijo» ve SOLO su puesto (antes lo veía todo)
     const verTab = (id) => admin || !perm.length || perm.includes(`tab:${id}`) || (id === "puesto" && perm.some((x) => PUESTOS_LINEA.some((q) => q.id === x))) || (id === "auxiliares" && perm.includes("auxiliares")) || (id === "mosqpost" && perm.includes("mosqpost"));
-    const almacenOk = (id) => verMas || admin || perm.includes(`tab:${id}`);
+    const almacenOk = (id) => admin || perm.includes(`tab:${id}`) || (!perm.length && verMas);
     return [
       { id: "controlDia", t: "1 · Control del día", aviso: "" },
       { id: "puesto", t: "2 · Puestos (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
@@ -62678,6 +62717,10 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             <p className="text-xs text-slate-500 mt-1">En Preparación de material solo verá los puestos marcados (puedes marcar varios). Sin ninguno marcado ve todo. Para que entre solo ahí, marca únicamente el módulo «Preparación de material (puesto)».</p>
           </Field>
         )}
+        <label className="flex items-start gap-2 rounded-lg border-2 border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
+          <input type="checkbox" checked={!!f.encargadoLinea} onChange={(e) => setF({ ...f, encargadoLinea: e.target.checked })} className="mt-0.5" />
+          <span><b>🚨 Encargado / jefe de línea</b>: le salen arriba, EN GRANDE y en todas las pantallas, las incidencias de fábrica abiertas, con 5 minutos para resolverlas (suena al llegar una nueva).</span>
+        </label>
         {f.rol !== "Administrador" && (
           <Field label="Puesto fijo en la línea (opcional)">
             <Select value={f.puestoFijo || ""} onChange={(e) => setF({ ...f, puestoFijo: e.target.value })}>
