@@ -50148,7 +50148,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
   const esPuestoPers = puestoId === "persianaA" || puestoId === "persianaB";
-  const esPuestoSimple = esPuestoPers || puestoId === "puerta"; // pantalla sencilla: huecos arriba, dibujos abajo, tocar la ventana = hecha
+  const esPuestoSimple = esPuestoPers || puestoId === "puerta"; // tocar la ventana = hecha Y va a su hueco (persianas, puerta)
+  const layoutSimple = !!puestoId && puestoId !== "controlDia"; // TODOS los puestos: huecos arriba, buscador, dibujos abajo (sin lo que sobra)
+  const conBuscadorViejo = puestoId === "cristales" || puestoId === "solape"; // estos siguen con su buscador (baja de cristal, solape)
   const limpiaCodL = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   // PERSIANA PUESTA SIN PISTOLA (desde la persiana o desde la ventana): la ventana va a su hueco de Persiana (salida), se pone en verde
   // en «Obras del día», suma en el contador y, si se sabe, su persiana se da de baja del carro (se puede deshacer)
@@ -50196,6 +50198,28 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       await ponerPersianaCD(hit, esPuestoPers ? persianaDeVentanaCD(hit.sn, hit.w) : null);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
+  // Resto de puestos (sin pistola): tocar la ventana = HECHA en este puesto (verde y contador). Otra vez = quitar. No mueve huecos.
+  const marcarHechaPuesto = async (req) => {
+    try {
+      const id = String((req && req.id) || ""); const qb = basePresuDia(req && req.q);
+      let hit = null;
+      Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
+      if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
+      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
+      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      if (yaM) {
+        if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(puestoId)}.\n\n¿Quitarla?`)) return;
+        await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
+        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
+      }
+      const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+      await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.`, false);
+    } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
+  };
+  const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50365,9 +50389,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       <PedirVentanaLinea indice={indice} ubic={ubic} quien={quien} />
       {/* Puesto Puerta en pantalla sencilla (como persianas): sin los recuadros de arriba */}
       {puestoId && puestoId !== "controlDia" && <ContadorRitmoLinea admin={admin} total={0} puestoContar={puestoId} detalle="Se cuenta solo, con cada ventana leída hoy en este puesto · empieza a cero cada día" />}
-      {!esPuestoSimple && <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />}
+      {!layoutSimple && <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />}
       {/* Puesto de PERSIANA: arriba del todo el banco y Persiana (salida), luego el almacén de persianas (plegable) y abajo el dibujo de las obras */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5" style={esPuestoSimple ? { display: "flex", flexDirection: "column" } : undefined}>
+      <div className="bg-white border border-slate-200 rounded-xl p-5" style={layoutSimple ? { display: "flex", flexDirection: "column" } : undefined}>
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
@@ -50381,13 +50405,13 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           ))}
         </div>
         {verMosqPost ? <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div> : verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
-        <div className={`flex flex-wrap items-center gap-2 mb-3 ${esPuestoSimple ? "hidden" : ""}`}>
+        <div className={`flex flex-wrap items-center gap-2 mb-3 ${layoutSimple ? "hidden" : ""}`}>
           <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
-        {!esPuestoSimple && <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />}
+        {(!layoutSimple || conBuscadorViejo) && <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />}
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {candado && (
           <div className="mb-3 rounded-lg border-2 border-rose-600 bg-rose-50 p-3 space-y-2">
@@ -50448,14 +50472,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <div style={esPuestoSimple ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={esPuestoSimple ? ventanaPersianaPuesta : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} /></div>
+        <div style={layoutSimple ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={layoutSimple ? tocarVentanaPuesto : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} /></div>
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
-        {!esPuestoSimple && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
+        {!layoutSimple && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
-        <div className="mt-4" style={esPuestoSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
+        <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        {puestoId === "puerta" && <div style={{ order: -2 }}><BuscadorVentanaCD puestoId={puestoId} onTocar={ventanaPersianaPuesta} ubic={ubic} soloPuertas /></div>}
+        {layoutSimple && !esPuestoPers && <div style={{ order: -2 }}><BuscadorVentanaCD puestoId={puestoId} onTocar={tocarVentanaPuesto} ubic={ubic} soloPuertas={puestoId === "puerta"} /></div>}
         <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
             // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
