@@ -48770,12 +48770,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   }, [ubicAlmP, cabsAlmP, indice]);
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
+  const marcasPP = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
   const leidas = useMemo(() => {
     const ids = new Set(); const pp = new Set(); const porId = new Map();
     indice.forEach((h) => { const v = h && h.ventana; if (v && !porId.has(String(v.id))) porId.set(String(v.id), v); });
+    // ticadas a mano en este puesto (pinchando la ventana, sin pistola)
+    Object.values(marcasPP || {}).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
     toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
     return { ids, pp };
-  }, [escaneos, puestoId, indice]);
+  }, [escaneos, puestoId, indice, marcasPP]);
   const esLeida = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
@@ -48992,13 +48995,30 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : (claveSol && solSin[claveSol] ? solSin[claveSol] : null);
   const marcarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), { ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} marcada SIN solape: se queda en la Línea para paletizar.`)).catch((e) => setMsg(`⚠ ${(e && e.message) || e}`));
   const quitarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), null).then(() => setMsg(`${w.pos}: vuelve a llevar solape.`)).catch(() => {});
-  const mandarSolape = async () => {
-    const n = parseInt(huecoSol, 10) || libreSol;
+  const mandarSolape = async (nForzado) => {
+    const n = typeof nForzado === "number" ? nForzado : (parseInt(huecoSol, 10) || libreSol);
     if (!zSol || !n || n < 1 || n > zSol.huecos) { setMsg(`⚠ El estante va del 1 al ${zSol ? zSol.huecos : 36}`); return; }
     if (baseW) { const r = await fijarHuecoLinea(zSol, baseW, n, quien); setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`); return; }
     if (usadosSol.has(n)) { setMsg(`⚠ El estante ${n} de Solape ya está ocupado`); return; }
     fbSet(ref(fbDb, `solapeSinEtiquetaLinea/${claveSol}`), { hueco: n, ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
   };
+  // PINCHAR UNA VENTANA = HECHA EN ESTE PUESTO (sin pistola): se pone en verde en «Obras del día», suma en el contador
+  // y, si lleva solape, se apunta sola en la primera estantería libre de Solape (se puede mover o quitar)
+  const marcasPuestoP = useObjetoFb(puesto && puesto !== "almacen" ? `marcasPuestoLinea/${puesto}` : "marcasPuestoLinea/_ninguno");
+  const yaVerde = !!(claveSol && marcasPuestoP && marcasPuestoP[claveSol]);
+  const autoHecho = useRef("");
+  useEffect(() => {
+    if (!w || !obra || !claveSol || !puesto || puesto === "almacen") return;
+    const kk = `${puesto}|${claveSol}`; if (autoHecho.current === kk) return; autoHecho.current = kk;
+    const base = (obra.bases && obra.bases[0]) || ""; const hoyP = hoyISO();
+    if (!yaVerde) {
+      fbSet(ref(fbDb, `marcasPuestoLinea/${puesto}/${claveSol}`), { ts: Date.now(), ventanaId: w.id, pos: w.pos || "", base, fecha: hoyP, por: quien || "" }).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puesto}/${claveSol}`), Date.now()).catch(() => {});
+    }
+    if (llevaSolape && !ubSol && libreSol) mandarSolape(libreSol);
+    else if (!yaVerde) setMsg(`✓ ${w.pos} HECHA en ${nombrePuestoLinea(puesto)} (en verde).`);
+  }, [w && w.id, obra && obra.key]);
+  const quitarVerde = () => { if (!claveSol) return; fbSet(ref(fbDb, `marcasPuestoLinea/${puesto}/${claveSol}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${claveSol}`), null).catch(() => {}); autoHecho.current = ""; setMsg(`${w.pos}: quitada de hechas en este puesto.`); };
   // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
   const reconocerDe = (wx) => {
     if (!wx || !obra) return null;
@@ -49208,10 +49228,20 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
+      {w && !soloDonde && puesto && puesto !== "almacen" && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {yaVerde && <span className="px-2 py-1 rounded bg-emerald-600 text-white font-bold">✓ {w.pos} hecha en este puesto</span>}
+          {yaVerde && <button type="button" onClick={quitarVerde} className="px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white text-xs font-bold">✕ Me he equivocado: quitar el verde</button>}
+        </div>
+      )}
       {w && !soloDonde && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
           {ubSol
-            ? <div className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</div>
+            ? <div className="flex flex-wrap items-center gap-2"><span className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</span>
+              <span className="text-sm font-semibold text-amber-900">Moverla a la estantería</span>
+              <input type="number" min="1" max={zSol ? zSol.huecos : 36} value={huecoSol} onChange={(e) => setHuecoSol(e.target.value)} placeholder={libreSol ? String(libreSol) : "—"} className="w-20 border border-amber-400 rounded-md px-2 py-1 text-base font-bold" />
+              <button type="button" onClick={() => { const n = parseInt(huecoSol, 10); if (!n) { setMsg("⚠ Escribe a qué estantería la mueves"); return; } mandarSolape(n); }} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Mover</button>
+            </div>
             : <>
               <div className="text-lg font-extrabold text-amber-900">📍 {w.pos} está en LÍNEA · lleva solape / postigo: va a SOLAPE</div>
               <div className="flex flex-wrap items-center gap-2 text-sm">
