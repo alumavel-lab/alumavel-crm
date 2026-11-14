@@ -31739,7 +31739,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
       const resolver = (tipo, id) => (tipo === "proyecto" || tipo === "p" ? porId.get(String(id)) : tipo === "uxcar" || tipo === "u" ? deUx(id) : null) || null;
       const obrasP = (planF && planF.obras) || {}; const diasP = (planF && planF.dias) || {};
       const diasDe = {}; // clave obra -> [fechas]
-      Object.keys(diasP).sort().forEach((fch) => Object.keys(diasP[fch] || {}).forEach((k) => { (diasDe[k] = diasDe[k] || []).push(fch); }));
+      Object.keys(diasP).sort().forEach((fch) => clavesDiaOrden(diasP[fch]).forEach((k) => { (diasDe[k] = diasDe[k] || []).push(fch); }));
       const puestos = new Set(); // "fecha|proyectoId o clave"
       const meter = (fch, pr, nombre, extra, origen) => {
         if (pr && filtroEstado && pr.estadoTrabajo !== filtroEstado) return;
@@ -46115,7 +46115,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).forEach((k) => {
+      clavesDiaOrden(planDias[f]).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
         const esPrimero = !primerDiaPlan[k] || primerDiaPlan[k] === f;
         // si el planning la pone en varios días: sale en el primero y, en los siguientes, MIENTRAS LE QUEDEN VENTANAS (sigue de otro día)
@@ -46201,7 +46201,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const delDia = itemsDia(diaAD);
     const obrasDelDia = delDia.filter((i) => i.o).map((i) => i.o);
     const sinEt = delDia.filter((i) => i.sinEtiquetas);
-    const stDiaAll = obrasDelDia.map((o) => ({ o, ...stats(o) })).sort((a, b) => (b.pend > 0 ? 1 : 0) - (a.pend > 0 ? 1 : 0));
+    const stDiaAll = obrasDelDia.map((o) => ({ o, ...stats(o) })); // en el MISMO orden que el planning de Fábrica (antes se ponían primero las pendientes)
     // la misma obra dos veces (por proyecto y por expediente de Uxcar): se queda la que tiene más ventanas en palet
     const gemelaMejor = (x) => stDiaAll.some((y) => y.o.key !== x.o.key && y.n > x.n && y.o.codigos.some((c) => x.o.codigos.some((m) => mismoP(m, c))));
     const stDia = stDiaAll.filter((x) => !gemelaMejor(x));
@@ -48766,7 +48766,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
     const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[dia] || {};
     const pedidas = []; // { nombre, bases:Set, keys:Set }
-    Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
+    clavesDiaOrden(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
     // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
     Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
     Object.values(extras || {}).forEach((x) => { const b = basePresuDia(x && x.base); if (!b || b.length < 3) return; if (pedidas.some((pd) => pd.bases.has(b))) return; pedidas.push({ nombre: String(x.nombre || `Ppto ${b}`), bases: new Set([b]), keys: new Set() }); });
@@ -52173,6 +52173,9 @@ const horasObra = (recuento, totales, horasManual, tiempos, horasListado) => {
 // 13/11/2026: los días de las obras SOLO se ponen en Fábrica → Planning (así nadie lo pisa desde Control del día / Almacén del día).
 // Desde las otras pantallas solo se CONSULTA y se marcan ventanas: no se pone, ni se mueve, ni se quita ninguna obra de un día.
 const SOLO_PLANNING_PONE_DIAS = true;
+// Claves de las obras de un día del planning EN SU ORDEN (el orden en que se metieron en Fábrica → Planning). Firebase devuelve las claves
+// ordenadas por nombre, así que hay que ordenarlas por «orden» en TODAS las pantallas para que salgan siempre igual.
+const clavesDiaOrden = (delDia) => Object.keys(delDia || {}).sort((a, b) => { const oa = delDia[a] && typeof delDia[a].orden === "number" ? delDia[a].orden : 9999; const ob = delDia[b] && typeof delDia[b].orden === "number" ? delDia[b].orden : 9999; return oa - ob; });
 const avisoSoloPlanning = () => window.alert("📅 Los días de las obras se ponen SOLO en Fábrica → Planning.\n\nPídeselo a quien lleva el planning (o hazlo tú allí): desde aquí ya no se puede, para que no se pisen.");
 const esLaborable = (d) => d.getDay() !== 0 && d.getDay() !== 6;
 const sigLaborable = (fechaStr) => { const d = new Date(fechaStr + "T12:00:00"); do { d.setDate(d.getDate() + 1); } while (!esLaborable(d)); return d.toISOString().slice(0, 10); };
@@ -52401,7 +52404,10 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas });
   })();
   const ultimoPublicadoFb = useRef("");
-  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb, planPrevioListo]);
+  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
+    // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
+    (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length) diasPP[f] = d.trozos.map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
+  }, [publicadoFb, planPrevioListo]);
   // Semanas del planning virtual
   const semanas = {};
   Object.entries(plan2.dias).forEach(([f, d]) => {
