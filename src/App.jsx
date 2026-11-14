@@ -50000,6 +50000,53 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
+  const esPuestoPers = puestoId === "persianaA" || puestoId === "persianaB";
+  const limpiaCodL = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  // PERSIANA PUESTA SIN PISTOLA (desde la persiana o desde la ventana): la ventana va a su hueco de Persiana (salida), se pone en verde
+  // en «Obras del día», suma en el contador y, si se sabe, su persiana se da de baja del carro (se puede deshacer)
+  const ponerPersianaCD = async (hit, x) => {
+    const zP = zonas.find((q) => q.id === puestoId); if (!zP) return false;
+    const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+    const r = (ubic && ubic[codCD] && ubic[codCD].zonaId === puestoId) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
+    const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
+    fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
+    fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+    if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
+    avisar(true, `${r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : " · (no encuentro su persiana en el carro)"}`, false);
+    return true;
+  };
+  // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
+  const persianaDeVentanaCD = (sn, wv) => {
+    const normV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+    const bases = new Set(toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3));
+    const uxN = sn.tipo === "u" ? String(((toArray(uxExpedientes).find((e) => String(e.id) === String(sn.id)) || {}).numero) || "").replace(/\D/g, "").replace(/^0+/, "") : "";
+    return toArray(ctx.persianasAlmacen).find((y) => y && !y.entregada && !y.colocadaVentana && y.estante && (normV(y.ref) === normV(wv.pos) || (wv.g && normV(y.ref) === normV(wv.g)))
+      && ((uxN && numsExpediente(y.expediente).map((n) => n.replace(/^0+/, "")).includes(uxN)) || bases.has(digitosPresu(String(y.presupuesto || "").split(/[·,;\s]+/)[0])))) || null;
+  };
+  // Tocar una VENTANA en «Obras del día» del puesto de persiana: lo mismo que pinchar su persiana (y si ya estaba, se puede quitar)
+  const ventanaPersianaPuesta = async (req) => {
+    try {
+      const id = String((req && req.id) || ""); const qb = basePresuDia(req && req.q);
+      let hit = null;
+      Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
+      if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
+      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      if (yaM) {
+        if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
+        await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
+        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ }
+        const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior);
+        if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
+        avisar(true, `${hit.w.pos}: quitada${px ? ` · la persiana ${px.ref || ""} vuelve al carro ${px.estanteAnterior.carro}` : ""}.`, false);
+        return;
+      }
+      await ponerPersianaCD(hit, persianaDeVentanaCD(hit.sn, hit.w));
+    } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
+  };
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50192,7 +50239,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />
+        {!esPuestoPers && <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />}
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {candado && (
           <div className="mb-3 rounded-lg border-2 border-rose-600 bg-rose-50 p-3 space-y-2">
@@ -50253,7 +50300,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <PanelDiaPuesto puestoId={puestoId} onAbrir={setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
+        <PanelDiaPuesto puestoId={puestoId} onAbrir={esPuestoPers ? ventanaPersianaPuesta : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
@@ -50278,6 +50325,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
                 if (w) hit = { k, sn, w };
               });
               const zP = zonas.find((q) => q.id === puestoId);
+              if (hit && zP) return await ponerPersianaCD(hit, x);
               if (hit && zP) {
                 const codCD = `cd_${hit.k}__${hit.w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
                 const r = await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
@@ -57323,7 +57371,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
     ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: e, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
     const vId = String(x.ventanaId || "");
-    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } }
+    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } if (puestoId) { fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${vId.slice(3)}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${vId.slice(3)}`), null).catch(() => {}); } }
     if (puestoId) { [vId, String(x.id).replace(/[.#$\[\]\/]/g, "_")].filter(Boolean).forEach((kk) => fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${kk}`), null).catch(() => {})); }
   };
   const listaDeshacer = (soloCarro) => {
