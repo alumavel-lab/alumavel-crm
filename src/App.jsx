@@ -5992,6 +5992,8 @@ export default function App() {
   const sinArea = !areasUsuario.montaje && !areasUsuario.fabrica;
   const veMontaje = isAdmin || sinArea || !!areasUsuario.montaje;
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
+  // OPERARIO DE LA LÍNEA: usuario (no administrador) con su puesto de la línea marcado → solo ve lo suyo (sin avisos generales)
+  const soloOperario = !isAdmin && !!currentUser && (toArray(currentUser.puestosLinea).filter(Boolean).length > 0 || !!currentUser.puestoFijo);
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
@@ -6504,6 +6506,8 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
+        {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
+        {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
           <button
             onClick={() => setModulo("portalclientes")}
@@ -6978,6 +6982,7 @@ export default function App() {
             </button>
           );
         })()}
+        </>}
         {modulo === "portalclientes" && (
           <PortalClientesModulo
             clientes={clientes}
@@ -62514,9 +62519,10 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
   ] : (() => {
     // Todo en un sitio y en el orden del camino de la ventana. Con pantallas marcadas en su usuario, cada uno ve solo las suyas.
-    const perm = toArray(puestosPermitidos).filter(Boolean);
+    const perm0 = toArray(puestosPermitidos).filter(Boolean);
+    const perm = perm0.length ? perm0 : (puestoFijo && !soloAlmacen ? [puestoFijo] : []); // con solo «puesto fijo» ve SOLO su puesto (antes lo veía todo)
     const verTab = (id) => admin || !perm.length || perm.includes(`tab:${id}`) || (id === "puesto" && perm.some((x) => PUESTOS_LINEA.some((q) => q.id === x))) || (id === "auxiliares" && perm.includes("auxiliares")) || (id === "mosqpost" && perm.includes("mosqpost"));
-    const almacenOk = (id) => verMas || admin || perm.includes(`tab:${id}`);
+    const almacenOk = (id) => admin || perm.includes(`tab:${id}`) || (!perm.length && verMas);
     return [
       { id: "controlDia", t: "1 · Control del día", aviso: "" },
       { id: "puesto", t: "2 · Puestos (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
