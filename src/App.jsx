@@ -49134,7 +49134,7 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
     if (bloq) { setMsg(`🔒 ${w.pos} ya está hecha (${estW.txt}): no se vuelve a ticar.`); return; }
     if (!guardarPersianas) { setMsg("No tengo acceso al almacén de persianas desde aquí."); return; }
     const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : "su sitio";
-    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
+    guardarPersianas(toArray(persianas).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: w.id, ventanaPos: w.pos } : y)));
     setMsg(`✓ Persiana ${x.ref || ""} dada de baja: ya no está en ${donde}${quien ? ` (${quien})` : ""}.`);
     if (puesto && puesto !== "almacen") fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${String(w.id || w.pos).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
   };
@@ -49282,7 +49282,7 @@ function cruzarPersianaVentana(items, guardarItems, h) {
   if (!x) return { ok: false, texto: "no he encontrado su persiana en el almacén (o ya estaba marcada)" };
   if (!guardarItems) return { ok: false, texto: "no tengo acceso al almacén de persianas desde aquí" };
   const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? "ya estaba en el puesto" : "sin sitio asignado";
-  guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
+  guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
   return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro, lado: x.estante.lado, nivel: x.estante.nivel, ref: x.ref || "" } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
 }
 
@@ -50246,7 +50246,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
                 const codCD = `cd_${hit.k}__${hit.w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
                 const r = await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
                 if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
-                ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
+                ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
                 fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${codCD}`), Date.now()).catch(() => {});
                 avisar(true, r ? `✓ Persiana ${x.ref || ""} PUESTA · la ventana ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `✓ Persiana ${x.ref || ""} PUESTA (dada de baja del carro) · ⚠ ${zP.nombre} está LLENA: la ventana ${hit.w.pos} no tiene hueco`, false);
                 return true;
@@ -57271,11 +57271,37 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     if (onPersianaPuesta) { try { hecho = await onPersianaPuesta(x); } catch (e) { hecho = false; } }
     if (!hecho) {
       if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
-      ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
+      ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
       if (puestoId) fbSet(ref(fbDb, `ticksLinea/${new Date().toISOString().slice(0, 10)}/${puestoId}/${String(x.id).replace(/[.#$\[\]\/]/g, "_")}`), Date.now()).catch(() => {}); // cuenta en el contador del puesto
       if (onPersianaPuesta) alert(`Persiana ${x.ref || ""} dada de baja.\n\n⚠ No encuentro la etiqueta de su ventana (o ya estaba leída en este puesto): la ventana NO se ha movido de hueco. Léela con la pistola o ponla a mano.`);
     }
     setFocoId(""); setCarroVer(null);
+  };
+  // DESHACER «persiana puesta» (por si se ha pinchado la que no era): vuelve a su sitio del carro y la ventana sale de su hueco
+  const hoyP = new Date().toISOString().slice(0, 10);
+  const puestasHoy = toArray(ctx.persianasAlmacen).filter((x) => x && x.colocadaVentana && x.estanteAnterior && x.fechaSalida === hoyP).sort((a, b) => String(b.ventanaPos || "").localeCompare(String(a.ventanaPos || "")));
+  const deshacerPuesta = async (x) => {
+    const e = x.estanteAnterior;
+    if (!window.confirm(`¿DESHACER «persiana puesta» de ${x.ref || ""} (EXP ${x.expediente || "—"})?\n\nVuelve al carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${String(x.ventanaId || "").startsWith("cd_") ? " y su ventana sale del hueco de Persiana (salida)" : ""}.`)) return;
+    if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
+    ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: e, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
+    const vId = String(x.ventanaId || "");
+    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } }
+    if (puestoId) { [vId, String(x.id).replace(/[.#$\[\]\/]/g, "_")].filter(Boolean).forEach((kk) => fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${kk}`), null).catch(() => {})); }
+  };
+  const listaDeshacer = (soloCarro) => {
+    const xs = puestasHoy.filter((x) => !soloCarro || (String(x.estanteAnterior.carro) === String(soloCarro.numero) && (x.almacenAnterior || ALMACEN_PRINCIPAL_ID) === soloCarro.almacenId));
+    if (!xs.length) return null;
+    return (
+      <div className="mb-3 rounded-lg border-2 border-amber-300 bg-amber-50 p-2">
+        <div className="text-xs font-bold text-amber-900 mb-1">↩ Puestas hoy{soloCarro ? " de este carro" : ""}: si te has equivocado, devuélvela al carro</div>
+        <div className="flex flex-wrap gap-1.5">
+          {xs.slice(0, 20).map((x) => (
+            <button key={x.id} type="button" onClick={() => deshacerPuesta(x)} className="px-2 py-1 rounded border border-amber-400 bg-white text-xs font-bold text-amber-900 hover:bg-amber-100" title="Devolverla a su sitio del carro">↩ {x.ref || "—"} · EXP {x.expediente || "—"} <span className="font-normal">(carro {x.estanteAnterior.carro} · {x.estanteAnterior.lado}{x.estanteAnterior.nivel})</span></button>
+          ))}
+        </div>
+      </div>
+    );
   };
   return (
     <div className="mt-6">
@@ -57321,6 +57347,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })()}
+      {listaDeshacer(null)}
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57365,6 +57392,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 <button type="button" onClick={() => setCarroVer(null)} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
               </div>
               <div className="overflow-y-auto p-4">
+                {listaDeshacer(carroVer)}
                 {its.length > 0 && (() => {
                   // EL MISMO DIBUJO DEL CARRO QUE EN EL ALMACÉN DE PERSIANAS: lados, estantes y cada persiana en su sitio (la buscada en rojo)
                   const estC = estantesAlmacenPersianas(carros.filter((c) => almacenDe(c) === carroVer.almacenId)).filter((e) => e.carro === carroVer.numero);
