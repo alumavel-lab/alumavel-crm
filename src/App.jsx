@@ -5036,6 +5036,11 @@ export default function App() {
     showToast(`${faltan.length} obra${faltan.length === 1 ? "" : "s"} con instalación sin ficha: ya se han creado en Instalaciones`);
   }, [proyectos, instalaciones, currentUser?.id, loading]); // eslint-disable-line
   const uxDocsSyncRef = useRef(false);
+  // 14/11/2026: un pedido de Uxcar (persianas/compactos, cristales) lleva varios expedientes y un PDF por expediente («compactos 703.pdf»).
+  // Antes TODOS los PDF del pedido se metían en TODAS las obras del pedido (un montón de documentos ajenos).
+  // Ahora: si el nombre del PDF lleva el número de OTRO expediente del pedido y no el de esta obra, no se mete (y se quita si ya estaba).
+  const numsUx = (t) => (String(t || "").match(/\d{3,}/g) || []).map((n) => n.replace(/^0+/, ""));
+  const codigosExpUx = (e) => new Set([e.numero, e.presupuesto, e.presupuestoNumero, e.codigo, e.expediente].flatMap(numsUx));
   useEffect(() => {
     if (!currentUser || loading || uxDocsSyncRef.current) return;
     const cambios = [];
@@ -5044,23 +5049,39 @@ export default function App() {
       const exp = toArray(uxExpedientes).find((e) => e.id === pr.uxcarExpedienteId);
       if (!exp) continue;
       const delPedido = toArray(uxPedidos).filter((pd) => toArray(pd.expedientes).some((x) => (x.expedienteId || "") === exp.id));
+      const mios = codigosExpUx(exp);
+      const ajenas = new Set();
+      const delPedidoDocs = delPedido.flatMap((pd) => {
+        const otros = new Set(toArray(pd.expedientes).map((x) => x.expedienteId).filter((id) => id && id !== exp.id)
+          .flatMap((id) => { const e2 = toArray(uxExpedientes).find((q) => q.id === id); return e2 ? [...codigosExpUx(e2)] : []; }));
+        return toArray(pd.documentos).filter((d) => d && d.url && d.nombre).filter((d) => {
+          // los nuevos ya dicen de qué expediente son (leído dentro del PDF)
+          if (toArray(d.expedienteIds).length) { if (toArray(d.expedienteIds).includes(exp.id)) return true; ajenas.add(d.url); return false; }
+          if (toArray(pd.expedientes).length < 2) return true; // pedido de un solo expediente: todo es suyo
+          const ns = numsUx(d.nombre);
+          if (ns.some((n) => mios.has(n))) return true;
+          if (ns.some((n) => otros.has(n))) { ajenas.add(d.url); return false; }
+          return true; // sin número reconocible: es del pedido entero
+        }).map((d) => ({ nombre: d.nombre, url: d.url, tipo: pd.tipo === "Persianas" ? "Pedido de persianas/compactos" : "Listado de vidrios (pedido de cristales)" }));
+      });
       const candidatos = [
         ...toArray(exp.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: d.tipo || "" })),
-        ...delPedido.flatMap((pd) => toArray(pd.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: pd.tipo === "Persianas" ? "Pedido de persianas/compactos" : "Listado de vidrios (pedido de cristales)" }))),
+        ...delPedidoDocs,
       ].filter((d) => d && d.url && d.nombre);
+      const sobran = toArray(pr.documentos).filter((d) => d && d.deUxcar && ajenas.has(d.url)).map((d) => d.url);
       const vistos = new Set(toArray(pr.uxDocsVistos));
       const yaEnObra = new Set(toArray(pr.documentos).map((d) => d.url));
       const nuevos = candidatos.filter((d) => !vistos.has(d.url) && !yaEnObra.has(d.url));
       const unicos = [...new Map(nuevos.map((d) => [d.url, d])).values()];
       const nuevasVistas = candidatos.filter((d) => !vistos.has(d.url));
-      if (nuevasVistas.length) cambios.push({ id: pr.id, unicos, vistas: [...vistos, ...nuevasVistas.map((d) => d.url)] });
+      if (nuevasVistas.length || sobran.length) cambios.push({ id: pr.id, unicos, vistas: [...vistos, ...nuevasVistas.map((d) => d.url)], sobran: new Set(sobran) });
     }
     if (!cambios.length) return;
     uxDocsSyncRef.current = true;
     saveProyectos(toArray(proyectos).map((p) => {
       const c = cambios.find((x) => x.id === p.id);
       if (!c) return p;
-      return { ...p, documentos: [...toArray(p.documentos), ...c.unicos.map((d) => ({ id: uid(), nombre: d.tipo ? `${d.tipo} — ${d.nombre}` : d.nombre, url: d.url, subidoEn: Date.now(), deUxcar: true }))], uxDocsVistos: c.vistas };
+      return { ...p, documentos: [...toArray(p.documentos).filter((d) => !(d && d.deUxcar && c.sobran.has(d.url))), ...c.unicos.map((d) => ({ id: uid(), nombre: d.tipo ? `${d.tipo} — ${d.nombre}` : d.nombre, url: d.url, subidoEn: Date.now(), deUxcar: true }))], uxDocsVistos: c.vistas };
     }));
     setTimeout(() => { uxDocsSyncRef.current = false; }, 1500);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7611,6 +7632,22 @@ export default function App() {
           <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
             onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
         )}
+        {modulo === "mipuesto" && currentUser && (() => {
+          // Puesto de CORTE (Mosquiteras y postigos / Auxiliares): el operario lo ve aquí mismo, sin necesitar el módulo «Línea (pistola)»
+          const cortes = [...new Set([currentUser.puestoFijo, ...toArray(currentUser.puestosLinea)].filter((x) => x === "mosqpost" || x === "auxiliares"))];
+          if (!cortes.length) return null;
+          const quienMP = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim();
+          return (
+            <div className="p-4 sm:p-8 pt-0 sm:pt-0 max-w-4xl space-y-6">
+              {cortes.map((c) => (
+                <div key={c}>
+                  <div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ {c === "mosqpost" ? `Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles (${AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).` : "Puesto AUXILIARES (doble cabezal)"}</div>
+                  <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quienMP} admin={isAdmin} puestoCorte={c === "mosqpost" ? "mosqpost" : undefined} />
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {modulo === "albaranes" && (
           <AlbaranesChofer
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
@@ -55132,7 +55169,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
-      for (const a of archivos) documentos.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-pedidos") });
+      for (const a of archivos) documentos.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-pedidos"), codigos: [...new Set(toArray(a.leidos).map((g) => uxNormExp(g.codigo)).filter(Boolean))] });
     } catch (e) { return false; }
     const pedidoId = uid();
     const hoy = uxHoy();
@@ -55155,8 +55192,10 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         const matPed = uxMatAlbaran(tipo);
         if (exp && matPed && (!exp.materiales || !exp.materiales[matPed] || exp.materiales[matPed].estado === "pendiente")) patch[`expedientes/${exp.id}/materiales/${matPed}/estado`] = "pedido";
       }
-      if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas });
+      if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas, codigo: uxNormExp(g.codigo) });
     });
+    // Cada PDF sabe de qué expediente(s) es (por lo que se leyó DENTRO del PDF): así cada obra recibe solo el suyo
+    documentos.forEach((d) => { const ids = expsPedido.filter((x) => x.codigo && toArray(d.codigos).includes(x.codigo)).map((x) => x.expedienteId); if (ids.length) d.expedienteIds = ids; delete d.codigos; });
     const numero = siguienteNumeroPedido();
     patch[`pedidos/${pedidoId}`] = JSON.parse(JSON.stringify({
       id: pedidoId, numero, tipo, proveedorId, proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
@@ -62112,8 +62151,14 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     ].filter((x) => x.id === "parte" || x.id === "incidencias" || verTab(x.id));
   })();
   const actual = tabs.find((x) => x.id === tab) || tabs[0];
+  const permAviso = admin ? [] : toArray(puestosPermitidos).filter(Boolean);
   return (
     <div>
+      {permAviso.length > 0 && (
+        <div className="mb-3 px-3 py-2 rounded-md text-xs font-semibold border bg-amber-50 text-amber-900 border-amber-300">
+          👤 Estás con el usuario <b>{quien || "?"}</b> (no es administrador): solo ves las pantallas que tiene marcadas en «Pantallas y puestos de la Línea que puede usar». Para verlo todo, entra con el usuario administrador o márcalas en su ficha de usuario.
+        </div>
+      )}
       {tabs.length > 1 && (
         <div className="flex flex-wrap gap-1 border-b border-slate-200 mb-3">
           {tabs.map((x) => (
@@ -62261,6 +62306,8 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
               <option value="">Sin puesto fijo (puede cambiar de puesto)</option>
               {PUESTOS_LINEA.filter((q) => q.id !== "carga").map((q) => <option key={q.id} value={q.id}>{q.nombre}</option>)}
               <option value="almacenventanas">Almacén de ventanas (carga y caballetes)</option>
+              <option value="mosqpost">✂ Mosquiteras y postigos (corte)</option>
+              <option value="auxiliares">Auxiliares (corte, doble cabezal)</option>
             </Select>
             <p className="text-xs text-slate-500 mt-1">Si lo eliges, en Línea (pistola) solo verá ese puesto y no podrá leer en otros.</p>
           </Field>
