@@ -7416,7 +7416,7 @@ export default function App() {
           />
         )}
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
-          <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
+          <IncFabricaCtx.Provider value={{ puede: !!currentUser, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
             paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
@@ -46225,7 +46225,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return obraOk && (i.ventanaId === v.id || posOk);
     });
     const botonVentana = (f, o, g) => (
-      <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
+      <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${incsDeVentana(o, f.x.v).length ? "bg-orange-500 border-orange-700 text-white" : f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
         <div>{f.c ? "✓ " : ""}{f.x.v.pos || "·"}</div>
         {f.x.v.medida ? <div className={`${g ? "text-sm" : "text-[10px]"} font-normal opacity-80`}>{f.x.v.medida}</div> : null}
         {f.c ? <div className={`${g ? "text-lg" : "text-[10px]"} font-semibold`}>{f.c.numero}</div> : null}
@@ -48091,8 +48091,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // Color de la ventana según su persiana (en TODOS los sitios donde sale el mapa): VERDE = persiana puesta y bien · NARANJA = con incidencia
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
+  const incFabZ = useObjetoFb("incidenciasFabrica");
+  const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -48770,12 +48772,28 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   }, [ubicAlmP, cabsAlmP, indice]);
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
+  const marcasTodosPP = useObjetoFb("marcasPuestoLinea"); // ticadas a mano en TODOS los puestos (para ver por dónde ha pasado cada ventana)
+  const marcasPP = (marcasTodosPP && marcasTodosPP[puestoId]) || {};
+  // Por dónde ha pasado cada ventana: puesto, fecha y hora (y quién), de lo ticado a mano y de lo leído con la pistola
+  const fmtTick = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
+  const pasosVentana = (c, v) => {
+    const out = []; const vistos = new Set();
+    Object.entries(marcasTodosPP || {}).forEach(([pu, ms]) => Object.values(ms || {}).forEach((m) => { if (!m) return; const okV = (m.ventanaId && String(m.ventanaId) === String(v.id)) || ([...c.bases].includes(basePresuDia(m.base)) && normP(m.pos) === normP(v.pos)); if (!okV || vistos.has(pu)) return; vistos.add(pu); out.push({ pu, ts: m.ts, por: m.por || "" }); }));
+    toArray(escaneos).forEach((x) => { if (!x || String(x.ventanaId) !== String(v.id) || vistos.has(x.puestoId)) return; vistos.add(x.puestoId); out.push({ pu: x.puestoId, ts: x.ts, por: x.por || "" }); });
+    return out.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+  };
+  // Ventanas con incidencia abierta: salen en NARANJA en el dibujo
+  const incsFabP = useObjetoFb("incidenciasFabrica");
+  const incVentP = useMemo(() => { const ids = new Set(); const pp = new Set(); toArray(incsFabP).forEach((i) => { if (!i || i.estado === "Resuelta") return; if (i.ventanaId) ids.add(String(i.ventanaId)); const pos = String(i.ventanaBase || i.ventana || "").split("·")[0].trim().toUpperCase().replace(/\s+/g, ""); if (pos) pp.add(`${String(i.obra || "").trim()}|${pos}`); }); return { ids, pp }; }, [incsFabP]);
+  const conIncP = (c, v) => incVentP.ids.has(String(v.id)) || [c.obra, c.nombre, c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""].some((o) => o && incVentP.pp.has(`${String(o).trim()}|${String(v.pos || "").toUpperCase().replace(/\s+/g, "")}`));
   const leidas = useMemo(() => {
     const ids = new Set(); const pp = new Set(); const porId = new Map();
     indice.forEach((h) => { const v = h && h.ventana; if (v && !porId.has(String(v.id))) porId.set(String(v.id), v); });
+    // ticadas a mano en este puesto (pinchando la ventana, sin pistola)
+    Object.values(marcasPP || {}).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
     toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
     return { ids, pp };
-  }, [escaneos, puestoId, indice]);
+  }, [escaneos, puestoId, indice, marcasPP]);
   const esLeida = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
@@ -48803,11 +48821,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const c = cajas.find((x) => x.fuente !== "cd" && ((b && x.bases.has(b)) || x.keys.has(kd))); if (!c) return;
       c.fuente = "et"; c.vs.push({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", dib: "", fab: h.lote.fab, tip: v.tipo || v.pos || "", ex: [], color: v.color || "", g: v.grupo || "", nLote: dibDe(v) }); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    return cajas.map((c, i) => { const vs = c.vs.sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
-      .filter((c) => c.vs.length || c.nombre);
+    // Puesto PUERTA: solo las puertas (P… y A…, o las marcadas como puerta); el resto de la obra no le interesa
+    const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
+      .filter((c) => (puestoId === "puerta" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
+  const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
+  const qPD = String(qPresDia || "").replace(/\D/g, "");
   const columnas = (enTv) => {
-    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
+    const lista = cols.filter((c) => !grande || c.k === grande).filter((c) => qPD.length < 3 || [c.num, ...[...(c.bases || [])]].some((b) => basePresuDia(b).includes(qPD))); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
     return (
       <div className="flex flex-wrap gap-2 items-start">
         {lista.map((c) => {
@@ -48821,13 +48843,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
               </button>
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
-                    <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                    <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}{conIncP(c, v) ? " ⚠" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
                     {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                    {!enTv && (() => { const ps = pasosVentana(c, v); return ps.length ? <div className="w-full mt-0.5 space-y-0.5">{ps.slice(-4).map((pz, i) => <div key={i} title={pz.por ? `por ${pz.por}` : ""} className={`text-[9px] leading-tight rounded px-1 ${pz.pu === puestoId ? "bg-black/20 font-extrabold" : "bg-black/10"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pz.pu) || {}).corto || nombrePuestoLinea(pz.pu)} · {fmtTick(pz.ts)}</div>)}</div> : null; })()}
+                    {!enTv && <div onClick={(e) => e.stopPropagation()} className="mt-0.5"><BotonIncidenciaFabrica prefill={{ obra: c.obra || c.nombre || (c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""), ventana: v.pos || "", ventanaId: String(v.id || ""), puesto: nombrePuestoLinea(puestoId) }} /></div>}
                   </div>
                 ); })}
               </div>
@@ -48860,8 +48884,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   return (
     <div className="mt-3 rounded-lg border-2 border-slate-300 bg-slate-50 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Obras del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
-        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs" />
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 {puestoId === "puerta" ? "Puertas del día" : "Obras del día"} · {puestoId === "puerta" ? "leídas en Puerta" : `ventanas leídas en ${nombrePuestoLinea(puestoId)}`}</button>
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-sm font-bold" />
+        <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="Presupuesto…" className="border border-slate-300 rounded px-2 py-0.5 text-sm w-32" />
+        {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="text-xs font-semibold text-slate-600 underline">quitar</button>}
         <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
       </div>
       {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
@@ -48986,13 +49012,30 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
   const ubSol = baseW && ubicLin[baseW] && ubicLin[baseW].zonaId === "solape" ? ubicLin[baseW] : (claveSol && solSin[claveSol] ? solSin[claveSol] : null);
   const marcarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), { ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} marcada SIN solape: se queda en la Línea para paletizar.`)).catch((e) => setMsg(`⚠ ${(e && e.message) || e}`));
   const quitarSinSolape = () => fbSet(ref(fbDb, `sinSolapeLinea/${claveSol}`), null).then(() => setMsg(`${w.pos}: vuelve a llevar solape.`)).catch(() => {});
-  const mandarSolape = async () => {
-    const n = parseInt(huecoSol, 10) || libreSol;
+  const mandarSolape = async (nForzado) => {
+    const n = typeof nForzado === "number" ? nForzado : (parseInt(huecoSol, 10) || libreSol);
     if (!zSol || !n || n < 1 || n > zSol.huecos) { setMsg(`⚠ El estante va del 1 al ${zSol ? zSol.huecos : 36}`); return; }
     if (baseW) { const r = await fijarHuecoLinea(zSol, baseW, n, quien); setMsg(r.ok ? `✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.` : `⚠ ${r.motivo}`); return; }
     if (usadosSol.has(n)) { setMsg(`⚠ El estante ${n} de Solape ya está ocupado`); return; }
     fbSet(ref(fbDb, `solapeSinEtiquetaLinea/${claveSol}`), { hueco: n, ventanaId: w.id, pos: w.pos || "", obra: obra.nombre || "", ts: Date.now(), por: quien || "" }).then(() => setMsg(`✓ ${w.pos} apuntada en SOLAPE · estantería ${n}. Llévala allí.`)).catch((e) => setMsg(`⚠ No se pudo apuntar: ${(e && e.message) || e}`));
   };
+  // PINCHAR UNA VENTANA = HECHA EN ESTE PUESTO (sin pistola): se pone en verde en «Obras del día», suma en el contador
+  // y, si lleva solape, se apunta sola en la primera estantería libre de Solape (se puede mover o quitar)
+  const marcasPuestoP = useObjetoFb(puesto && puesto !== "almacen" ? `marcasPuestoLinea/${puesto}` : "marcasPuestoLinea/_ninguno");
+  const yaVerde = !!(claveSol && marcasPuestoP && marcasPuestoP[claveSol]);
+  const autoHecho = useRef("");
+  useEffect(() => {
+    if (!w || !obra || !claveSol || !puesto || puesto === "almacen") return;
+    const kk = `${puesto}|${claveSol}`; if (autoHecho.current === kk) return; autoHecho.current = kk;
+    const base = (obra.bases && obra.bases[0]) || ""; const hoyP = hoyISO();
+    if (!yaVerde) {
+      fbSet(ref(fbDb, `marcasPuestoLinea/${puesto}/${claveSol}`), { ts: Date.now(), ventanaId: w.id, pos: w.pos || "", base, fecha: hoyP, por: quien || "" }).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puesto}/${claveSol}`), Date.now()).catch(() => {});
+    }
+    if (llevaSolape && !ubSol && libreSol) mandarSolape(libreSol);
+    else if (!yaVerde) setMsg(`✓ ${w.pos} HECHA en ${nombrePuestoLinea(puesto)} (en verde).`);
+  }, [w && w.id, obra && obra.key]);
+  const quitarVerde = () => { if (!claveSol) return; fbSet(ref(fbDb, `marcasPuestoLinea/${puesto}/${claveSol}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puesto}/${claveSol}`), null).catch(() => {}); autoHecho.current = ""; setMsg(`${w.pos}: quitada de hechas en este puesto.`); };
   // Cómo se reconoce lo de esta ventana: mismo presupuesto o expediente que la obra, y la vivienda o la posición dentro de la referencia
   const reconocerDe = (wx) => {
     if (!wx || !obra) return null;
@@ -49202,10 +49245,20 @@ function BuscarPorPresupuestoLinea({ indice, cristales, onUpdateCristal, persian
         </div>
       )}
       {msg && <div className={`text-sm font-semibold ${String(msg).startsWith("✓") ? "text-emerald-700" : "text-rose-700"}`}>{msg}</div>}
+      {w && !soloDonde && puesto && puesto !== "almacen" && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {yaVerde && <span className="px-2 py-1 rounded bg-emerald-600 text-white font-bold">✓ {w.pos} hecha en este puesto</span>}
+          {yaVerde && <button type="button" onClick={quitarVerde} className="px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white text-xs font-bold">✕ Me he equivocado: quitar el verde</button>}
+        </div>
+      )}
       {w && !soloDonde && llevaSolape && (
         <div className="rounded-lg border-4 border-amber-500 bg-amber-50 px-3 py-3 space-y-2">
           {ubSol
-            ? <div className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</div>
+            ? <div className="flex flex-wrap items-center gap-2"><span className="text-xl font-extrabold text-emerald-800">📍 {w.pos} → SOLAPE · ESTANTERÍA {ubSol.hueco}</span>
+              <span className="text-sm font-semibold text-amber-900">Moverla a la estantería</span>
+              <input type="number" min="1" max={zSol ? zSol.huecos : 36} value={huecoSol} onChange={(e) => setHuecoSol(e.target.value)} placeholder={libreSol ? String(libreSol) : "—"} className="w-20 border border-amber-400 rounded-md px-2 py-1 text-base font-bold" />
+              <button type="button" onClick={() => { const n = parseInt(huecoSol, 10); if (!n) { setMsg("⚠ Escribe a qué estantería la mueves"); return; } mandarSolape(n); }} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">Mover</button>
+            </div>
             : <>
               <div className="text-lg font-extrabold text-amber-900">📍 {w.pos} está en LÍNEA · lleva solape / postigo: va a SOLAPE</div>
               <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -49964,6 +50017,53 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const snapCDLin = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra según la HOJA DE CORTE (para trabajar sin pistola)
+  const esPuestoPers = puestoId === "persianaA" || puestoId === "persianaB";
+  const limpiaCodL = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  // PERSIANA PUESTA SIN PISTOLA (desde la persiana o desde la ventana): la ventana va a su hueco de Persiana (salida), se pone en verde
+  // en «Obras del día», suma en el contador y, si se sabe, su persiana se da de baja del carro (se puede deshacer)
+  const ponerPersianaCD = async (hit, x) => {
+    const zP = zonas.find((q) => q.id === puestoId); if (!zP) return false;
+    const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+    const r = (ubic && ubic[codCD] && ubic[codCD].zonaId === puestoId) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
+    const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
+    fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
+    fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+    if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
+    avisar(true, `${r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : " · (no encuentro su persiana en el carro)"}`, false);
+    return true;
+  };
+  // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
+  const persianaDeVentanaCD = (sn, wv) => {
+    const normV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+    const bases = new Set(toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3));
+    const uxN = sn.tipo === "u" ? String(((toArray(uxExpedientes).find((e) => String(e.id) === String(sn.id)) || {}).numero) || "").replace(/\D/g, "").replace(/^0+/, "") : "";
+    return toArray(ctx.persianasAlmacen).find((y) => y && !y.entregada && !y.colocadaVentana && y.estante && (normV(y.ref) === normV(wv.pos) || (wv.g && normV(y.ref) === normV(wv.g)))
+      && ((uxN && numsExpediente(y.expediente).map((n) => n.replace(/^0+/, "")).includes(uxN)) || bases.has(digitosPresu(String(y.presupuesto || "").split(/[·,;\s]+/)[0])))) || null;
+  };
+  // Tocar una VENTANA en «Obras del día» del puesto de persiana: lo mismo que pinchar su persiana (y si ya estaba, se puede quitar)
+  const ventanaPersianaPuesta = async (req) => {
+    try {
+      const id = String((req && req.id) || ""); const qb = basePresuDia(req && req.q);
+      let hit = null;
+      Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
+      if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
+      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      if (yaM) {
+        if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
+        await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
+        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ }
+        const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior);
+        if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
+        avisar(true, `${hit.w.pos}: quitada${px ? ` · la persiana ${px.ref || ""} vuelve al carro ${px.estanteAnterior.carro}` : ""}.`, false);
+        return;
+      }
+      await ponerPersianaCD(hit, persianaDeVentanaCD(hit.sn, hit.w));
+    } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
+  };
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
@@ -50135,8 +50235,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
       {puestoId && puestoId !== "controlDia" && <ContadorRitmoLinea admin={admin} total={0} puestoContar={puestoId} detalle="Se cuenta solo, con cada ventana leída hoy en este puesto · empieza a cero cada día" />}
-      <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
+      {!esPuestoPers && <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />}
+      {/* Puesto de PERSIANA: arriba del todo el banco y Persiana (salida), luego el almacén de persianas (plegable) y abajo el dibujo de las obras */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5" style={esPuestoPers ? { display: "flex", flexDirection: "column" } : undefined}>
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
@@ -50150,13 +50251,13 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           ))}
         </div>
         {verMosqPost ? <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div> : verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className={`flex flex-wrap items-center gap-2 mb-3 ${esPuestoPers ? "hidden" : ""}`}>
           <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {puestoId === "solape" && <ListaSolapeLinea indice={indice} />}
-        <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />
+        {!esPuestoPers && <BuscarPorPresupuestoLinea indice={indice} cristales={cristales} onUpdateCristal={onUpdateCristal} persianas={ctx.persianasAlmacen} guardarPersianas={ctx.savePersianasAlmacen} quien={quien} puesto={puestoId} solicitud={abrirReq} />}
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         {candado && (
           <div className="mb-3 rounded-lg border-2 border-rose-600 bg-rose-50 p-3 space-y-2">
@@ -50217,14 +50318,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <PanelDiaPuesto puestoId={puestoId} onAbrir={setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
+        <div style={esPuestoPers ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={esPuestoPers ? ventanaPersianaPuesta : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} /></div>
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
-        {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
+        {!esPuestoPers && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
-        <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
+        <div className="mt-4" style={esPuestoPers ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
+        <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
             // 1) SIN PISTOLA (de momento): la ventana se busca en la HOJA DE CORTE (las ventanas de Control del día) por obra y vivienda
             //    y se pone en su hueco de Persiana A/B (salida) con su nombre; la persiana se da de baja del carro
@@ -50242,6 +50343,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
                 if (w) hit = { k, sn, w };
               });
               const zP = zonas.find((q) => q.id === puestoId);
+              if (hit && zP) return await ponerPersianaCD(hit, x);
               if (hit && zP) {
                 const codCD = `cd_${hit.k}__${hit.w.id}`.replace(/[.#$\[\]\/|\s]/g, "_");
                 const r = await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
@@ -50258,7 +50360,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
             const libre = cands.find((c) => !escaneos.some((e) => e.id === claveLecturaLinea(puestoId, c.h))) || null;
             if (libre) { await procesar(libre.cod); return true; }
             return false;
-          } : null} />
+          } : null} /></div>
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -52495,9 +52597,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const hechasCDPl = useMemo(() => {
     const ult = {}; Object.keys(marcasCDPl || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcasCDPl[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { ult[`${k}|${id}`] = v; })));
     const out = [];
-    Object.entries(snapCDPl || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const hecha = vs.every((w) => ult[`${k}|${limpiaK(String(w.id))}`] === 1 || ult[`${k}|${String(w.id)}`] === 1); out.push({ tipo: sn.tipo, id: String(sn.id), bases: new Set(toArray(sn.codigos).map((c) => String(c).split("-")[0].replace(/\D/g, "")).filter((b) => b.length >= 3)), hecha }); });
+    Object.entries(snapCDPl || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const hecha = vs.every((w) => ult[`${k}|${limpiaK(String(w.id))}`] === 1 || ult[`${k}|${String(w.id)}`] === 1); out.push({ tipo: sn.tipo, id: String(sn.id), nombre: String(sn.nombre || "").trim(), ids: new Set(vs.map((w) => String(w.id))), bases: new Set(toArray(sn.codigos).map((c) => String(c).split("-")[0].replace(/\D/g, "")).filter((b) => b.length >= 3)), hecha }); });
     return out;
   }, [marcasCDPl, snapCDPl]);
+  const incFabPl = useObjetoFb("incidenciasFabrica");
+  const obraConIncPl = (o) => { if (!o || !o.ref) return false; const t = o.ref.tipo === "uxcar" ? "u" : "p"; let bs = []; try { bs = presFab(o).map((c) => String(c).split("-")[0].replace(/\D/g, "")); } catch (e) { bs = []; } const c = hechasCDPl.filter((x) => (x.tipo === t && x.id === String(o.ref.id)) || bs.some((b) => x.bases.has(b))); return toArray(incFabPl).some((i) => i && i.estado !== "Resuelta" && c.some((x) => (i.ventanaId && x.ids.has(String(i.ventanaId))) || (x.nombre && String(i.obra || "").trim() === x.nombre))); };
   const obraHechaCD = (o) => { if (!o || !o.ref) return false; const t = o.ref.tipo === "uxcar" ? "u" : "p"; let bs = []; try { bs = presFab(o).map((c) => String(c).split("-")[0].replace(/\D/g, "")); } catch (e) { bs = []; } const c = hechasCDPl.filter((x) => (x.tipo === t && x.id === String(o.ref.id)) || bs.some((b) => x.bases.has(b))); return c.length > 0 && c.some((x) => x.hecha); };
   const porKeyAlm = {}; todasObras.forEach((o) => { if (o.ref) porKeyAlm[`${o.ref.tipo === "uxcar" ? "u" : "p"}-${limpiaK(o.ref.id)}`] = o; });
   const abrirObraRef = (r) => { if (!r || !onVerProyecto) return; if (r.tipo === "proyecto") onVerProyecto(r.id); else if (r.tipo === "uxcar" && r.proyectoId) onVerProyecto(r.proyectoId); };
@@ -52858,8 +52962,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
-                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraConIncPl(o) ? "⚠ " : o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
                       <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
@@ -57234,9 +57338,14 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal, onUpdateCris
   );
 }
 // Presupuesto de una persiana de carro (si no lo trae, se agrupa por expediente)
+// Envuelve en un desplegable solo cuando hace falta (puesto de persiana: pantalla más recogida)
+function PlegableSi({ activo, titulo, abierto = false, children }) {
+  if (!activo) return <>{children}</>;
+  return <details open={abierto} className="mb-2 rounded-lg border-2 border-slate-300 bg-white"><summary className="cursor-pointer px-3 py-2 font-bold text-slate-800">{titulo}</summary><div className="p-2">{children}</div></details>;
+}
 const clavePptoPers = (x) => { const d = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => t.replace(/\D/g, "")).find((t) => t.length >= 3) || ""; return d ? `P${d}` : `E${String(x.expediente || "—").trim()}`; };
 const etiquetaPptoPers = (k) => (k[0] === "P" ? `Ppto ${pptoBonito(k.slice(1))}` : `EXP ${k.slice(1)} (sin nº de presupuesto)`);
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "", onPersianaPuesta = null }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "", onPersianaPuesta = null, plegable = false }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
@@ -57287,7 +57396,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
     ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: e, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
     const vId = String(x.ventanaId || "");
-    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } }
+    if (vId.startsWith("cd_")) { try { await liberarCodigoLinea(vId); } catch (er) { /* nada */ } if (puestoId) { fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${vId.slice(3)}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${vId.slice(3)}`), null).catch(() => {}); } }
     if (puestoId) { [vId, String(x.id).replace(/[.#$\[\]\/]/g, "_")].filter(Boolean).forEach((kk) => fbSet(ref(fbDb, `ticksLinea/${hoyP}/${puestoId}/${kk}`), null).catch(() => {})); }
   };
   const listaDeshacer = (soloCarro) => {
@@ -57310,6 +57419,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(por presupuesto · incidencia y baja)</span></h4>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, vivienda o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
       </div>
+      <PlegableSi activo={plegable} titulo="🔎 Buscar una persiana (presupuesto + ventana) · hoja de corte" abierto>
       {(() => {
         // BUSCAR UNA PERSIANA SIN LECTOR: presupuesto (o expediente) + nº de ventana → en qué carro, lado y estante está
         const dP = String(bPres || "").split("-")[0].replace(/\D/g, "");
@@ -57364,7 +57474,9 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })()}
+      </PlegableSi>
       {listaDeshacer(null)}
+      <PlegableSi activo={plegable} titulo={`🛒 Carros de persianas (${items.length} persianas)`}>
       {almacenes.map((a) => {
         const cs = carros.filter((c) => almacenDe(c) === a.id).sort((x, y) => (parseInt(x.numero, 10) || 0) - (parseInt(y.numero, 10) || 0));
         if (!cs.length) return null;
@@ -57397,6 +57509,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })}
+      </PlegableSi>
       {carroVer && (() => {
         const its = items.filter((x) => (almacenDe(x) === carroVer.almacenId) && x.estante && x.estante.carro === carroVer.numero)
           .sort((x, y) => String(x.estante.lado).localeCompare(String(y.estante.lado)) || (x.estante.nivel - y.estante.nivel) || partePersiana(x).localeCompare(partePersiana(y)) || String(x.ref || "").localeCompare(String(y.ref || "")));
@@ -60729,6 +60842,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
   const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
   const valorUlt = (k, id) => valorGlobalCD(k, id); void diasMarcas;
+  const incVentCD = (o, v) => { const nom = String((o && o.d && o.d.nombre) || "").trim(); const pos = String(v.pos || "").toUpperCase().replace(/\s+/g, ""); return toArray(incsFabCD).some((i) => i && i.estado !== "Resuelta" && ((i.ventanaId && (String(i.ventanaId) === String(v.id) || limpia(String(i.ventanaId)) === limpia(String(v.id)))) || (nom && pos && String(i.obra || "").trim() === nom && String(i.ventanaBase || i.ventana || "").split("·")[0].trim().toUpperCase().replace(/\s+/g, "") === pos))); };
   const incsDeObraCD = (o) => { if (!o) return []; const ids = new Set(idsDe(o).map((x) => String(x))); const nom = String(o.d.nombre || "").trim(); return toArray(incsFabCD).filter((i) => i && i.estado !== "Resuelta" && ((nom && String(i.obra || "").trim() === nom) || (i.ventanaId && ids.has(limpia(String(i.ventanaId)))))); };
   // AVISO ARRIBA: incidencias abiertas y ventanas en NARANJA (problema) de las obras del día, en grande y diciendo qué es
   const avisoIncidenciasCD = (grande) => {
@@ -62162,7 +62276,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`px-3 py-1.5 mb-1 rounded-md border-2 text-sm font-semibold ${estilo[gc]}`}>{gc === "verde" ? "✓ " : ""}{g} <span className="font-normal text-xs">· {gv.filter((v) => v === 1).length}/{gv.length}</span></button>
                   {/* Las ventanas ya fabricadas (en verde) salen de esta lista y pasan a «ya fabricadas», debajo */}
                   <div className="flex flex-wrap gap-1.5">
-                    {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id); return (
+                    {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id) === 1 ? 1 : (valor(o.d.key, v.id) === 2 || incVentCD(o, v)) ? 2 : valor(o.d.key, v.id); return (
                       <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg bg-red-100 p-1" : ""}`}>
                       {esResaltada(o, v) && <div className="text-xs font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                       {lapizVentana(o, v, false)}
@@ -62183,7 +62297,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   {(() => { const hv = vs.filter((v) => valor(o.d.key, v.id) === 1); if (!hv.length) return null; const kh = `${o.d.key}|${g}`; return (
                     <div className="mt-1.5">
                       <button type="button" onClick={() => setVerHechas((x) => ({ ...x, [kh]: !x[kh] }))} className="text-xs font-semibold text-emerald-800">{verHechas[kh] ? "▼" : "▶"} ✓ {hv.length} ya fabricada{hv.length === 1 ? "" : "s"}</button>
-                      {verHechas[kh] && <div className="mt-1 flex flex-wrap gap-1">{hv.map((v) => <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} title="Tócala para cambiarla (vuelve a la lista si no está hecha)" className="px-2 py-0.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-semibold">✓ {v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}</button>)}</div>}
+                      {verHechas[kh] && <div className="mt-1 flex flex-wrap gap-1">{hv.map((v) => <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} title="Tócala para cambiarla (vuelve a la lista si no está hecha)" className="px-2 py-0.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-semibold">✓ {v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}{(() => { const x = (idxMarcasCD[limpia(o.d.key)] || {})[v.id] || (idxMarcasCD[limpia(o.d.key)] || {})[String(v.id).replace(/[.#$/[\]]/g, "_")]; if (!x || !x.ts) return null; const d = new Date(x.ts); return <span className="font-normal text-emerald-700"> · C. día {d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} {d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>; })()}</button>)}</div>}
                     </div>
                   ); })()}
                 </div>
