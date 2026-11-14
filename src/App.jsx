@@ -6507,6 +6507,7 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
+        {currentUser && currentUser.encargadoLinea && <PanelIncidenciasEncargado incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
@@ -56692,6 +56693,50 @@ function textoTiempoInc(ms) {
 }
 
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
+// ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
+const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr }) {
+  const [ahora, setAhora] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
+  const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
+  const nPrev = useRef(abiertas.length);
+  useEffect(() => { if (abiertas.length > nPrev.current) { try { pitidoCRM(false); setTimeout(() => pitidoCRM(false), 400); } catch (e) { /* sin sonido */ } } nPrev.current = abiertas.length; }, [abiertas.length]);
+  if (!abiertas.length) return null;
+  const mmss = (ms) => { const s2 = Math.max(0, Math.round(Math.abs(ms) / 1000)); return `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, "0")}`; };
+  return (
+    <div className="p-3 bg-slate-900 space-y-2">
+      <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+        {abiertas.map((i) => {
+          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0;
+          const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id;
+          return (
+            <div key={i.id} className={`rounded-xl border-4 p-3 ${tarde ? "bg-red-600 border-red-900 text-white animate-pulse" : "bg-amber-300 border-amber-600 text-slate-900"}`}>
+              <div className="flex flex-wrap items-start gap-2">
+                <div className="flex-1 min-w-[12rem]">
+                  <div className="text-2xl font-black leading-tight">{i.puesto || "Puesto ?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}</div>
+                  <div className="text-base font-bold">{i.obra || ""}</div>
+                  <div className="text-lg font-semibold mt-1">{i.texto || i.tipo || ""}</div>
+                  <div className="text-xs mt-1 opacity-90">{i.creadaPor && i.creadaPor.nombre ? `Avisa: ${i.creadaPor.nombre} · ` : ""}{i.creadaTs ? new Date(i.creadaTs).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}{i.asignadoA ? (mia ? " · VAS TÚ" : " · ya va alguien") : ""}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-4xl font-black leading-none">{tarde ? `+${mmss(resta)}` : mmss(resta)}</div>
+                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div>
+                </div>
+              </div>
+              {i.foto && <img src={i.foto} alt="" className="mt-2 max-h-40 rounded border border-black/20" />}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {!mia && <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-base font-extrabold">🏃 Voy yo</button>}
+                <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-base font-extrabold">✓ Resuelta</button>
+                {onIr && <button type="button" onClick={onIr} className="px-3 py-2 rounded-lg bg-white/80 text-slate-900 text-sm font-bold">Ver todas</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function BotonIncidenciaFabrica({ prefill, flotante }) {
   const ctx = React.useContext(IncFabricaCtx);
   if (!ctx || !ctx.puede) return null;
@@ -62672,6 +62717,10 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             <p className="text-xs text-slate-500 mt-1">En Preparación de material solo verá los puestos marcados (puedes marcar varios). Sin ninguno marcado ve todo. Para que entre solo ahí, marca únicamente el módulo «Preparación de material (puesto)».</p>
           </Field>
         )}
+        <label className="flex items-start gap-2 rounded-lg border-2 border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
+          <input type="checkbox" checked={!!f.encargadoLinea} onChange={(e) => setF({ ...f, encargadoLinea: e.target.checked })} className="mt-0.5" />
+          <span><b>🚨 Encargado / jefe de línea</b>: le salen arriba, EN GRANDE y en todas las pantallas, las incidencias de fábrica abiertas, con 5 minutos para resolverlas (suena al llegar una nueva).</span>
+        </label>
         {f.rol !== "Administrador" && (
           <Field label="Puesto fijo en la línea (opcional)">
             <Select value={f.puestoFijo || ""} onChange={(e) => setF({ ...f, puestoFijo: e.target.value })}>
