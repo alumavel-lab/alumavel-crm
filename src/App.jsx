@@ -22464,7 +22464,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div key={fi} className="flex h-6 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
                           {fila.map((x) => (
                             <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm${unidadesDe(x) > 1 ? ` · ⚠ ${unidadesDe(x)} UNIDADES de esta vivienda` : ""}`}
-                              className={`h-6 border-r-2 border-white ${unidadesDe(x) > 1 ? "bg-[#F5C242] ring-1 ring-inset ring-amber-600" : "bg-[#86D325]"} text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden`}
+                              className={`h-6 border-r-2 border-white ${x.incidencia ? "bg-orange-500 text-white" : unidadesDe(x) > 1 ? "bg-[#F5C242] ring-1 ring-inset ring-amber-600" : "bg-[#86D325]"} text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden`}
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}{unidadesDe(x) > 1 ? ` ×${unidadesDe(x)}` : ""}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
                             </div>
@@ -48079,6 +48079,11 @@ const claveVivLinea = (h) => (h && h.ventana ? `${h.dueno ? h.dueno.key : ""}|${
 // Qué se marca al leer una ventana: su vivienda (verde fuerte) y, además, el resto de la misma obra o del mismo cliente (verde claro)
 const resaltarDe = (h) => (h && h.ventana ? { viv: claveVivLinea(h), obra: h.dueno ? h.dueno.key : "", cli: String(h.ventana.cliente || "").trim().toLowerCase() } : null);
 function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control = false, resaltar = null }) {
+  // Color de la ventana según su persiana (en TODOS los sitios donde sale el mapa): VERDE = persiana puesta y bien · NARANJA = con incidencia
+  const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
+  const incVentZ = useObjetoFb("incidenciaVentanaLinea");
+  const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -48111,10 +48116,11 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 const piezas = oc[hu] || [];
                 const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
                 const listo = !!verdes && piezas.some((x) => verdes.has(String(x.cod)));
+                const cPers = piezas.length ? colorPersZ(piezas) : "";
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -57330,7 +57336,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                                   <div key={fi} className="flex h-7 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
                                     {fila.map((x) => (
                                       <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm · pulsa = PERSIANA PUESTA`} onClick={() => persianaPuesta(x)}
-                                        className={`h-7 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-slate-800 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-rose-200 text-slate-900" : "bg-[#86D325] text-slate-900"}`}
+                                        className={`h-7 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-slate-800 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-orange-500 text-white" : "bg-[#86D325] text-slate-900"}`}
                                         style={{ width: `${Math.min(100, e.porUds ? 100 / (e.capacidad || 1) : (largoPersiana(x) / (e.largo || 1)) * 100)}%` }}>
                                         <span className="flex flex-col items-center leading-none"><span className="text-[8px] opacity-80">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref || ""}</span></span>
                                       </div>
