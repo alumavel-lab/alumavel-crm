@@ -48855,8 +48855,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const c = cajas.find((x) => x.fuente !== "cd" && ((b && x.bases.has(b)) || x.keys.has(kd))); if (!c) return;
       c.fuente = "et"; c.vs.push({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", dib: "", fab: h.lote.fab, tip: v.tipo || v.pos || "", ex: [], color: v.color || "", g: v.grupo || "", nLote: dibDe(v) }); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    // Puesto PUERTA: solo las puertas (P… y A…, o las marcadas como puerta); el resto de la obra no le interesa
-    const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+    // Puesto PUERTA: solo las PUERTAS (posición P…, o marcadas como puerta). Lo OSCILOBATIENTE (dibujo con las dos rayas en aspa) es VENTANA aunque sea alta (A01.001 970×2190)
+    const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
@@ -48899,7 +48899,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   // MAPA DEL MES: todas las obras del planning por días; en VERDE las que ya están hechas en este puesto. Tocar un día lo abre abajo.
   const [mesMapa, setMesMapa] = useState(() => hoy.slice(0, 7));
   const [verMapa, setVerMapa] = useEstadoLocal(`crm_panelDiaMapa_${puestoId}`, true);
-  const esPuertaMapa = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+  const esPuertaMapa = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
   const obraHechaAqui = (ob) => {
     const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return null;
     const sns = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c))));
