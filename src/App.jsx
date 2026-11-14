@@ -48858,6 +48858,46 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     );
   };
   const vacio = <div className="text-sm text-slate-400">No hay obras en el calendario de este día (Almacén del día / Control del día).</div>;
+  // MAPA DEL MES: todas las obras del planning por días; en VERDE las que ya están hechas en este puesto. Tocar un día lo abre abajo.
+  const [mesMapa, setMesMapa] = useState(() => hoy.slice(0, 7));
+  const [verMapa, setVerMapa] = useEstadoLocal(`crm_panelDiaMapa_${puestoId}`, true);
+  const esPuertaMapa = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : /^[PA]\d/i.test(String(w.pos || "").trim()));
+  const obraHechaAqui = (ob) => {
+    const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return null;
+    const sns = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c))));
+    const vs = sns.flatMap((sn) => toArray(sn.ventanas)).filter((w) => puestoId !== "puerta" || esPuertaMapa(w));
+    if (!vs.length) return null;
+    const c0 = { bases: bs }; return vs.every((w) => esLeida(c0, w));
+  };
+  const mapaMes = () => {
+    const [yy, mm] = mesMapa.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
+    const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
+    const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mesMapa)) semanas.push(w); }
+    const cambiaMes = (n) => { const d = new Date(yy, mm - 1 + n, 1, 12); setMesMapa(d.toLocaleDateString("sv-SE").slice(0, 7)); };
+    return (
+      <div className="mt-2 rounded-lg border border-slate-300 bg-white p-2">
+        <div className="flex items-center gap-2 mb-1">
+          <button type="button" onClick={() => cambiaMes(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
+          <b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b>
+          <button type="button" onClick={() => cambiaMes(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle"></span> hecha en {nombrePuestoLinea(puestoId)} · toca un día para verlo abajo</span>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
+        {semanas.map((w, i) => (
+          <div key={i} className="grid grid-cols-7 gap-1 mt-1">
+            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const sel = f === dia; return (
+              <div key={f} onClick={() => setDia(f)} className={`min-h-[3.5rem] rounded border p-0.5 cursor-pointer ${sel ? "border-slate-900 ring-2 ring-slate-900" : f === hoy ? "border-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mesMapa ? "opacity-40" : ""}`}>
+                <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
+                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const h = obraHechaAqui(ob); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
+                  <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${h === true ? "bg-emerald-500 text-white" : h === false ? "bg-slate-200 text-slate-800" : "bg-slate-100 text-slate-400"}`}>{h === true ? "✓ " : ""}{nom}</div>
+                ); })}
+              </div>
+            ); })}
+          </div>
+        ))}
+      </div>
+    );
+  };
   if (tv) {
     const z = ultimo && ultimo.zona;
     return (
@@ -48886,6 +48926,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
         {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="text-xs font-semibold text-slate-600 underline">quitar</button>}
         <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
       </div>
+      {abierto && <div className="mt-1"><button type="button" onClick={() => setVerMapa(!verMapa)} className="text-xs font-bold text-slate-700 underline">{verMapa ? "▼ Ocultar el mapa del mes" : "▶ Ver el mapa del mes (todas las obras por días)"}</button>{verMapa && mapaMes()}</div>}
       {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
     </div>
   );
