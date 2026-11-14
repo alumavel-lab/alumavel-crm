@@ -62638,6 +62638,46 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
 
 // Para abrir Línea (pistola) directamente en una pantalla (p.ej. «almacen» desde un aviso de arriba)
 const tabInicialLinea = { actual: null };
+// MAPA DEL MES (como el calendario de Control del día) para los puestos que no tienen «Obras del día»: Auxiliares, Mosquiteras y postigos,
+// Almacén del día, Almacén de ventanas, Cargas… Así TODOS ven lo que está hecho y lo que no.
+function MapaMesControlDia() {
+  const hoy = new Date().toLocaleDateString("sv-SE");
+  const [ver, setVer] = useEstadoLocal("crm_mapaMesCD", true);
+  const [mes, setMes] = useState(hoy.slice(0, 7));
+  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra"); const marcas = useObjetoFb("controlDia");
+  const ult = useMemo(() => { const u = {}; Object.keys(marcas || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().forEach((d) => Object.entries(marcas[d] || {}).forEach(([k, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { u[`${k}|${id}`] = v; }))); return u; }, [marcas]);
+  const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  const estado = (k) => { const sn = snapCD && snapCD[k]; const vs = toArray(sn && sn.ventanas); if (!vs.length) return ""; const vals = vs.map((w) => ult[`${k}|${limpia(w.id)}`] ?? ult[`${k}|${w.id}`]); if (vals.some((v) => v === 2)) return "naranja"; if (vals.every((v) => v === 1)) return "verde"; if (vals.some((v) => v === 1)) return "medio"; return "gris"; };
+  const claveDe = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
+  const col = { verde: "bg-emerald-600 text-white", medio: "bg-emerald-100 text-emerald-900", naranja: "bg-orange-500 text-white", gris: "bg-slate-200 text-slate-800", "": "bg-slate-100 text-slate-400" };
+  const [yy, mm] = mes.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
+  const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
+  const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mes)) semanas.push(w); }
+  const cambia = (n) => { const d = new Date(yy, mm - 1 + n, 1, 12); setMes(d.toLocaleDateString("sv-SE").slice(0, 7)); };
+  return (
+    <div className="mb-3 rounded-lg border-2 border-slate-300 bg-white p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setVer(!ver)} className="text-sm font-extrabold text-slate-800">{ver ? "▼" : "▶"} 📅 Mapa del mes · lo hecho y lo que falta</button>
+        {ver && <><button type="button" onClick={() => cambia(-1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button><b className="text-sm capitalize">{d0.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b><button type="button" onClick={() => cambia(1)} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
+          <span className="ml-auto text-[11px] text-slate-500"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-600 align-middle"></span> hecha · <span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-400 align-middle"></span> a medias · <span className="inline-block w-3 h-3 rounded-sm bg-orange-500 align-middle"></span> problema</span></>}
+      </div>
+      {ver && <>
+        <div className="mt-1 grid grid-cols-7 gap-1 text-[10px] font-bold text-slate-500 text-center">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <div key={x}>{x}</div>)}</div>
+        {semanas.map((w, i) => (
+          <div key={i} className="grid grid-cols-7 gap-1 mt-1">
+            {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); return (
+              <div key={f} className={`min-h-[3.5rem] rounded border p-0.5 ${f === hoy ? "border-emerald-500 ring-1 ring-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mes ? "opacity-40" : ""}`}>
+                <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
+                {ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : e === "naranja" ? "⚠ " : ""}{nom}</div>; })}
+                {man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
+              </div>
+            ); })}
+          </div>
+        ))}
+      </>}
+    </div>
+  );
+}
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -62689,6 +62729,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
           ))}
         </div>
       )}
+      {["auxiliares", "mosqpost", "almacenDia", "almacen", "cargas", "estanterias", "parte", "incidencias"].includes(actual.id) && <MapaMesControlDia />}
       {actual.aviso && tabs.length > 1 && (
         <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
       )}
