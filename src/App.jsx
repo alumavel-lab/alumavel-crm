@@ -50204,7 +50204,16 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null} />
+        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
+          onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
+            // «Persiana puesta» SIN LECTOR: se busca la etiqueta del MARCO de su ventana y se hace lo mismo que al leerla con la pistola
+            // (la ventana va a su hueco de Persiana A/B (salida) y la persiana se da de baja del carro)
+            const exps = numsExpediente(x.expediente);
+            const cands = []; indice.forEach((h, cod) => { if (!h || !h.ventana || !toArray(h.ventana.piezas)[0] || String(cod) !== String(baseDe(h.ventana))) return; const d = datosVentanaLinea(h); if (exps.includes(d.exp) && d.casa(x.ref)) cands.push({ h, cod: String(cod) }); });
+            const libre = cands.find((c) => !escaneos.some((e) => e.id === claveLecturaLinea(puestoId, c.h))) || null;
+            if (libre) { await procesar(libre.cod); return true; }
+            return false;
+          } : null} />
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -57173,7 +57182,7 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal, onUpdateCris
 // Presupuesto de una persiana de carro (si no lo trae, se agrupa por expediente)
 const clavePptoPers = (x) => { const d = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => t.replace(/\D/g, "")).find((t) => t.length >= 3) || ""; return d ? `P${d}` : `E${String(x.expediente || "—").trim()}`; };
 const etiquetaPptoPers = (k) => (k[0] === "P" ? `Ppto ${pptoBonito(k.slice(1))}` : `EXP ${k.slice(1)} (sin nº de presupuesto)`);
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "" }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "", onPersianaPuesta = null }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
@@ -57200,6 +57209,19 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const carros = toArray(ctx.carrosPersianas);
   const almacenes = toArray(ctx.almacenesPersianas).length ? toArray(ctx.almacenesPersianas) : [ALMACEN_PERSIANAS_PRINCIPAL];
   const items = toArray(ctx.persianasAlmacen).filter((x) => !x.entregada && !x.colocadaVentana && x.estante);
+  // PINCHAR LA PERSIANA = PUESTA: la ventana va a su hueco (como con la pistola) y la persiana se da de baja del carro
+  const persianaPuesta = async (x) => {
+    const donde = `carro ${x.estante.carro} · lado ${x.estante.lado} · estante ${x.estante.nivel}`;
+    if (!window.confirm(`¿Persiana ${x.ref || ""} (EXP ${x.expediente || "—"}) PUESTA?\n\nSe quita del ${donde}${onPersianaPuesta ? " y la ventana pasa a su hueco de Persiana (salida)" : ""}.`)) return;
+    let hecho = false;
+    if (onPersianaPuesta) { try { hecho = await onPersianaPuesta(x); } catch (e) { hecho = false; } }
+    if (!hecho) {
+      if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; }
+      ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: new Date().toISOString().slice(0, 10), colocadaVentana: true, puestaPor: quien || "" } : y)));
+      if (onPersianaPuesta) alert(`Persiana ${x.ref || ""} dada de baja.\n\n⚠ No encuentro la etiqueta de su ventana (o ya estaba leída en este puesto): la ventana NO se ha movido de hueco. Léela con la pistola o ponla a mano.`);
+    }
+    setFocoId(""); setCarroVer(null);
+  };
   return (
     <div className="mt-6">
       <div className="flex flex-wrap items-center gap-3 mb-2">
@@ -57236,6 +57258,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                     <span className="text-sm">{etiquetaPptoPers(clavePptoPers(x))} · EXP {x.expediente || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} mm</span>
                     <b className="text-base">📍 Carro {x.estante.carro} · lado {x.estante.lado} · estante {x.estante.nivel}{x.estante.fila === "exterior" ? " · fila exterior" : ""}</b>
                     <button type="button" onClick={() => { setFocoId(x.id); setCarroVer({ almacenId: almacenDe(x), numero: x.estante.carro }); }} className={`ml-auto text-sm font-bold px-3 py-1.5 rounded ${focoId === x.id ? "bg-white text-rose-700" : "bg-sky-700 text-white"}`}>Ver en el carro</button>
+                    <button type="button" onClick={() => persianaPuesta(x)} className="text-sm font-bold px-3 py-1.5 rounded bg-emerald-600 text-white">✓ Persiana puesta</button>
                   </div>
                 ))}
               </div>
@@ -57294,6 +57317,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                   const esFocoX = (x) => focoId ? x.id === focoId : (!!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel && (!foco.ref || foco.ref === x.ref));
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                      <div className="md:col-span-2 text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-1">👆 Pincha una persiana del dibujo cuando la hayas PUESTO: se da de baja del carro{onPersianaPuesta ? " y su ventana pasa a su hueco de Persiana (salida)" : ""}.</div>
                       {LADOS_CARRO.map((lado) => (
                         <div key={lado}>
                           <div className="text-xs font-bold text-slate-600 mb-1">Lado {lado}</div>
@@ -57305,8 +57329,8 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                                 {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
                                   <div key={fi} className="flex h-7 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
                                     {fila.map((x) => (
-                                      <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
-                                        className={`h-7 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-rose-200 text-slate-900" : "bg-[#86D325] text-slate-900"}`}
+                                      <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm · pulsa = PERSIANA PUESTA`} onClick={() => persianaPuesta(x)}
+                                        className={`h-7 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-slate-800 border-r-2 border-white text-[9px] font-bold flex items-center justify-center overflow-hidden ${esFocoX(x) ? "bg-rose-600 text-white animate-pulse" : x.incidencia ? "bg-rose-200 text-slate-900" : "bg-[#86D325] text-slate-900"}`}
                                         style={{ width: `${Math.min(100, e.porUds ? 100 / (e.capacidad || 1) : (largoPersiana(x) / (e.largo || 1)) * 100)}%` }}>
                                         <span className="flex flex-col items-center leading-none"><span className="text-[8px] opacity-80">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref || ""}</span></span>
                                       </div>
