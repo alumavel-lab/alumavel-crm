@@ -5331,7 +5331,7 @@ export default function App() {
   useEffect(() => {
     if (!currentUser || loading) return;
     const hoy = new Date().toISOString().slice(0, 10);
-    const claves = ["presupuestos", "proyectos", "clientes", "facturas", "pedidos", "leads", "instalaciones", "ingresos"];
+    const claves = ["presupuestos", "proyectos", "clientes", "facturas", "pedidos", "leads", "instalaciones", "ingresos", "configVentanas", "planFabrica"];
     (async () => {
       try {
         const r = await runTransaction(ref(fbDb, `copiasDiariasIndice/${hoy}`), (x) => (x ? undefined : Date.now()));
@@ -48760,7 +48760,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const ubicAlmP = useObjetoFb("ubicacionesLinea"); const cabsAlmP = useObjetoFb("caballetesVentanas");
   const enAlmacen = useMemo(() => {
     const ids = new Map(), pp = new Map();
-    const apunta = (id, num, pos, donde) => { if (id) ids.set(String(id), donde); const b = basePresuDia(num); if (b && pos) pp.set(`${b}|${String(pos).toUpperCase().replace(/\s+/g, "")}`, donde); };
+    // por id SOLO si es un id largo (único): los ids cortos («1», «2»…) se repiten en todas las obras y marcaban «palet C-11» en ventanas de otras obras
+    const apunta = (id, num, pos, donde) => { if (id && String(id).length >= 8) ids.set(String(id), donde); const b = basePresuDia(num); if (b && pos) pp.set(`${b}|${String(pos).toUpperCase().replace(/\s+/g, "")}`, donde); };
     Object.values(cabsAlmP || {}).forEach((c) => { if (!c || (c.estado || "libre") === "fuera") return; toArray(c.ventanas).forEach((w) => { if (w) apunta(w.id, w.num, w.pos, `palet ${c.numero || ""}`.trim()); }); });
     Object.entries(ubicAlmP || {}).forEach(([cod, u]) => { if (!u || !["espera", "solape"].includes(u.zonaId)) return; const hh = indice && indice.get(cod); if (!hh || !hh.ventana) return; apunta(hh.ventana.id, hh.ventana.num, hh.ventana.pos, `${u.zonaId === "solape" ? "Solape" : "Terminadas"} ${u.hueco}`); });
     return { ids, pp };
@@ -52778,9 +52779,16 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   );
 
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
-  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en }); };
+  const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
     <div className="space-y-6">
+      {cfg.fechasPlanAnterior && Object.keys(fechasPlan).length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 text-sm">
+          <span className="font-semibold text-slate-700">↩ ¿Te has equivocado al pasar obras de día?</span>
+          <button onClick={() => { if (window.confirm("¿Dejar los días de las obras como estaban ANTES del último «pasar obras»?")) guardarCfg({ fechasPlan: cfg.fechasPlanAnterior, fechasPlanAnterior: null }); }} className="px-3 py-1.5 rounded-md bg-slate-800 text-white text-sm font-bold">Deshacer: volver a como estaba</button>
+          <button onClick={() => guardarCfg({ fechasPlanAnterior: null })} className="text-xs text-slate-500 underline">Está bien así</button>
+        </div>
+      )}
       {atascadas.length > 0 && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-2">
           <div className="flex flex-wrap items-center gap-3">
