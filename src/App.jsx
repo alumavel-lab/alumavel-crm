@@ -1430,6 +1430,7 @@ export default function App() {
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 350);
   }, [writeToStorage]);
 
+  const [elegirSalida, setElegirSalida] = useState(null); // { proyectoId, res }: elegir reparto / recogida / instalación sin salir de la pantalla
   const showToast = (msg, kind = "ok") => {
     setToast({ msg, kind });
     setTimeout(() => setToast(null), kind === "error" ? 6000 : 2600);
@@ -1721,6 +1722,16 @@ export default function App() {
     const antes = new Set(toArray(proyectosRef.current).map((p) => p && p.id));
     const ahora = Date.now();
     if (antes.size) next = next.map((p) => (p && p.id && !antes.has(p.id) && !p.creadoEn ? { ...p, creadoEn: ahora } : p));
+    // DOCUMENTOS REPETIDOS BLOQUEADOS: un documento con el MISMO NOMBRE que otro que ya tiene la obra no entra (se queda el primero).
+    // Antes cada copia automática (Uxcar, Control del día, presupuesto…) volvía a subirlo con otra dirección y se acumulaban cientos.
+    const nomDoc = (d) => String((d && d.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/^(hoja de corte|pedido de persianas\/compactos|listado de vidrios \(pedido de cristales\)|carga de material \/ dibujos|análisis de materiales|listado de mano de obra) — /, "");
+    next = next.map((p) => { const ds = toArray(p && p.documentos); if (ds.length < 2) return p; const vistos = new Set(); const fuera = ds.filter((d) => { const k = nomDoc(d); if (!k) return true; if (vistos.has(k)) return false; vistos.add(k); return true; }); return fuera.length === ds.length ? p : { ...p, documentos: fuera }; });
+    // LA FECHA DE MONTAJE VA JUNTA: cambiarla en la obra la cambia en su instalación (no finalizada)
+    try {
+      const antesP = new Map(toArray(proyectosRef.current).map((p) => [p && p.id, p]));
+      const cambios = new Map(); next.forEach((p) => { if (!p || !p.id) return; const a = antesP.get(p.id); if (a && p.fechaMontaje && (a.fechaMontaje || "") !== p.fechaMontaje) cambios.set(p.id, p.fechaMontaje); });
+      if (cambios.size) setInstalaciones((prev) => { let toca = false; const upd = toArray(prev).map((i) => { const f = i && cambios.get(i.proyectoId); if (!f || i.estado === "Finalizada" || i.fechaMontaje === f) return i; toca = true; return { ...i, fechaMontaje: f, fechaProvisional: false }; }); if (!toca) return prev; persist("instalaciones", upd); return upd; });
+    } catch (e) { /* nada */ }
     proyectosRef.current = next; setProyectos(next); persist("proyectos", next);
   };
 
@@ -2051,7 +2062,12 @@ export default function App() {
   // La usan Fábrica («Listo para fabricar») y Control del día («Meter una obra en el planning»).
   const iniciarFabricacionObra = async (proyectoId) => {
     if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return false; }
-    if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return false; }
+    if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) {
+      // En vez de solo avisar: se ELIGE AQUÍ MISMO la salida y se sigue
+      const patch = await new Promise((res) => setElegirSalida({ proyectoId, res }));
+      if (!patch) { showToast("No se ha pasado a fábrica: falta elegir la salida.", "error"); return false; }
+      updateProyectoInline(proyectoId, patch);
+    }
     // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
     const obraF = proyectos.find((p) => p.id === proyectoId);
     const rev = await revisarPresupuestoAntesDeFabrica(obraF);
@@ -2297,6 +2313,8 @@ export default function App() {
 
   const updateInstalacion = (id, patch) => {
     saveInstalaciones(instalaciones.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+    // LA FECHA DE MONTAJE VA JUNTA: cambiarla en la instalación la cambia en su obra
+    if (patch && Object.prototype.hasOwnProperty.call(patch, "fechaMontaje")) { const inst = instalaciones.find((i) => i.id === id); const pr = inst && inst.proyectoId ? proyectos.find((p) => p.id === inst.proyectoId) : null; if (pr && (pr.fechaMontaje || "") !== (patch.fechaMontaje || "") && patch.fechaMontaje) updateProyectoInline(pr.id, { fechaMontaje: patch.fechaMontaje }); }
   };
 
   // PRESUPUESTO desde una instalación o una incidencia (reparación, extra, fuera de garantía…): abre el formulario ya relleno
@@ -5019,21 +5037,29 @@ export default function App() {
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
   // Se apuntan las URLs ya copiadas (uxDocsVistos) para no volver a meter uno que el usuario haya quitado.
   // Obras que llevan instalación y todavía no tienen ficha en Instalaciones (marcadas desde otros sitios): se crean solas, una sola vez por sesión. Solo el administrador, para no duplicar si hay varios conectados.
-  const instAutoRef = useRef(false);
+  // AHORA: al momento (no una vez por sesión) y desde cualquier ordenador; un candado en la base de datos evita crearla dos veces.
+  const instAutoRef = useRef(new Set());
   useEffect(() => {
-    if (!currentUser || currentUser.rol !== "Administrador" || loading || instAutoRef.current) return;
+    if (!currentUser || loading) return;
     if (!Array.isArray(instalaciones)) return;
     const conFicha = new Set(toArray(instalaciones).map((i) => i.proyectoId));
-    const faltan = toArray(proyectos).filter((p) => p && p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conFicha.has(p.id));
-    instAutoRef.current = true;
+    const faltan0 = toArray(proyectos).filter((p) => p && p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conFicha.has(p.id) && !instAutoRef.current.has(p.id));
+    if (!faltan0.length) return;
+    faltan0.forEach((p) => instAutoRef.current.add(p.id));
+    (async () => {
+    const faltan = [];
+    for (const p of faltan0) { try { const r = await runTransaction(ref(fbDb, `instalacionAutoCreada/${p.id}`), (cur) => (cur ? undefined : Date.now())); if (r && r.committed) faltan.push(p); } catch (e) { /* otro ordenador */ } }
     if (!faltan.length) return;
+    // Sin fecha en la obra: se le pone una PROVISIONAL a 17 días (se cambia en la instalación)
+    const en17 = (() => { const d = new Date(); d.setDate(d.getDate() + 17); return d.toLocaleDateString("sv-SE"); })();
     const nuevas = faltan.map((p) => ({
       id: uid(), proyectoId: p.id, estado: "Pendiente de instalación",
       presupuestoInstalacion: "", registroHoras: [], gastos: [], materialFurgoneta: [], notas: "",
-      fechaMontaje: p.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
+      fechaMontaje: p.fechaMontaje || en17, fechaProvisional: !p.fechaMontaje, vehiculoId: null, creadaEn: Date.now(),
     }));
     setInstalaciones((prev) => { const ya = new Set(toArray(prev).map((i) => i.proyectoId)); const add = nuevas.filter((n) => !ya.has(n.proyectoId)); if (!add.length) return prev; const updated = [...add, ...toArray(prev)]; persist("instalaciones", updated); return updated; });
-    showToast(`${faltan.length} obra${faltan.length === 1 ? "" : "s"} con instalación sin ficha: ya se han creado en Instalaciones`);
+    showToast(`🔧 ${faltan.length === 1 ? `Instalación creada para la obra #${faltan[0].numero}` : `${faltan.length} instalaciones creadas`}: ponle fecha de montaje en Instalaciones`);
+    })();
   }, [proyectos, instalaciones, currentUser?.id, loading]); // eslint-disable-line
   const uxDocsSyncRef = useRef(false);
   // 14/11/2026: un pedido de Uxcar (persianas/compactos, cristales) lleva varios expedientes y un PDF por expediente («compactos 703.pdf»).
@@ -6508,9 +6534,38 @@ export default function App() {
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
         {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
-        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
+          actualizarIncFab(id, { llegaPrevista: f || "" }); if (!f) return;
+          // la OBRA de la incidencia se pone en el planning ese día (cuando llega lo que faltaba)
+          const inc = incidenciasFabrica.find((x) => x.id === id); if (!inc || !inc.obra) return;
+          try { const sn = (await fbGet(ref(fbDb, "controlDiaVentanasObra"))).val() || {}; const e = Object.values(sn).find((x) => x && String(x.nombre || "").trim() === String(inc.obra || "").trim());
+            if (!e) return; const ids = e.tipo === "u" ? [`u-${e.id}`, ...(e.proyectoId ? [`p-${e.proyectoId}`] : [])] : e.tipo === "p" ? [`p-${e.id}`] : [];
+            ids.forEach((oid) => moverDiaPlanningFab(oid, f)); if (ids.length) showToast(`${inc.obra}: puesta en el planning el ${fmtDate(f)}`); } catch (er) { /* sin planning */ } }} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
+        {(() => {
+          // FINALIZADAS SIN FECHA: hay que completarlas (sale hasta que no quede ninguna)
+          if (!currentUser || modulo === "instalaciones" || !(isAdmin || tieneAcceso("instalaciones"))) return null;
+          const fin = toArray(instalaciones).filter((i) => i && i.estado === "Finalizada" && !i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje));
+          if (!fin.length) return null;
+          return (
+            <button onClick={() => { try { window.sessionStorage.setItem("crm_inst_filtro", "__finsinfecha"); } catch (e) { /* nada */ } setModulo("instalaciones"); }} className="w-full flex items-center gap-2 px-6 py-2 text-sm font-bold text-left transition bg-amber-100 text-amber-900 hover:bg-amber-200">
+              ⚠ INSTALACIONES: {fin.length} finalizada{fin.length === 1 ? "" : "s"} SIN día de montaje. Toca para completarlas →
+            </button>
+          );
+        })()}
+        {(() => {
+          // INSTALACIONES SIN FECHA DE MONTAJE: que no se escape ninguna (a quien lleva Instalaciones)
+          if (!currentUser || modulo === "instalaciones" || !(isAdmin || tieneAcceso("instalaciones"))) return null;
+          const sinFecha = toArray(instalaciones).filter((i) => i && !["Finalizada", "Cancelada", "Terminada"].includes(i.estado) && (i.fechaProvisional || (!i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje))));
+          if (!sinFecha.length) return null;
+          const nom = (i) => { const p = toArray(proyectos).find((q) => q.id === i.proyectoId); return p ? `#${p.numero} ${p.nombre || ""}`.trim() : (i.nombre || "instalación"); };
+          return (
+            <button onClick={() => { try { window.sessionStorage.setItem("crm_inst_filtro", "__sinfecha"); } catch (e) { /* nada */ } setModulo("instalaciones"); }} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-left transition bg-emerald-100 text-emerald-900 hover:bg-emerald-200">
+              🔧 INSTALACIONES: {sinFecha.length} sin fecha de montaje buena (o con fecha provisional) · {sinFecha.slice(0, 3).map(nom).join(" · ")}{sinFecha.length > 3 ? "…" : ""}. Toca para ponerles fecha →
+            </button>
+          );
+        })()}
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
           <button
             onClick={() => setModulo("portalclientes")}
@@ -7501,6 +7556,14 @@ export default function App() {
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
+            onFechaMontaje={(f, fecha, horas) => { if (f.iid) updateInstalacion(f.iid, { fechaBorrador: fecha, ...(horas ? { horasMontaje: horas } : {}) }); else if (f.pid) updateProyectoInline(f.pid, { fechaMontaje: fecha }); }}
+            onPublicarMontajes={() => {
+              // PUBLICAR el borrador del planning de montaje: la fecha pasa a ser la de verdad (instalación y obra)
+              const conB = instalaciones.filter((i) => i && i.fechaBorrador); if (!conB.length) return;
+              saveInstalaciones(instalaciones.map((i) => (i && i.fechaBorrador ? { ...i, fechaMontaje: i.fechaBorrador, fechaBorrador: null, fechaProvisional: false } : i)));
+              conB.forEach((i) => { if (i.proyectoId) updateProyectoInline(i.proyectoId, { fechaMontaje: i.fechaBorrador }); });
+              showToast(`📢 ${conB.length} montaje${conB.length === 1 ? "" : "s"} publicado${conB.length === 1 ? "" : "s"}`);
+            }}
             onIniciarFabricacion={iniciarFabricacionObra}
             cristales={cristales}
             onAddCristal={addCristal}
@@ -7731,6 +7794,20 @@ export default function App() {
         <FormIncidenciaFabrica prefill={incFabForm} onGuardar={crearIncidenciaFabrica} onCancelar={() => setIncFabForm(null)} />
       )}
 
+      {elegirSalida && (() => { const pr = proyectos.find((p) => p.id === elegirSalida.proyectoId) || {}; const fin = (patch) => { const r = elegirSalida.res; setElegirSalida(null); r(patch); }; return (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-3" onClick={() => fin(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-extrabold text-slate-900">¿Cómo sale la obra #{pr.numero}?</div>
+            <div className="text-sm text-slate-600">{pr.nombre || ""}{pr.direccion ? ` · ${pr.direccion}` : ""}. Para pasarla a fabricar hay que decir cómo sale. Elige y sigue:</div>
+            <div className="grid grid-cols-1 gap-2">
+              <button type="button" onClick={() => fin({ estadoLogistica: "Reparto (camión)", llevaInstalacion: false })} className="px-4 py-3 rounded-lg bg-sky-600 text-white text-base font-extrabold text-left">🚚 Reparto (la llevamos en camión)</button>
+              <button type="button" onClick={() => fin({ estadoLogistica: "Recogida en fábrica", llevaInstalacion: false })} className="px-4 py-3 rounded-lg bg-amber-500 text-white text-base font-extrabold text-left">🏭 Recogida en fábrica (viene el cliente)</button>
+              <button type="button" onClick={() => fin({ llevaInstalacion: true })} className="px-4 py-3 rounded-lg bg-emerald-600 text-white text-base font-extrabold text-left">🔧 Instalación (la montamos nosotros)</button>
+            </div>
+            <button type="button" onClick={() => fin(null)} className="text-sm text-slate-500 underline">Cancelar</button>
+          </div>
+        </div>
+      ); })()}
       {toast && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-md shadow-lg text-sm font-medium text-white flex items-center gap-2 z-50 max-w-[90vw] text-center ${
@@ -22199,8 +22276,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                       </div>
                       {!vacioCarro && (r.todoRevisado ? <div className="text-[11px] font-bold text-sky-700 mt-0.5">✓ Todo revisado</div> : r.revisadas > 0 ? <div className="text-[11px] text-sky-700 mt-0.5">{r.revisadas} de {r.n} revisadas</div> : null)}
-                      {!vacioCarro && r.faltaGuia.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight" title="Auxiliares todavía no tiene cortada la guía de estas obras">⚠ FALTA GUÍA · {r.faltaGuia.slice(0, 2).join(" · ")}{r.faltaGuia.length > 2 ? ` +${r.faltaGuia.length - 2}` : ""}</div>}
-                      {!vacioCarro && r.faltaMosq.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight">⚠ FALTA MOSQUITERA · {r.faltaMosq.slice(0, 2).join(" · ")}</div>}
+                      {!vacioCarro && r.faltaGuia.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight" title="Auxiliares todavía no tiene cortada la guía de estas obras">⚠ FALTA GUÍA · {r.faltaGuia.slice(0, 2).map((x) => `Ppto ${pptoBonito(String(x).split("-")[0])}${String(x).includes("-") ? "-" + String(x).split("-")[1] : ""}`).join(" · ")}{r.faltaGuia.length > 2 ? ` +${r.faltaGuia.length - 2}` : ""}</div>}
+                      {!vacioCarro && r.faltaMosq.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight" title={`Falta la mosquitera de: ${r.faltaMosq.map((x) => `Ppto ${pptoBonito(String(x).split("-")[0])}${String(x).includes("-") ? "-" + String(x).split("-")[1] : ""}`).join(", ")}`}>⚠ FALTA MOSQUITERA · {r.faltaMosq.slice(0, 3).map((x) => `Ppto ${pptoBonito(String(x).split("-")[0])}${String(x).includes("-") ? "-" + String(x).split("-")[1] : ""}`).join(" · ")}{r.faltaMosq.length > 3 ? ` +${r.faltaMosq.length - 3}` : ""}</div>}
                       {!vacioCarro && !r.faltaGuia.length && !r.faltaMosq.length && r.guiasOk > 0 && r.sinHoja.length === 0 && <div className="text-[11px] font-bold text-emerald-700 mt-0.5">✓ Guías cortadas</div>}
                       {!vacioCarro && !r.faltaGuia.length && r.sinHoja.length > 0 && !esMosq && <div className="text-[10px] text-amber-700 mt-0.5 leading-tight">Guía sin comprobar (sin hoja en Auxiliares): {r.sinHoja.slice(0, 2).join(" · ")}{r.sinHoja.length > 2 ? "…" : ""}</div>}
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
@@ -22663,21 +22740,69 @@ function PlanningTaller({ taller, proyectos = [], listoParaFabricar = [], uxExpe
   );
 }
 // Planning de montaje: todas las obras que llevan montaje (se añaden solas al marcar «lleva instalación») y sus instalaciones
-function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], vehiculos = [], onVerProyecto }) {
+function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], vehiculos = [], onVerProyecto, onFechaMontaje = null, onPublicarMontajes = null }) {
+  const cfgM = useObjetoFb("configPlanningMontaje"); // { horasDia, furgonetas }
+  const horasDiaM = parseFloat(cfgM.horasDia) || 16; const furgM = parseInt(cfgM.furgonetas, 10) || 2;
+  const [semana0, setSemana0] = useState(() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); });
+  const [moverM, setMoverM] = useState(null); // obra elegida para ponerla en un día (tocar el día)
   const hoy = new Date().toISOString().slice(0, 10);
   const pr = (id) => toArray(proyectos).find((p) => p.id === id);
   const cliN = (p) => (toArray(clientes).find((c) => c.id === (p || {}).clienteId) || {}).nombre || "";
   const veh = (id) => (toArray(vehiculos).find((v) => v.id === id) || {}).nombre || "";
   const deInst = toArray(instalaciones).filter((i) => i.estado !== "Finalizada").map((i) => {
     const p = pr(i.proyectoId);
-    return { key: "i" + i.id, numero: p ? p.numero : "", nombre: (p && p.nombre) || i.nombre || "Instalación", cliente: (p ? cliN(p) : "") || i.clienteNombre || "", dir: i.direccion || (p && p.ubicacion) || "", fecha: i.fechaMontaje || (p && p.fechaMontaje) || "", horas: parseFloat(i.horasMontaje) || 0, estado: i.estado || "Pendiente de instalación", vehiculo: veh(i.vehiculoId), fab: p ? p.estadoTrabajo : "", pid: p ? p.id : "" };
+    return { key: "i" + i.id, numero: p ? p.numero : "", nombre: (p && p.nombre) || i.nombre || "Instalación", cliente: (p ? cliN(p) : "") || i.clienteNombre || "", dir: i.direccion || (p && p.ubicacion) || "", fecha: i.fechaMontaje || (p && p.fechaMontaje) || "", horas: parseFloat(i.horasMontaje) || 0, estado: i.estado || "Pendiente de instalación", vehiculo: veh(i.vehiculoId), fab: p ? p.estadoTrabajo : "", pid: p ? p.id : "", iid: i.id, prov: !!i.fechaProvisional, borr: !!i.fechaBorrador, fechaPub: i.fechaMontaje || (p && p.fechaMontaje) || "", vid: i.vehiculoId || "", ...(i.fechaBorrador ? { fecha: i.fechaBorrador } : {}) };
   });
   const conInst = new Set(toArray(instalaciones).map((i) => i.proyectoId));
   const sinInst = toArray(proyectos).filter((p) => p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conInst.has(p.id)).map((p) => ({ key: "p" + p.id, numero: p.numero, nombre: p.nombre, cliente: cliN(p), dir: p.ubicacion || "", fecha: p.fechaMontaje || "", horas: 0, estado: "Sin instalación creada", vehiculo: "", fab: p.estadoTrabajo, pid: p.id }));
   const filas = [...deInst, ...sinInst].sort((a, b) => String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")) || String(a.numero).localeCompare(String(b.numero), "es", { numeric: true }));
   const sinFecha = filas.filter((f) => !f.fecha).length;
+  // PLANNING VIRTUAL DE MONTAJE: semanas por días; tocas una obra y luego el día (o cambias la fecha). La fecha va junta en obra e instalación.
+  const dias = []; { const d0 = new Date(semana0 + "T12:00:00"); for (let k = 0; k < 14; k++) { const d = new Date(d0); d.setDate(d0.getDate() + k); if (d.getDay() !== 0) dias.push(d.toLocaleDateString("sv-SE")); } }
+  const ponerDia = (f, fecha) => {
+    if (!onFechaMontaje || !fecha) return;
+    let horas = null;
+    if (!(f.horas > 0)) { const r = window.prompt(`¿Cuántas HORAS lleva el montaje de «${f.nombre}»? (obligatorio)`, ""); const h = parseFloat(String(r || "").replace(",", ".")); if (!(h > 0)) { window.alert("Sin horas no se puede poner en el planning de montaje."); return; } horas = h; }
+    onFechaMontaje(f, fecha, horas); setMoverM(null);
+  };
+  const tarjeta = (f) => (
+    <div key={f.key} onClick={() => setMoverM(moverM && moverM.key === f.key ? null : f)} className={`mb-1 rounded border px-1.5 py-1 text-[11px] cursor-pointer ${moverM && moverM.key === f.key ? "bg-amber-300 border-amber-600" : f.prov ? "bg-amber-50 border-amber-300" : "bg-white border-slate-300"}`} title="Tócala y luego toca el día al que la quieres pasar">
+      <div className="font-bold truncate">{f.numero ? `#${f.numero} ` : ""}{f.nombre}</div>
+      <div className="truncate text-slate-500">{f.cliente}{f.horas > 0 ? ` · ${fmtHoras(f.horas)}` : " · ⚠ sin horas"}{f.vehiculo ? ` · 🚐 ${f.vehiculo}` : ""}{f.prov ? " · PROVISIONAL" : ""}</div>
+      {f.borr && <div className="text-[10px] font-extrabold text-indigo-700">✏ BORRADOR{f.fechaPub ? ` (antes ${fmtDate(f.fechaPub)})` : ""}</div>}
+    </div>
+  );
+  const planVirtual = onFechaMontaje ? (
+    <div className="bg-white border-2 border-emerald-300 rounded-lg p-3">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <b className="text-sm text-emerald-900">📅 Planning de montaje</b>
+        <button type="button" onClick={() => { const d = new Date(semana0 + "T12:00:00"); d.setDate(d.getDate() - 7); setSemana0(d.toLocaleDateString("sv-SE")); }} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
+        <span className="text-sm font-semibold">{fmtDate(dias[0])} – {fmtDate(dias[dias.length - 1])}</span>
+        <button type="button" onClick={() => { const d = new Date(semana0 + "T12:00:00"); d.setDate(d.getDate() + 7); setSemana0(d.toLocaleDateString("sv-SE")); }} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
+        {moverM ? <span className="ml-2 text-xs font-bold text-amber-800">Moviendo «{moverM.nombre}»: toca el día · <button type="button" onClick={() => setMoverM(null)} className="underline">cancelar</button></span> : <span className="ml-2 text-xs text-slate-500">Toca una obra y luego el día. Queda en BORRADOR hasta que pulses Publicar.</span>}
+        <span className="ml-auto flex items-center gap-1 text-xs font-semibold text-slate-600">Horas/día <input type="number" min="1" defaultValue={horasDiaM} key={`hm${horasDiaM}`} onBlur={(e) => fbSet(ref(fbDb, "configPlanningMontaje/horasDia"), parseFloat(e.target.value) || 16).catch(() => {})} className="w-14 border border-slate-300 rounded px-1 py-0.5" /> · Furgonetas <input type="number" min="1" defaultValue={furgM} key={`fm${furgM}`} onBlur={(e) => fbSet(ref(fbDb, "configPlanningMontaje/furgonetas"), parseInt(e.target.value, 10) || 2).catch(() => {})} className="w-12 border border-slate-300 rounded px-1 py-0.5" /></span>
+        {(() => { const nB = filas.filter((f) => f.borr).length; return nB > 0 && onPublicarMontajes ? <button type="button" onClick={() => { if (window.confirm(`¿Publicar ${nB} cambio${nB === 1 ? "" : "s"} de fecha de montaje? Se cambian en la instalación y en la obra, y lo ven todos.`)) onPublicarMontajes(); }} className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📢 Publicar ({nB})</button> : null; })()}
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1.5">
+        {dias.map((d) => { const deDia = filas.filter((f) => f.fecha === d); const hD = deDia.reduce((a, f) => a + (f.horas || 0), 0); const fD = new Set(deDia.map((f) => f.vid).filter(Boolean)).size; const pasa = hD > horasDiaM + 0.01 || fD > furgM; return (
+          <div key={d} onClick={() => moverM && ponerDia(moverM, d)} className={`min-h-[5rem] rounded-md border p-1 ${moverM ? "border-dashed border-amber-500 cursor-pointer bg-amber-50/40" : d === hoy ? "border-emerald-500" : "border-slate-200"}`}>
+            <div className="text-[11px] font-bold capitalize">{new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}</div>
+            {deDia.length > 0 && <div className={`text-[10px] font-bold mb-0.5 rounded px-1 ${pasa ? "bg-rose-600 text-white" : "text-emerald-800"}`}>{deDia.length} montaje{deDia.length === 1 ? "" : "s"} · {fmtHoras(hD)} de {horasDiaM} h{fD ? ` · 🚐 ${fD} de ${furgM}` : ""}{pasa ? " ⚠ NO DA" : ""}</div>}
+            {deDia.map(tarjeta)}
+          </div>
+        ); })}
+      </div>
+      {(() => { const sin = filas.filter((f) => !f.fecha || f.fecha < dias[0] || f.fecha > dias[dias.length - 1]); if (!sin.length) return null; return (
+        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+          <div className="text-xs font-bold text-slate-600 mb-1">Sin fecha o fuera de estas dos semanas ({sin.length}) · tócala y luego el día:</div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1.5">{sin.map((f) => <div key={f.key}>{tarjeta(f)}<div className="text-[10px] text-slate-500">{f.fecha ? fmtDate(f.fecha) : "SIN FECHA"}</div></div>)}</div>
+        </div>
+      ); })()}
+    </div>
+  ) : null;
   return (
     <div className="space-y-3 mb-6">
+      {planVirtual}
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-900 text-sm">
         Todas las obras que llevan <b>montaje</b>, ordenadas por fecha. Una obra entra aquí sola en cuanto se marca «lleva instalación» en su ficha. {filas.length > 0 && <span><b>{filas.length}</b> en total{sinFecha > 0 ? <>, <b className="text-amber-700">{sinFecha} sin fecha de montaje</b></> : ""}.</span>}
       </div>
@@ -23183,7 +23308,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -23550,7 +23675,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           onVerProyecto={onVerProyecto} onActualizarProyecto={onActualizarProyecto} onIniciarFabricacion={onIniciarFabricacion} />
       )}
       {tab === "preparar" && subPlan === "montaje" && (
-        <PlanningMontaje instalaciones={instalaciones} proyectos={proyectos} clientes={clientes} vehiculos={vehiculos} onVerProyecto={onVerProyecto} />
+        <PlanningMontaje instalaciones={instalaciones} proyectos={proyectos} clientes={clientes} vehiculos={vehiculos} onVerProyecto={onVerProyecto} onFechaMontaje={onFechaMontaje} onPublicarMontajes={onPublicarMontajes} />
       )}
       {tab === "preparar" && subPlan === "pvc" && (
         <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
@@ -25461,7 +25586,7 @@ const ESTADO_INSTALACION_STYLE = {
 function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, configMontaje, onSaveConfigMontaje, pedidosMontaje = [] }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
-  const [estadoFiltro, setEstadoFiltro] = useState("");
+  const [estadoFiltro, setEstadoFiltro] = useState(() => { try { const v = window.sessionStorage.getItem("crm_inst_filtro"); if (v) { window.sessionStorage.removeItem("crm_inst_filtro"); return v; } } catch (e) { /* nada */ } return ""; });
 
   const datos = (inst) => {
     const proyecto = inst.proyectoId ? proyectos.find((p) => p.id === inst.proyectoId) : null;
@@ -25474,7 +25599,8 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
     const costeTotal = costeManoObra + totalGastos;
     const presupuesto = parseFloat(inst.presupuestoInstalacion) || 0;
     const diferencia = presupuesto - costeTotal;
-    return { proyecto, cliente, nombreMostrar, clienteMostrar, totalHoras, costeManoObra, totalGastos, costeTotal, presupuesto, diferencia };
+    const fechaMontaje = inst.fechaMontaje || (proyecto && proyecto.fechaMontaje) || "";
+    return { proyecto, cliente, nombreMostrar, clienteMostrar, totalHoras, costeManoObra, totalGastos, costeTotal, presupuesto, diferencia, fechaMontaje };
   };
 
   // Si no eres admin, solo ves las instalaciones donde estás asignado como instalador.
@@ -25484,7 +25610,9 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
 
   const filtered = useMemo(() => {
     return instalacionesVisibles.filter((i) => {
-      if (estadoFiltro && i.estado !== estadoFiltro) return false;
+      if (estadoFiltro === "__sinfecha") { if (i.estado === "Finalizada" || (datos(i).fechaMontaje && !i.fechaProvisional)) return false; }
+      else if (estadoFiltro === "__finsinfecha") { if (i.estado !== "Finalizada" || datos(i).fechaMontaje) return false; }
+      else if (estadoFiltro && i.estado !== estadoFiltro) return false;
       if (!q) return true;
       const { nombreMostrar, clienteMostrar } = datos(i);
       return `${nombreMostrar} ${clienteMostrar}`.toLowerCase().includes(q.toLowerCase());
@@ -25609,6 +25737,8 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
         </div>
         <Select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} className="max-w-[220px]">
           <option value="">Todos los estados</option>
+          <option value="__sinfecha">🔧 Sin fecha de montaje</option>
+          <option value="__finsinfecha">⚠ Finalizadas SIN fecha (completar)</option>
           {ESTADO_INSTALACION.map((t) => <option key={t}>{t}</option>)}
         </Select>
         <button
@@ -25633,6 +25763,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
               <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Cliente</th>
               <th className="px-4 py-3 font-semibold">Estado</th>
+              <th className="px-4 py-3 font-semibold">Montaje</th>
               <th className="px-4 py-3 font-semibold text-right">Presupuesto</th>
               <th className="px-4 py-3 font-semibold text-right">Coste actual</th>
               <th className="px-4 py-3 font-semibold text-right">Diferencia</th>
@@ -25646,6 +25777,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
                   <td className="px-4 py-3 font-medium text-slate-800">{d.nombreMostrar}{!d.proyecto && <Badge className="ml-2 bg-violet-50 text-violet-700 ring-violet-200">Sin proyecto</Badge>}</td>
                   <td className="px-4 py-3 text-slate-600">{d.clienteMostrar}</td>
                   <td className="px-4 py-3"><Badge className={ESTADO_INSTALACION_STYLE[i.estado]}>{i.estado}</Badge></td>
+                  <td className="px-4 py-3">{d.fechaMontaje ? <span className="font-semibold text-slate-700">{fmtDate(d.fechaMontaje)}{i.fechaProvisional ? <span className="ml-1 text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">PROVISIONAL</span> : null}</span> : <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-rose-100 text-rose-700">SIN FECHA</span>}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-500">{d.presupuesto ? money(d.presupuesto) : "—"}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-600">{money(d.costeTotal)}</td>
                   <td className={`px-4 py-3 text-right font-mono-num font-semibold ${d.diferencia < 0 ? "text-rose-600" : "text-emerald-600"}`}>{d.presupuesto ? money(d.diferencia) : "—"}</td>
@@ -25853,7 +25985,7 @@ function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o 
   );
 }
 function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
-  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [] });
+  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [], fechaMontaje: "", horasMontaje: "" });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
@@ -25864,6 +25996,8 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
       setErrorMsg("Si no eliges un proyecto, tienes que ponerle un nombre a la instalación (es obligatorio).");
       return;
     }
+    if (!f.fechaMontaje) { setErrorMsg("Pon el DÍA DE MONTAJE (es obligatorio). Si aún no lo sabes, pon uno aproximado y cámbialo luego."); return; }
+    if (!(parseFloat(f.horasMontaje) > 0)) { setErrorMsg("Pon las HORAS DE MONTAJE (obligatorio): sin horas el planning de montaje no sabe si da tiempo."); return; }
     if (!f.proyectoId && !f.direccion.trim() && !window.confirm("No has puesto DIRECCIÓN y no hay proyecto: el montador no sabrá dónde ir. ¿Crearla igualmente?")) return;
     setErrorMsg("");
     onSave(f);
@@ -25906,6 +26040,15 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2"><Field label={f.proyectoId ? "Dirección (si es otra distinta de la de la obra)" : "Dirección"}><TextInput value={f.direccion} onChange={set("direccion")} placeholder="Calle, número, población" /></Field></div>
           <Field label="Teléfono de contacto"><TextInput value={f.telefono} onChange={set("telefono")} placeholder="Opcional" /></Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Día de montaje" required>
+            <TextInput type="date" value={f.fechaMontaje} onChange={set("fechaMontaje")} className={!f.fechaMontaje ? "border-rose-400 bg-rose-50" : ""} />
+          </Field>
+          <Field label="Horas de montaje" required>
+            <TextInput type="number" min="0.5" step="0.5" value={f.horasMontaje} onChange={set("horasMontaje")} className={!(parseFloat(f.horasMontaje) > 0) ? "border-rose-400 bg-rose-50" : ""} placeholder="p. ej. 8" />
+          </Field>
         </div>
 
         <Field label="Presupuesto de instalación (€)">
@@ -26057,7 +26200,11 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
 
       <div className="flex gap-2 mb-6">
         {ESTADO_INSTALACION.map((e) => (
-          <button key={e} onClick={() => { onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
+          <button key={e} onClick={() => {
+            // FECHA DE MONTAJE OBLIGATORIA para pasarla a «En curso» o «Finalizada» (que no quede ninguna sin saber cuándo se montó)
+            if (e !== "Pendiente de instalación" && !(parseFloat(instalacion.horasMontaje) > 0)) { window.alert(`Pon primero las HORAS DE MONTAJE.\n\nSin horas no se puede pasar a «${e}».`); return; }
+            if (e !== "Pendiente de instalación" && !(fechaMontajeInput || instalacion.fechaMontaje || (proyecto && proyecto.fechaMontaje))) { window.alert(`Pon primero el DÍA DE MONTAJE.\n\nSin fecha no se puede pasar a «${e}».`); try { const el = document.getElementById("inst-fecha-montaje"); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus(); } } catch (er) { /* nada */ } return; }
+            onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
             {e}
           </button>
@@ -26087,9 +26234,15 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Día de montaje</label>
           <TextInput
-            type="date" value={fechaMontajeInput}
-            onChange={(e) => { setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value }); }}
+            id="inst-fecha-montaje" type="date" value={fechaMontajeInput}
+            onChange={(e) => { if (!e.target.value && instalacion.estado !== "Pendiente de instalación") { window.alert("La fecha de montaje es obligatoria en una instalación en curso o finalizada."); return; } setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value, fechaProvisional: false }); }}
+            className={!fechaMontajeInput ? "border-rose-400 bg-rose-50" : instalacion.fechaProvisional ? "border-amber-400 bg-amber-50" : ""}
           />
+          {!fechaMontajeInput && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Falta el día de montaje (obligatorio para empezarla o finalizarla)</div>}
+          {fechaMontajeInput && instalacion.fechaProvisional && <div className="mt-1 text-xs font-bold text-amber-700">⏳ Fecha PROVISIONAL (puesta sola a 17 días): cámbiala por la buena</div>}
+          <label className="text-[11px] uppercase tracking-wide text-slate-400 block mt-3 mb-1">Horas de montaje (obligatorio)</label>
+          <TextInput type="number" min="0.5" step="0.5" defaultValue={instalacion.horasMontaje || ""} key={`hm_${instalacion.id}_${instalacion.horasMontaje || ""}`} onBlur={(e) => { const v = parseFloat(e.target.value); if (!(v > 0)) { if (instalacion.horasMontaje) { window.alert("Las horas de montaje son obligatorias."); e.target.value = instalacion.horasMontaje; } return; } if (v !== instalacion.horasMontaje) onUpdate({ horasMontaje: v }); }} className={!(parseFloat(instalacion.horasMontaje) > 0) ? "border-rose-400 bg-rose-50" : ""} placeholder="p. ej. 8" />
+          {!(parseFloat(instalacion.horasMontaje) > 0) && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Faltan las horas de montaje</div>}
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Vehículo asignado</label>
@@ -48816,6 +48969,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
   const marcasTodosPP = useObjetoFb("marcasPuestoLinea"); // ticadas a mano en TODOS los puestos (para ver por dónde ha pasado cada ventana)
+  // HOJA DE CORTE de cada obra (botón en su columna) y si la obra tiene dibujos o no
+  const ctxPD = React.useContext(IncidenciasCristalCtx) || {};
+  const hojasCDpd = useObjetoFb("controlDiaHojaCorte"); const hojasAuxPd = useObjetoFb("auxiliaresHojas");
+  const hojaDeCol = (c) => { for (const k of [...(c.keys || [])]) { const h = hojasCDpd && hojasCDpd[k]; if (h && h.url) return h.url; } const b = [...(c.bases || [])][0] || basePresuDia(c.num); return urlHojaCorte({ pp: b, uxExpedientes: ctxPD.uxExpedientes, proyectos: ctxPD.proyectos, hojasCD: hojasCDpd, hojasAux: hojasAuxPd }); };
   const marcasPP = (marcasTodosPP && marcasTodosPP[puestoId]) || {};
   // Por dónde ha pasado cada ventana: puesto, fecha y hora (y quién), de lo ticado a mano y de lo leído con la pistola
   const fmtTick = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
@@ -48866,9 +49023,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     });
     // Puesto PUERTA: solo las PUERTAS (posición P…, o marcadas como puerta). Lo OSCILOBATIENTE (dibujo con las dos rayas en aspa) es VENTANA aunque sea alta (A01.001 970×2190)
     const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
-    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
-      .filter((c) => (puestoId === "puerta" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
-  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
+    // Puesto PILASTRA: TODOS los marcos menos las puertas (las puertas solo si llevan travesaño/pilastra)
+    const vePilastra = (w) => !esPuertaPanel(w) || toArray(w.ex).includes("PILASTRA");
+    // Puesto PERSIANA A/B: solo las ventanas que LLEVAN persiana (lo dice la hoja de corte, o hay una persiana suya en los carros)
+    const normPV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+    const persPorRef = new Map(); toArray(ctxPD.persianasAlmacen).forEach((y) => { if (!y || !y.ref) return; const k = normPV(y.ref); if (!persPorRef.has(k)) persPorRef.set(k, []); persPorRef.get(k).push(y); });
+    const llevaPersiana = (c, w) => { if (toArray(w.ex).includes("PERSIANA")) return true; const ys = persPorRef.get(normPV(w.pos)) || []; if (!ys.length) return false; const bs = c.bases || new Set(); return ys.some((y) => { const pr = digitosPresu(String(y.presupuesto || "").split(/[·,;\s]+/)[0]); if (pr && bs.has(pr)) return true; const ex = String(y.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); return ex && toArray(ctxPD.uxExpedientes).some((e) => e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === ex && bs.has(digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]))); }); };
+    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
+      .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
+  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes]);
   const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
   const qPD = String(qPresDia || "").replace(/\D/g, "");
   const columnas = (enTv) => {
@@ -48884,6 +49047,12 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                 <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
                 <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin ventanas (falta la hoja de corte o las etiquetas)" : `${c.hechas} de ${c.vs.length} leídas aquí${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
               </button>
+                {!enTv && (() => { const u = hojaDeCol(c); const sinDib = c.vs.length > 0 && !c.vs.some((v) => v.dib || (v.fab && v.tip)); return (
+                  <div className="px-2 py-1 flex flex-wrap items-center gap-1 bg-slate-100" onClick={(e) => e.stopPropagation()}>
+                    {u ? <a href={u} target="_blank" rel="noreferrer" className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-indigo-500 text-white">📄 Hoja de corte</a> : <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white">sin hoja de corte subida</span>}
+                    {sinDib && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950" title="Sube la hoja de corte de la obra en Control del día para que salgan los dibujos">sin dibujos</span>}
+                  </div>
+                ); })()}
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
                   <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
@@ -48892,7 +49061,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
-                    {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                    {toArray(v.ex).filter((x) => x !== "PERSIANA").length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).filter((x) => x !== "PERSIANA").map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
                     {!enTv && (() => { const ps = pasosVentana(c, v); return ps.length ? <div className="w-full mt-0.5 space-y-0.5">{ps.slice(-4).map((pz, i) => <div key={i} title={pz.por ? `por ${pz.por}` : ""} className={`text-[9px] leading-tight rounded px-1 ${pz.pu === puestoId ? "bg-black/20 font-extrabold" : "bg-black/10"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pz.pu) || {}).corto || nombrePuestoLinea(pz.pu)} · {fmtTick(pz.ts)}</div>)}</div> : null; })()}
                     {!enTv && <div onClick={(e) => e.stopPropagation()} className="mt-0.5"><BotonIncidenciaFabrica prefill={{ obra: c.obra || c.nombre || (c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""), ventana: v.pos || "", ventanaId: String(v.id || ""), puesto: nombrePuestoLinea(puestoId) }} /></div>}
                   </div>
@@ -50084,7 +50253,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
   const res = [];
   if (dP.length >= 2) Object.entries(snapCD || {}).forEach(([k, sn]) => {
     if (!sn || !((sn.tipo === "u" && uxsB.some((u) => String(u.id) === String(sn.id))) || toArray(sn.codigos).some((c) => basesB.has(basePresuDia(c))) || (dP.length >= 3 && String(sn.nombre || "").replace(/\./g, "").includes(dP)))) return;
-    toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
+    toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; if (puestoId === "pilastra" && esPuerta(w) && !toArray(w.ex).includes("PILASTRA")) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
   });
   return (
     <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
@@ -50108,6 +50277,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               {w.dib ? <div className="bg-white rounded"><DibujoPlan hash={w.dib} alto={50} /></div> : null}
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
+              {toArray(w.ex).filter((x) => x !== "PERSIANA").map((x) => <span key={x} className={`text-xs font-extrabold px-1.5 py-0.5 rounded ${x === "PILASTRA" ? "bg-rose-600 text-white" : "bg-amber-400 text-amber-950"}`}>LLEVA {x === "PILASTRA" ? "PILASTRA / TRAVESAÑO" : x}</span>)}
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
               {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
@@ -50273,7 +50443,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
       await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
       fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
-      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.`, false);
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : puestoId === "pilastra" ? "\nSin pilastra: solo herrajes." : ""}`, false);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
@@ -56960,7 +57130,7 @@ function textoTiempoInc(ms) {
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
 // ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
 const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
-function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false }) {
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false, onFechaLlegada = null }) {
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
   const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
@@ -56971,10 +57141,11 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
   // Para el resto del equipo: una franja por incidencia (todos se enteran y pueden actuar)
   if (compacto) return (
     <div className="bg-slate-900 px-3 py-1.5 space-y-1">
-      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
-        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
+      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const hoyI = new Date().toLocaleDateString("sv-SE"); const espera = !!i.llegaPrevista && i.llegaPrevista >= hoyI; const tarde = !espera && resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
+        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${espera ? "bg-sky-200 text-sky-950" : tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
           <span>🚨 INCIDENCIA · {i.puesto || "?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}{i.obra ? ` · ${i.obra}` : ""}: <span className="font-semibold">{i.texto || i.tipo || ""}</span></span>
-          <span className="ml-auto font-black text-base">{tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          <span className="ml-auto font-black text-base">{i.llegaPrevista === hoyI ? "📦 HOY llega lo que faltaba: si ya está, pulsa ✓ Resuelta" : espera ? `📅 Llega el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}` : i.llegaPrevista ? `⚠ Tenía que llegar el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}` : tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          {onFechaLlegada && <label className="text-[11px] font-semibold flex items-center gap-1" title="Cuándo está previsto que llegue lo que falta">📅 llega<input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 text-[11px] bg-white" /></label>}
           {i.asignadoA ? <span className="text-xs">{mia ? "VAS TÚ" : "ya va alguien"}</span> : <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">🏃 Voy yo</button>}
           <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-2 py-0.5 rounded bg-emerald-600 text-white text-xs font-extrabold">✓ Resuelta</button>
         </div>
@@ -56986,7 +57157,7 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
       <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
         {abiertas.map((i) => {
-          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0;
+          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = !(i.llegaPrevista && i.llegaPrevista >= new Date().toLocaleDateString("sv-SE")) && resta < 0;
           const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id;
           return (
             <div key={i.id} className={`rounded-xl border-4 p-3 ${tarde ? "bg-red-600 border-red-900 text-white animate-pulse" : "bg-amber-300 border-amber-600 text-slate-900"}`}>
@@ -56998,8 +57169,10 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
                   <div className="text-xs mt-1 opacity-90">{i.creadaPor && i.creadaPor.nombre ? `Avisa: ${i.creadaPor.nombre} · ` : ""}{i.creadaTs ? new Date(i.creadaTs).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}{i.asignadoA ? (mia ? " · VAS TÚ" : " · ya va alguien") : ""}</div>
                 </div>
                 <div className="text-right">
+                  {i.llegaPrevista ? <div className="text-xl font-black leading-tight">📅 {new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}<div className="text-xs font-bold">{i.llegaPrevista === new Date().toLocaleDateString("sv-SE") ? "📦 HOY llega: si ya está, pulsa ✓ Resuelta" : i.llegaPrevista > new Date().toLocaleDateString("sv-SE") ? "previsto que llegue" : "⚠ YA TENÍA QUE HABER LLEGADO"}</div></div> : <>
                   <div className="text-4xl font-black leading-none">{tarde ? `+${mmss(resta)}` : mmss(resta)}</div>
-                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div>
+                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div></>}
+                  {onFechaLlegada && <label className="mt-1 block text-[11px] font-semibold">📅 Llega el <input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 bg-white" /></label>}
                 </div>
               </div>
               {i.foto && <img src={i.foto} alt="" className="mt-2 max-h-40 rounded border border-black/20" />}
@@ -58885,6 +59058,21 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const piezasTodas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
   // cada puesto de corte ve SOLO sus perfiles (doble cabezal / mosquiteras y postigos)
   const piezas = useMemo(() => piezasTodas.filter((x) => !(quitadasAux && quitadasAux[kQuit(x.id)]) && auxPuestoDeRef(toArray(cfg.refs).find((r) => String(r.ref).trim() === String(x.ref).trim()), x.ref) === puestoCorte), [piezasTodas, quitadasAux, cfg, puestoCorte]);
+  // AVISO «han llegado persianas: cortar guías…»: cada expediente se quita SOLO del aviso cuando ya está cortado todo lo suyo
+  const alertasAuxL = useObjetoFb("alertasAuxPersianas");
+  useEffect(() => {
+    if (puestoCorte !== "doble") return;
+    Object.values(alertasAuxL || {}).forEach((a) => {
+      if (!a || a.estado !== "abierta" || !a.exp) return;
+      const exN = String(a.exp).replace(/\D/g, "").replace(/^0+/, "");
+      const ps = new Set(String(a.presupuesto || "").split(/[·,;\s]+/).map((t) => digitosPresu(t)).filter((b) => b.length >= 3));
+      toArray(uxExpedientes).forEach((e) => { if (e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === exN) [e.presupuesto, e.presupuestoNumero].forEach((t) => { const b = digitosPresu(String(t || "").split(/[·,;\s]+/)[0]); if (b.length >= 3) ps.add(b); }); });
+      if (!ps.size) return;
+      const suyas = piezasTodas.filter((x) => x && ps.has(String(x.ppto)) && !(quitadasAux && quitadasAux[kQuit(x.id)]));
+      if (!suyas.length || !suyas.every((x) => est && est[x.id] && est[x.id].cortada)) return;
+      fbSet(ref(fbDb, `alertasAuxPersianas/${a.exp}`), { ...a, estado: "resuelta", resueltaPor: "Auxiliares (todo cortado)", resueltaEn: Date.now() }).catch(() => {});
+    });
+  }, [alertasAuxL, piezasTodas, est, quitadasAux, uxExpedientes, puestoCorte]);
   const quitarPiezas = (ps, txt) => {
     const L = toArray(ps).filter((x) => x && !(est && est[x.id] && est[x.id].cortada)); if (!L.length) return;
     if (!window.confirm(`${txt || `¿Quitar ${L.length} pieza${L.length === 1 ? "" : "s"}?`}\n\nNo saldrán para cortar. Se pueden recuperar abajo en «Piezas quitadas».`)) return;
@@ -61666,7 +61854,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const inf = infoVent(o, v); if (inf && inf.desc) textos.push(inf.desc);
     const ih = infoHoja(o, v); if (ih) textos.push(toArray(ih.extras).join(" "), ih.desc || "");
     const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
-    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
+    const t2 = t.replace(/\b(sin|no\s+lleva)\s+(pilastra|travesa[ñn]o)/gi, " ");
+    const t3 = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(persiana|caj[oó]n|compacto)\w*/gi, " ");
+    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i], ["PILASTRA", /pilastra|travesa[ñn]o/i], ["PERSIANA", /persiana|caj[oó]n|compacto|monoblo/i]].filter(([n, re]) => re.test(n === "PILASTRA" ? t2 : n === "PERSIANA" ? t3 : t)).map(([n]) => n);
   };
   // El «Almacén del día» usa EXACTAMENTE estas ventanas (con su dibujo, color, medidas y lo que lleva: solape, mosquitera, postigo…): se publican solo las obras que cambian
   const publicadoVentCD = useRef({});
