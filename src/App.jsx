@@ -1430,6 +1430,7 @@ export default function App() {
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 350);
   }, [writeToStorage]);
 
+  const [elegirSalida, setElegirSalida] = useState(null); // { proyectoId, res }: elegir reparto / recogida / instalación sin salir de la pantalla
   const showToast = (msg, kind = "ok") => {
     setToast({ msg, kind });
     setTimeout(() => setToast(null), kind === "error" ? 6000 : 2600);
@@ -2055,7 +2056,12 @@ export default function App() {
   // La usan Fábrica («Listo para fabricar») y Control del día («Meter una obra en el planning»).
   const iniciarFabricacionObra = async (proyectoId) => {
     if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return false; }
-    if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return false; }
+    if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) {
+      // En vez de solo avisar: se ELIGE AQUÍ MISMO la salida y se sigue
+      const patch = await new Promise((res) => setElegirSalida({ proyectoId, res }));
+      if (!patch) { showToast("No se ha pasado a fábrica: falta elegir la salida.", "error"); return false; }
+      updateProyectoInline(proyectoId, patch);
+    }
     // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
     const obraF = proyectos.find((p) => p.id === proyectoId);
     const rev = await revisarPresupuestoAntesDeFabrica(obraF);
@@ -7741,6 +7747,20 @@ export default function App() {
         <FormIncidenciaFabrica prefill={incFabForm} onGuardar={crearIncidenciaFabrica} onCancelar={() => setIncFabForm(null)} />
       )}
 
+      {elegirSalida && (() => { const pr = proyectos.find((p) => p.id === elegirSalida.proyectoId) || {}; const fin = (patch) => { const r = elegirSalida.res; setElegirSalida(null); r(patch); }; return (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-3" onClick={() => fin(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-extrabold text-slate-900">¿Cómo sale la obra #{pr.numero}?</div>
+            <div className="text-sm text-slate-600">{pr.nombre || ""}{pr.direccion ? ` · ${pr.direccion}` : ""}. Para pasarla a fabricar hay que decir cómo sale. Elige y sigue:</div>
+            <div className="grid grid-cols-1 gap-2">
+              <button type="button" onClick={() => fin({ estadoLogistica: "Reparto (camión)", llevaInstalacion: false })} className="px-4 py-3 rounded-lg bg-sky-600 text-white text-base font-extrabold text-left">🚚 Reparto (la llevamos en camión)</button>
+              <button type="button" onClick={() => fin({ estadoLogistica: "Recogida en fábrica", llevaInstalacion: false })} className="px-4 py-3 rounded-lg bg-amber-500 text-white text-base font-extrabold text-left">🏭 Recogida en fábrica (viene el cliente)</button>
+              <button type="button" onClick={() => fin({ llevaInstalacion: true })} className="px-4 py-3 rounded-lg bg-emerald-600 text-white text-base font-extrabold text-left">🔧 Instalación (la montamos nosotros)</button>
+            </div>
+            <button type="button" onClick={() => fin(null)} className="text-sm text-slate-500 underline">Cancelar</button>
+          </div>
+        </div>
+      ); })()}
       {toast && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-md shadow-lg text-sm font-medium text-white flex items-center gap-2 z-50 max-w-[90vw] text-center ${
