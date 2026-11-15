@@ -7556,7 +7556,14 @@ export default function App() {
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
-            onFechaMontaje={(f, fecha) => { if (f.iid) updateInstalacion(f.iid, { fechaMontaje: fecha, fechaProvisional: false }); else if (f.pid) updateProyectoInline(f.pid, { fechaMontaje: fecha }); }}
+            onFechaMontaje={(f, fecha) => { if (f.iid) updateInstalacion(f.iid, { fechaBorrador: fecha }); else if (f.pid) updateProyectoInline(f.pid, { fechaMontaje: fecha }); }}
+            onPublicarMontajes={() => {
+              // PUBLICAR el borrador del planning de montaje: la fecha pasa a ser la de verdad (instalación y obra)
+              const conB = instalaciones.filter((i) => i && i.fechaBorrador); if (!conB.length) return;
+              saveInstalaciones(instalaciones.map((i) => (i && i.fechaBorrador ? { ...i, fechaMontaje: i.fechaBorrador, fechaBorrador: null, fechaProvisional: false } : i)));
+              conB.forEach((i) => { if (i.proyectoId) updateProyectoInline(i.proyectoId, { fechaMontaje: i.fechaBorrador }); });
+              showToast(`📢 ${conB.length} montaje${conB.length === 1 ? "" : "s"} publicado${conB.length === 1 ? "" : "s"}`);
+            }}
             onIniciarFabricacion={iniciarFabricacionObra}
             cristales={cristales}
             onAddCristal={addCristal}
@@ -22733,7 +22740,9 @@ function PlanningTaller({ taller, proyectos = [], listoParaFabricar = [], uxExpe
   );
 }
 // Planning de montaje: todas las obras que llevan montaje (se añaden solas al marcar «lleva instalación») y sus instalaciones
-function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], vehiculos = [], onVerProyecto, onFechaMontaje = null }) {
+function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], vehiculos = [], onVerProyecto, onFechaMontaje = null, onPublicarMontajes = null }) {
+  const cfgM = useObjetoFb("configPlanningMontaje"); // { horasDia, furgonetas }
+  const horasDiaM = parseFloat(cfgM.horasDia) || 16; const furgM = parseInt(cfgM.furgonetas, 10) || 2;
   const [semana0, setSemana0] = useState(() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); });
   const [moverM, setMoverM] = useState(null); // obra elegida para ponerla en un día (tocar el día)
   const hoy = new Date().toISOString().slice(0, 10);
@@ -22742,7 +22751,7 @@ function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], ve
   const veh = (id) => (toArray(vehiculos).find((v) => v.id === id) || {}).nombre || "";
   const deInst = toArray(instalaciones).filter((i) => i.estado !== "Finalizada").map((i) => {
     const p = pr(i.proyectoId);
-    return { key: "i" + i.id, numero: p ? p.numero : "", nombre: (p && p.nombre) || i.nombre || "Instalación", cliente: (p ? cliN(p) : "") || i.clienteNombre || "", dir: i.direccion || (p && p.ubicacion) || "", fecha: i.fechaMontaje || (p && p.fechaMontaje) || "", horas: parseFloat(i.horasMontaje) || 0, estado: i.estado || "Pendiente de instalación", vehiculo: veh(i.vehiculoId), fab: p ? p.estadoTrabajo : "", pid: p ? p.id : "", iid: i.id, prov: !!i.fechaProvisional };
+    return { key: "i" + i.id, numero: p ? p.numero : "", nombre: (p && p.nombre) || i.nombre || "Instalación", cliente: (p ? cliN(p) : "") || i.clienteNombre || "", dir: i.direccion || (p && p.ubicacion) || "", fecha: i.fechaMontaje || (p && p.fechaMontaje) || "", horas: parseFloat(i.horasMontaje) || 0, estado: i.estado || "Pendiente de instalación", vehiculo: veh(i.vehiculoId), fab: p ? p.estadoTrabajo : "", pid: p ? p.id : "", iid: i.id, prov: !!i.fechaProvisional, borr: !!i.fechaBorrador, fechaPub: i.fechaMontaje || (p && p.fechaMontaje) || "", vid: i.vehiculoId || "", ...(i.fechaBorrador ? { fecha: i.fechaBorrador } : {}) };
   });
   const conInst = new Set(toArray(instalaciones).map((i) => i.proyectoId));
   const sinInst = toArray(proyectos).filter((p) => p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conInst.has(p.id)).map((p) => ({ key: "p" + p.id, numero: p.numero, nombre: p.nombre, cliente: cliN(p), dir: p.ubicacion || "", fecha: p.fechaMontaje || "", horas: 0, estado: "Sin instalación creada", vehiculo: "", fab: p.estadoTrabajo, pid: p.id }));
@@ -22754,7 +22763,8 @@ function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], ve
   const tarjeta = (f) => (
     <div key={f.key} onClick={() => setMoverM(moverM && moverM.key === f.key ? null : f)} className={`mb-1 rounded border px-1.5 py-1 text-[11px] cursor-pointer ${moverM && moverM.key === f.key ? "bg-amber-300 border-amber-600" : f.prov ? "bg-amber-50 border-amber-300" : "bg-white border-slate-300"}`} title="Tócala y luego toca el día al que la quieres pasar">
       <div className="font-bold truncate">{f.numero ? `#${f.numero} ` : ""}{f.nombre}</div>
-      <div className="truncate text-slate-500">{f.cliente}{f.horas > 0 ? ` · ${fmtHoras(f.horas)}` : ""}{f.prov ? " · PROVISIONAL" : ""}</div>
+      <div className="truncate text-slate-500">{f.cliente}{f.horas > 0 ? ` · ${fmtHoras(f.horas)}` : " · ⚠ sin horas"}{f.vehiculo ? ` · 🚐 ${f.vehiculo}` : ""}{f.prov ? " · PROVISIONAL" : ""}</div>
+      {f.borr && <div className="text-[10px] font-extrabold text-indigo-700">✏ BORRADOR{f.fechaPub ? ` (antes ${fmtDate(f.fechaPub)})` : ""}</div>}
     </div>
   );
   const planVirtual = onFechaMontaje ? (
@@ -22764,12 +22774,15 @@ function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], ve
         <button type="button" onClick={() => { const d = new Date(semana0 + "T12:00:00"); d.setDate(d.getDate() - 7); setSemana0(d.toLocaleDateString("sv-SE")); }} className="px-2 py-0.5 rounded border border-slate-300 text-sm">‹</button>
         <span className="text-sm font-semibold">{fmtDate(dias[0])} – {fmtDate(dias[dias.length - 1])}</span>
         <button type="button" onClick={() => { const d = new Date(semana0 + "T12:00:00"); d.setDate(d.getDate() + 7); setSemana0(d.toLocaleDateString("sv-SE")); }} className="px-2 py-0.5 rounded border border-slate-300 text-sm">›</button>
-        {moverM ? <span className="ml-2 text-xs font-bold text-amber-800">Moviendo «{moverM.nombre}»: toca el día · <button type="button" onClick={() => setMoverM(null)} className="underline">cancelar</button></span> : <span className="ml-2 text-xs text-slate-500">Toca una obra y luego el día. La fecha cambia en la obra y en su instalación.</span>}
+        {moverM ? <span className="ml-2 text-xs font-bold text-amber-800">Moviendo «{moverM.nombre}»: toca el día · <button type="button" onClick={() => setMoverM(null)} className="underline">cancelar</button></span> : <span className="ml-2 text-xs text-slate-500">Toca una obra y luego el día. Queda en BORRADOR hasta que pulses Publicar.</span>}
+        <span className="ml-auto flex items-center gap-1 text-xs font-semibold text-slate-600">Horas/día <input type="number" min="1" defaultValue={horasDiaM} key={`hm${horasDiaM}`} onBlur={(e) => fbSet(ref(fbDb, "configPlanningMontaje/horasDia"), parseFloat(e.target.value) || 16).catch(() => {})} className="w-14 border border-slate-300 rounded px-1 py-0.5" /> · Furgonetas <input type="number" min="1" defaultValue={furgM} key={`fm${furgM}`} onBlur={(e) => fbSet(ref(fbDb, "configPlanningMontaje/furgonetas"), parseInt(e.target.value, 10) || 2).catch(() => {})} className="w-12 border border-slate-300 rounded px-1 py-0.5" /></span>
+        {(() => { const nB = filas.filter((f) => f.borr).length; return nB > 0 && onPublicarMontajes ? <button type="button" onClick={() => { if (window.confirm(`¿Publicar ${nB} cambio${nB === 1 ? "" : "s"} de fecha de montaje? Se cambian en la instalación y en la obra, y lo ven todos.`)) onPublicarMontajes(); }} className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📢 Publicar ({nB})</button> : null; })()}
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1.5">
-        {dias.map((d) => { const deDia = filas.filter((f) => f.fecha === d); return (
+        {dias.map((d) => { const deDia = filas.filter((f) => f.fecha === d); const hD = deDia.reduce((a, f) => a + (f.horas || 0), 0); const fD = new Set(deDia.map((f) => f.vid).filter(Boolean)).size; const pasa = hD > horasDiaM + 0.01 || fD > furgM; return (
           <div key={d} onClick={() => moverM && ponerDia(moverM, d)} className={`min-h-[5rem] rounded-md border p-1 ${moverM ? "border-dashed border-amber-500 cursor-pointer bg-amber-50/40" : d === hoy ? "border-emerald-500" : "border-slate-200"}`}>
-            <div className="text-[11px] font-bold capitalize mb-0.5">{new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}</div>
+            <div className="text-[11px] font-bold capitalize">{new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}</div>
+            {deDia.length > 0 && <div className={`text-[10px] font-bold mb-0.5 rounded px-1 ${pasa ? "bg-rose-600 text-white" : "text-emerald-800"}`}>{deDia.length} montaje{deDia.length === 1 ? "" : "s"} · {fmtHoras(hD)} de {horasDiaM} h{fD ? ` · 🚐 ${fD} de ${furgM}` : ""}{pasa ? " ⚠ NO DA" : ""}</div>}
             {deDia.map(tarjeta)}
           </div>
         ); })}
@@ -23290,7 +23303,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ onFechaMontaje = null, albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -23657,7 +23670,7 @@ function FabricaModulo({ onFechaMontaje = null, albaranesEl, proyectos, pedidos,
           onVerProyecto={onVerProyecto} onActualizarProyecto={onActualizarProyecto} onIniciarFabricacion={onIniciarFabricacion} />
       )}
       {tab === "preparar" && subPlan === "montaje" && (
-        <PlanningMontaje instalaciones={instalaciones} proyectos={proyectos} clientes={clientes} vehiculos={vehiculos} onVerProyecto={onVerProyecto} onFechaMontaje={onFechaMontaje} />
+        <PlanningMontaje instalaciones={instalaciones} proyectos={proyectos} clientes={clientes} vehiculos={vehiculos} onVerProyecto={onVerProyecto} onFechaMontaje={onFechaMontaje} onPublicarMontajes={onPublicarMontajes} />
       )}
       {tab === "preparar" && subPlan === "pvc" && (
         <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
