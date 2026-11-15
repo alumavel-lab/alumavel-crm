@@ -50550,7 +50550,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
     // Cristales, POR OBRA: si alguna ventana de la obra lleva solape/postigo, TODAS van juntas a Solape; si ninguna, todas SIGUEN EN LA LÍNEA (siempre localizadas)
-    const obraConSolape = llevaSol; // VENTANA POR VENTANA: con solape/postigo → Solape; sin solape → sigue en la Línea
+    // se tica VENTANA A VENTANA (solo se mueve la que tocas), pero el destino es el de su OBRA: si alguna ventana de la obra lleva solape/postigo → todas a Solape (juntas); si ninguna → siguen en la Línea
+    const obraConSolape = llevaSol || toArray(hit.sn && hit.sn.ventanas).some((w2) => toArray(w2.ex).some((x) => x === "SOLAPE" || x === "POSTIGO"));
     const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (obraConSolape ? "solape" : "sinPersiana") : puestoId;
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
