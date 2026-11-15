@@ -53380,7 +53380,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <button type="button" onClick={() => setListaPlAbierta(!listaPlAbierta)} title={listaPlAbierta ? "Cerrar la lista" : "Abrir la lista"} className="mr-auto flex items-center gap-2 text-left">
+          <button id="plListaTitulo" type="button" onClick={() => setListaPlAbierta(!listaPlAbierta)} title={listaPlAbierta ? "Cerrar la lista" : "Abrir la lista"} className="mr-auto flex items-center gap-2 text-left">
             <span className="text-slate-500 text-sm w-4">{listaPlAbierta ? "▼" : "▶"}</span>
             <h3 className="font-display font-bold text-slate-800">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
             <span className="text-[11px] font-semibold text-sky-700 underline">{listaPlAbierta ? "cerrar" : "abrir"}</span>
@@ -53448,6 +53448,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
         <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 mb-3">
           {listas.length === 0 && <p className="px-4 py-4 text-sm text-slate-400">No hay obras con todo el material ahora mismo.</p>}
           {listasOrd.map((o, i) => filaObra(o, <input type="checkbox" checked={!quitadas.includes(o.id)} onChange={(e) => setQuitadas(e.target.checked ? quitadas.filter((x) => x !== o.id) : [...quitadas, o.id])} />, listasOrd, i))}
+        </div>
+        <div className="flex justify-center mb-3">
+          <button type="button" onClick={() => { setListaPlAbierta(false); setTimeout(() => { const el = document.getElementById("plListaTitulo"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 50); }} className="px-4 py-1.5 rounded-md border border-slate-300 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50">▲ Cerrar esta lista ({listasOrd.length} obras)</button>
         </div>
         </>}
         {rapidosHechos.length > 0 && (
