@@ -50554,7 +50554,19 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
       // SOLDADORA: el CRM sabe por la hoja de corte si la ventana es FIJA (solo marco) o cuántas hojas lleva; si lleva hojas, se elige qué sale
-      if (pE === "soldadora" && !(req && req.tipo)) { const nhS = typeof hit.w.nh === "number" ? hit.w.nh : null; if (nhS === 0 || hit.w.tp === "fijo") req = { ...req, tipo: "marco" }; else { setElegirSold({ req, hit, nh: nhS }); return; } }
+      if (pE === "soldadora" && !(req && req.tipo)) {
+        const nhS = typeof hit.w.nh === "number" ? hit.w.nh : null; const fija = nhS === 0 || hit.w.tp === "fijo";
+        if (modoSold === "marcos" || (fija && modoSold !== "hojas")) req = { ...req, tipo: "marco" };
+        else if (modoSold === "hojas") {
+          if (fija) { avisar(false, `${hit.w.pos}: es FIJA, no lleva hojas.`); return; }
+          // salen las hojas de golpe: cada toque mete la SIGUIENTE hoja que falta (activa, luego pasiva…)
+          let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ }
+          const cb = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const nT = nhS == null ? hojasSugeridas({ medida: String(hit.w.medida || "").replace(/\s*[x×]\s*/i, "x") }) : nhS; let sig = 0;
+          for (let x = 1; x <= nT; x++) if (!uF[`${cb}~H${x}`]) { sig = x; break; }
+          if (!sig) { avisar(true, `${hit.w.pos}: ya tiene sus ${nT} hoja${nT === 1 ? "" : "s"} en el almacén. (Para quitar una, en «Ticadas».)`, true); return; }
+          req = { ...req, tipo: `h${sig}` };
+        } else { setElegirSold({ req, hit, nh: nhS }); return; }
+      }
       // cada HOJA lleva su propio código: «~H1» hoja activa, «~H2» hoja pasiva, «~H3»… (y su propio almacén)
       const nHojaT = pE === "soldadora" && req && /^h\d$/.test(String(req.tipo || "")) ? Number(String(req.tipo).slice(1)) : 0; const hojaT = nHojaT > 0;
       const sufH = hojaT ? `~H${nHojaT}` : "";
@@ -50608,7 +50620,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       else if (pE === "herraje") {
         // las HOJAS de la ventana (activa, pasiva…) pasan juntas de «Hojas (soldadora)» a «Hojas con herraje»; si falta alguna, se avisa
         const cb = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
-        const nEsp = typeof hit.w.nh === "number" ? hit.w.nh : 2;
+        const nEsp = typeof hit.w.nh === "number" ? hit.w.nh : hojasSugeridas({ medida: String(hit.w.medida || "").replace(/\s*[x×]\s*/i, "x") });
         let cods = codsHojas(cb, ubic); if (!cods.length) cods = Array.from({ length: nEsp }, (_, x) => `${cb}~H${x + 1}`);
         const zH = zonas.find((q) => q.id === "hojasHerraje"); const lineas = []; let huecoPar = null;
         for (const ch of cods) {
@@ -50677,7 +50689,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
   const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
+  const [modoSold, setModoSold] = useEstadoLocal("crm_soldadoraModo", "preguntar"); // Soldadora: «marcos» (cada toque = marco), «hojas» (cada toque = la siguiente hoja), o preguntar
   const [elegirSold, setElegirSold] = useState(null); // Soldadora: al tocar una ventana se elige su MARCO o sus HOJAS (el CRM sabe cuántas hojas lleva por la hoja de corte)
+  const nH0 = (n) => Math.max(0, Math.min(4, Number(n) || 0));
+  // Aviso flotante abajo (la pantalla no se mueve al ticar): se ve donde está el chico y se va solo
+  const [toastU, setToastU] = useState(null);
+  useEffect(() => { if (!layoutSimple || !ultimo) return undefined; setToastU(ultimo); const t = setTimeout(() => setToastU(null), 6000); return () => clearTimeout(t); }, [ultimo]);
   const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   const quitarTicada = async (claveM, m) => {
@@ -50712,7 +50729,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       hechasCrAuto.current.add(claveM); ponerPersianaCD({ k, sn, w }, null);
     }));
   }, [cristales, snapCDLin, marcasCrist, puestoId]);
-  const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
+  const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus({ preventScroll: true }); }, 30); // sin mover la pantalla: el chico sigue donde ha tocado
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
   const elegirMesa = (n) => { setMesaSel(n); mesaRef.current = n; try { localStorage.setItem("alumavel_mesa_colgado", String(n)); } catch (e) { /* nada */ } enfocar(); };
@@ -50964,14 +50981,15 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <div style={layoutSimple ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={layoutSimple ? tocarVentanaPuesto : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} /></div>
+        <div style={layoutSimple ? { order: 5 } : undefined}><PanelDiaPuesto puestoId={puestoId} onAbrir={layoutSimple ? tocarVentanaPuesto : setAbrirReq} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus({ preventScroll: true }); } catch (e) { /* nada */ } }} /></div>
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {!layoutSimple && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const nH = nh == null ? 2 : nh;
+        {toastU && <div onClick={() => setToastU(null)} className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[94vw] w-[40rem] cursor-pointer rounded-xl px-4 py-3 shadow-2xl text-base font-bold whitespace-pre-line ${toastU.ok ? (toastU.repetida ? "bg-amber-500 text-slate-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{toastU.texto}</div>}
+        {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const nH = nh == null ? hojasSugeridas({ medida: String(hit.w.medida || "").replace(/\s*[x×]\s*/i, "x") }) : nH0(nh);
           const piezas = [{ t: "marco", nom: "🟫 MARCO", cod: cM, cls: "bg-amber-700" }, ...Array.from({ length: nH }, (_, x) => ({ t: `h${x + 1}`, nom: `🪟 ${nombreHoja(x + 1, nH)}`, cod: `${cM}~H${x + 1}`, cls: "bg-sky-700" }))];
           const nomZ = (u) => (u ? `${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} ${u.hueco}` : "");
           const faltan = piezas.filter((pz) => !(ubic && ubic[pz.cod]));
@@ -50980,13 +50998,19 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setElegirSold(null)}>
             <div className="bg-white rounded-xl p-4 w-full max-w-md space-y-2" onClick={(e) => e.stopPropagation()}>
               <div className="text-lg font-extrabold text-slate-800">{hit.w.pos} <span className="text-sm font-semibold text-slate-500">{hit.sn.nombre || ""}</span></div>
-              <div className="text-sm text-slate-600">{nh == null ? "La hoja de corte no dice cuántas hojas lleva: pongo 2 (activa y pasiva)." : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} Toca cada pieza que sale de la soldadora:</div>
+              <div className="text-sm text-slate-600">{nh == null ? `La hoja de corte no dice cuántas hojas lleva: por la medida pongo ${nH === 1 ? "1 hoja" : "2 (activa y pasiva)"}.` : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} Toca cada pieza que sale de la soldadora:</div>
               {piezas.map((pz) => { const u = ubic && ubic[pz.cod]; return (
                 <button key={pz.t} type="button" onClick={() => ir([pz.t])} className={`w-full px-4 py-3 rounded-lg ${u ? "bg-emerald-600" : pz.cls} text-white text-lg font-extrabold text-left`}>{u ? "✓ " : ""}{pz.nom}{u ? <span className="block text-xs font-semibold">ya está en {nomZ(u)} (tocar = quitarla)</span> : null}</button>); })}
               {faltan.length > 1 && <button type="button" onClick={() => ir(faltan.map((pz) => pz.t))} className="w-full px-4 py-2 rounded-lg border-2 border-slate-400 text-slate-800 text-sm font-bold">Todo lo que falta a la vez ({faltan.length})</button>}
               <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cerrar</button>
             </div>
           </div>); })()}
+        {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-slate-800">Ahora salen:</span>
+          {[["marcos", "🟫 MARCOS", "bg-amber-700 border-amber-900"], ["hojas", "🪟 HOJAS", "bg-sky-700 border-sky-900"], ["preguntar", "❓ Preguntar cada vez", "bg-slate-600 border-slate-800"]].map(([k, t, c]) => (
+            <button key={k} type="button" onClick={() => setModoSold(k)} className={`px-4 py-2 rounded-md text-base font-extrabold border-2 ${modoSold === k ? `${c} text-white` : "bg-white text-slate-700 border-slate-300"}`}>{t}</button>))}
+          <span className="text-xs text-slate-600 w-full">{modoSold === "marcos" ? "Cada toque en una ventana = su MARCO al almacén de marcos." : modoSold === "hojas" ? "Cada toque en una ventana = su SIGUIENTE HOJA (1º activa, 2º pasiva). Toca la ventana tantas veces como hojas salgan." : "Al tocar una ventana se pregunta qué pieza es."}</span>
+        </div>}
         {puestoId === "pilastra" && <div style={{ order: -2 }} className={`mb-2 rounded-lg border-2 px-3 py-2 flex flex-wrap items-center gap-2 ${entradaPil ? "border-green-500 bg-green-50" : "border-emerald-700 bg-emerald-50"}`}>
           <span className="text-sm font-bold text-slate-800">Al tocar una ventana:</span>
           <button type="button" onClick={() => setEntradaPil(false)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${!entradaPil ? "bg-emerald-600 text-white border-emerald-700" : "bg-white text-slate-700 border-slate-300"}`}>🔧 Herraje puesto (verde fuerte)</button>
