@@ -47615,6 +47615,11 @@ const useZonasLinea = () => {
 };
 // Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
 const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : 2) : 2; }; // sin otro dato se supone 2 hojas: una hoja de más inventa una pegatina que bloquea el colgado (3 hojas se pone a mano)
+// OBRAS COMPLETAS al final de la línea y su COLOR (el mismo en el mapa y en el aviso de Cristales)
+const ZONAS_FIN_LINEA = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"];
+const COLORES_OBRA_LINEA = ["bg-violet-600 border-violet-800", "bg-blue-600 border-blue-800", "bg-pink-600 border-pink-800", "bg-cyan-700 border-cyan-900", "bg-indigo-800 border-indigo-950", "bg-fuchsia-700 border-fuchsia-900", "bg-sky-800 border-sky-950", "bg-purple-900 border-black"];
+function obrasCompletasLinea(snap, ubic) { const set = new Set(); Object.entries(snap || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; if (vs.every((w) => { const u = ubic && ubic[`cd_${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_")]; return u && ZONAS_FIN_LINEA.includes(u.zonaId); })) set.add(k); }); return set; }
+function coloresObrasLinea(completas, avisos) { const m = {}; [...new Set([...Object.keys(avisos || {}), ...completas])].sort().forEach((k, i) => { m[k] = COLORES_OBRA_LINEA[i % COLORES_OBRA_LINEA.length]; }); return m; }
 // CRISTALES de una ventana en los caballetes (misma posición y misma obra: expediente o presupuesto)
 const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
   if (!sn || !w) return []; const bases = toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
@@ -48263,8 +48268,13 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const ubic = useObjetoFb("ubicacionesLinea");
   // OBRA COMPLETA: todas las ventanas de su obra (según la hoja de corte) ya están al final de la línea (Persiana salida, Puertas terminadas, Línea, Solape) → se ve en MORADO
   const snapZ = useObjetoFb("controlDiaVentanasObra");
-  const ZONAS_FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"];
-  const obrasCompletas = useMemo(() => { const set = new Set(); Object.entries(snapZ || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const todas = vs.every((w) => { const u = ubic && ubic[`cd_${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_")]; return u && ZONAS_FIN.includes(u.zonaId); }); if (todas) set.add(k); }); return set; }, [snapZ, ubic]);
+  const ZONAS_FIN = ZONAS_FIN_LINEA;
+  const avisosZ = useObjetoFb("avisosCristales");
+  const obrasCompletas = useMemo(() => obrasCompletasLinea(snapZ, ubic), [snapZ, ubic]);
+  // cada OBRA COMPLETA con su COLOR (8 colores que se reparten por orden) y su nº de presupuesto en el hueco
+  const COLORES_OBRA = COLORES_OBRA_LINEA;
+  const colorObra = useMemo(() => coloresObrasLinea(obrasCompletas, avisosZ), [obrasCompletas, avisosZ]);
+  const obraDePiezas = (piezas) => { const m = /^cd_(.+)__(.+?)$/.exec(String((piezas[0] || {}).cod || "")); return m ? m[1] : ""; };
   const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
@@ -48308,8 +48318,9 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? "bg-violet-600 border-violet-800 text-white font-bold ring-2 ring-violet-300" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
+                    {ZONAS_FIN.includes(z.id) && piezas.length > 0 && (() => { const b = (ubic && ubic[piezas[0].cod] && ubic[piezas[0].cod].base) || ""; return b ? <div className="truncate text-[9px] font-extrabold opacity-95">Ppto {pptoBonito(b)}</div> : null; })()}
                   </div>
                 );
               })}
@@ -51104,12 +51115,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
             </div>
           </div>); })()}
         {puestoId === "cristales" && Object.keys(avisosCrist || {}).length > 0 && <div style={{ order: -4 }} className="mb-3 space-y-2">
-          {Object.entries(avisosCrist || {}).filter(([, a]) => a).sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0)).map(([kO, a]) => { const snO = snapCDLin && snapCDLin[kO]; const vsO = toArray(snO && snO.ventanas);
+          {Object.entries(avisosCrist || {}).filter(([, a]) => a).sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0)).map(([kO, a], iO) => { const snO = snapCDLin && snapCDLin[kO]; const vsO = toArray(snO && snO.ventanas); const colO = coloresObrasLinea(obrasCompletasLinea(snapCDLin, ubic), avisosCrist)[kO] || COLORES_OBRA_LINEA[0];
             const hechaC = (x) => !!(marcasCrist && marcasCrist[limpiaCodL(`${kO}__${x.id}`)]); const faltan = vsO.filter((x) => !hechaC(x));
             if (vsO.length && !faltan.length) { fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); return null; } // todas ticadas en Cristales: el aviso se va solo
             return (
-            <div key={kO} className="rounded-lg border-4 border-violet-600 bg-violet-50 px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2"><b className="text-lg text-violet-900">🪟 OBRA COMPLETA EN LÍNEA: {a.nombre || a.base}</b><span className="text-sm text-violet-800">faltan {faltan.length} de {vsO.length}</span>
+            <div key={kO} className="rounded-lg border-4 border-slate-300 bg-white px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2"><span className={`px-2 py-1 rounded text-white font-extrabold text-lg border-2 ${colO}`}>{iO === 0 ? "AHORA" : `${iO + 1}º`} · Ppto {pptoBonito(a.base || "")}</span><b className="text-lg text-slate-900">🪟 OBRA COMPLETA EN LÍNEA: {a.nombre || a.base}</b><span className="text-sm text-violet-800">faltan {faltan.length} de {vsO.length}</span>
                 <button type="button" onClick={() => { if (window.confirm("¿Quitar este aviso?")) fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); }} className="ml-auto text-xs underline text-violet-800">quitar aviso</button></div>
               <div className="mt-1 space-y-0.5">{vsO.map((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; const crs = cristalesDeVentanaCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO, x); const ok = hechaC(x); return (
                 <div key={x.id} className={`text-sm flex flex-wrap gap-x-2 ${ok ? "text-emerald-700 line-through" : "text-slate-900"}`}><b>{ok ? "✓ " : ""}{x.pos}</b>{u ? <span>📍 {(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} {u.hueco}</span> : null}<span className="font-bold text-amber-800">{crs.length ? crs.map(({ c, pz }) => `${pz.ancho}×${pz.alto} caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ") : "cristales: no los encuentro"}</span></div>); })}</div>
