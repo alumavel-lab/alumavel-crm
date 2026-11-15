@@ -47621,12 +47621,23 @@ const COLORES_OBRA_LINEA = ["bg-violet-600 border-violet-800", "bg-blue-600 bord
 function obrasCompletasLinea(snap, ubic) { const set = new Set(); Object.entries(snap || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; if (vs.every((w) => { const u = ubic && ubic[`cd_${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_")]; return u && ZONAS_FIN_LINEA.includes(u.zonaId); })) set.add(k); }); return set; }
 function coloresObrasLinea(completas, avisos) { const m = {}; [...new Set([...Object.keys(avisos || {}), ...completas])].sort().forEach((k, i) => { m[k] = COLORES_OBRA_LINEA[i % COLORES_OBRA_LINEA.length]; }); return m; }
 // CRISTALES de una ventana en los caballetes (misma posición y misma obra: expediente o presupuesto)
-const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
-  if (!sn || !w) return []; const bases = toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
-  const exN = sn.tipo === "u" ? String(((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}).numero || "").replace(/\D/g, "").replace(/^0+/, "") : "";
-  const pos = String(w.pos || "").toUpperCase().replace(/\s+/g, "");
-  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => { if (!pz || String(pz.ref || "").toUpperCase().replace(/\s+/g, "") !== pos) return false; const ex = String(pz.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pr = digitosPresu(String(pz.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]); return (exN && ex === exN) || (pr && bases.includes(pr)); });
+// referencia de ventana «canónica»: P02.103 = P2.103 = p02-103 = «850 p1-V05.105» → V5.105 (sin ceros, puntos ni espacios que estorben)
+const canonRefVC = (t) => { const u = String(t || "").toUpperCase(); const m = u.match(/([A-Z]{1,3})\s*0*(\d{1,3})\s*[.\-_ ]?\s*0*(\d{1,4})/); return m ? `${m[1]}${Number(m[2])}.${Number(m[3])}` : u.replace(/[\s.\-_]/g, ""); };
+// ¿este cristal (o su caballete) es de esta OBRA? por expediente de Uxcar o por nº de presupuesto (en la pieza o en el caballete)
+const cristalDeObraCD = (c, pz, sn, uxExpedientes) => {
+  const bases = toArray(sn && sn.codigos).map((x) => basePresuDia(x)).filter((b) => b.length >= 3);
+  const ex0 = sn && sn.tipo === "u" ? ((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}) : {};
+  const exN = String(ex0.numero || "").replace(/\D/g, "").replace(/^0+/, ""); const exP = digitosPresu(String(ex0.presupuesto || ex0.presupuestoNumero || "").split(/[·,;\s]+/)[0]); if (exP) bases.push(exP);
+  const exs = `${pz.expediente || ""} ${c.expediente || ""}`.split(/[·,;\s/]+/).map((x) => x.replace(/\D/g, "").replace(/^0+/, "")).filter(Boolean);
+  const prs = `${pz.presupuesto || ""} ${c.presupuesto || ""}`.split(/[·,;\s/]+/).map((x) => digitosPresu(x)).filter(Boolean);
+  return (exN && exs.includes(exN)) || prs.some((p) => bases.includes(p));
 };
+const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
+  if (!sn || !w) return []; const rv = canonRefVC(w.pos); if (!rv) return [];
+  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && canonRefVC(pz.ref) === rv && cristalDeObraCD(c, pz, sn, uxExpedientes));
+};
+// si no se encuentran por ventana: los CABALLETES con cristales de esta obra (para saber al menos dónde buscar)
+const caballetesDeObraCD = (caballetes, uxExpedientes, sn) => toArray(caballetes).filter((c) => c && toArray(c.piezas).some((pz) => pz && !pz.puesto && cristalDeObraCD(c, pz, sn, uxExpedientes)));
 // ¿Es PUERTA? (por la hoja de corte: tipo puerta, posición P…, o «PUERTA» en la descripción). Lo oscilobatiente es VENTANA aunque sea alto.
 const esPuertaVentanaCD = (w) => { if (!w) return false; const t = `${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`; if (/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(t)) return false; return w.tp === "puerta" || /^P\d/i.test(String(w.pos || "").trim()) || /\bPUERTA\b/i.test(String(w.desc || "")); };
 // Nº de HOJAS de una ventana: lo que dice la hoja de corte; si no, «PUERTA 1 HOJA» / «2 HOJAS» en la descripción; si no, por la medida
@@ -48415,7 +48426,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
               <div className="flex flex-wrap gap-2">
                 {vc.w && !vc.pieza && (() => { const crs = cristalesDeVentanaCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn, vc.w); return (
                   <div className="w-full rounded-md bg-amber-50 border border-amber-300 px-3 py-1.5 text-sm text-amber-950">
-                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => <span key={ci} className={`inline-block mr-2 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}</span>) : <span className="text-slate-500">no encuentro sus cristales en los caballetes</span>}
+                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => <span key={ci} className={`inline-block mr-2 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}</span>) : (() => { const cs = caballetesDeObraCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn); return cs.length ? <span className="font-bold">de esta obra hay cristales en: {cs.map((c) => `caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ")} <span className="font-normal text-slate-500">(no sé cuál es el de esta ventana: su referencia no coincide)</span></span> : <span className="text-slate-500">no encuentro cristales de esta obra en los caballetes</span>; })()}
                   </div>); })()}
                 {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
@@ -50493,9 +50504,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const bases = new Set(toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); const rv = normVC(w && w.pos); if (!rv) return [];
     const out = [];
     toArray(cristales).forEach((c) => toArray(c && c.piezas).forEach((p, i) => {
-      if (!p || normVC(p.ref) !== rv) return;
-      const exp = String(p.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pres = digitosPresu(String(p.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]);
-      if ((uxN && exp === uxN) || (pres && bases.has(pres))) out.push({ c, i, p });
+      if (!p || canonRefVC(p.ref) !== canonRefVC(w && w.pos)) return;
+      if (cristalDeObraCD(c, p, sn, uxExpedientes)) out.push({ c, i, p });
     }));
     return out;
   };
@@ -51126,7 +51136,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
               <div className="flex flex-wrap items-center gap-2"><span className={`px-2 py-1 rounded text-white font-extrabold text-lg border-2 ${colO}`}>{iO === 0 ? "AHORA" : `${iO + 1}º`} · Ppto {pptoBonito(a.base || "")}</span><b className="text-lg text-slate-900">🪟 OBRA COMPLETA EN LÍNEA: {a.nombre || a.base}</b><span className="text-sm text-violet-800">faltan {faltan.length} de {vsO.length}</span>
                 <button type="button" onClick={() => { if (window.confirm("¿Quitar este aviso?")) fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); }} className="ml-auto text-xs underline text-violet-800">quitar aviso</button></div>
               <div className="mt-1 space-y-0.5">{vsO.map((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; const crs = cristalesDeVentanaCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO, x); const ok = hechaC(x); return (
-                <div key={x.id} className={`text-sm flex flex-wrap gap-x-2 ${ok ? "text-emerald-700 line-through" : "text-slate-900"}`}><b>{ok ? "✓ " : ""}{x.pos}</b>{u ? <span>📍 {(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} {u.hueco}</span> : null}<span className="font-bold text-amber-800">{crs.length ? crs.map(({ c, pz }) => `${pz.ancho}×${pz.alto} caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ") : "cristales: no los encuentro"}</span></div>); })}</div>
+                <div key={x.id} className={`text-sm flex flex-wrap gap-x-2 ${ok ? "text-emerald-700 line-through" : "text-slate-900"}`}><b>{ok ? "✓ " : ""}{x.pos}</b>{u ? <span>📍 {(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} {u.hueco}</span> : null}<span className="font-bold text-amber-800">{crs.length ? crs.map(({ c, pz }) => `${pz.ancho}×${pz.alto} caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ") : (() => { const cs = caballetesDeObraCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO); return cs.length ? `cristales de la obra en: ${cs.map((c) => `caballete ${c.lote || c.numero || "—"}`).join(", ")}` : "cristales: no los encuentro"; })()}</span></div>); })}</div>
             </div>); })}
         </div>}
         {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
