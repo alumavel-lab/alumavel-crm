@@ -48306,6 +48306,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // ACRISTALADAS (ticadas en Cristales) que siguen en la Línea: en GRIS con «✓ cristal», para distinguirlas de las que aún no lo tienen
   const marcasCrZ = useObjetoFb("marcasPuestoLinea/cristales");
   const acristalada = (piezas) => piezas.length > 0 && piezas.every((x) => String(x.cod).startsWith("cd_") && marcasCrZ && marcasCrZ[String(x.cod).slice(3)]);
+  // LA MISMA VENTANA EN DOS SITIOS (la obra está dos veces: como obra del CRM y como expediente de Uxcar → dos códigos): se queda la MÁS RECIENTE
+  const duplicadasZ = useMemo(() => { const g = new Map(); Object.entries(ubic || {}).forEach(([c, u]) => { const m = /^cd_(.+)__(.+?)(~H\d?)?$/.exec(c); if (!m || !u || !u.zonaId) return; const b = pptoDeCodZ(c); if (!b) return; const fin = [...ZONAS_FIN_LINEA, "espera"].includes(u.zonaId); const k = `${b}|${m[2]}${m[3] && !fin ? m[3] : ""}`; if (!g.has(k)) g.set(k, []); g.get(k).push([c, u]); }); return [...g.values()].filter((xs) => xs.length > 1); }, [ubic, snapZ]); // al final de la línea va la VENTANA ENTERA: una hoja suelta ahí es un repetido
+  const arreglarDuplicadas = async () => { if (!window.confirm(`Hay ${duplicadasZ.length} ventana${duplicadasZ.length === 1 ? "" : "s"} apuntada${duplicadasZ.length === 1 ? "" : "s"} en DOS sitios.\n\n¿Dejo cada una solo en el sitio MÁS RECIENTE (donde se movió la última vez) y quito el otro?`)) return;
+    for (const xs of duplicadasZ) { const orden = [...xs].sort((a, b) => (/~H/.test(a[0]) ? 1 : 0) - (/~H/.test(b[0]) ? 1 : 0) || (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); // se queda el MARCO (la ventana) y, si hay dos, el más reciente for (const [c] of orden.slice(1)) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } } } };
   const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
@@ -48320,6 +48324,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   };
   return (
     <div className="space-y-3">
+      {duplicadasZ.length > 0 && <div className="mb-2 rounded-lg border-2 border-rose-500 bg-rose-50 px-3 py-2 flex flex-wrap items-center gap-2 text-sm"><b className="text-rose-800">⚠ {duplicadasZ.length} ventana{duplicadasZ.length === 1 ? "" : "s"} en DOS sitios a la vez</b><span className="text-rose-700">({duplicadasZ.slice(0, 4).map((xs) => `${etiquetaDe(xs[0][0])}: ${xs.map(([, u]) => `${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} ${u.hueco}`).join(" y ")}`).join(" · ")}{duplicadasZ.length > 4 ? "…" : ""})</span><button type="button" onClick={arreglarDuplicadas} className="ml-auto px-3 py-1 rounded bg-rose-600 text-white text-xs font-bold">Arreglar: dejar solo el más reciente</button></div>}
       {admin && !ids && <div className="flex justify-end"><button onClick={vaciar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50">Vaciar todas las estanterías (pruebas)</button></div>}
       {lista.map((z) => {
         const oc = porZona[z.id] || {};
@@ -50552,6 +50557,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const antesC = puestoId === "cristales" && ubic && ubic[codCD] && ubic[codCD].zonaId && ubic[codCD].zonaId !== zonaDest ? JSON.parse(JSON.stringify(ubic[codCD])) : null; // de dónde la cogió Cristales (para deshacer)
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
+    if (r) { const bG = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; let uG = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uG = fr; } catch (e) { /* con la que haya */ } await quitarGemelas(codCD, bG, uG); }
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
     // PUERTA: al terminarla se coge también su HOJA (o hojas) de su estantería: sale de allí y se dice de dónde cogerla
     let txtHojasP = ""; let hojasAntesP = null;
@@ -50645,8 +50651,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     let orden;
     if (mismos.length) orden = [...libres].sort((a, b) => Math.min(...mismos.map((m) => Math.abs(a - m))) - Math.min(...mismos.map((m) => Math.abs(b - m))) || a - b);
     else { const ult = ocup.size ? Math.max(...ocup.keys()) : 0; orden = [...libres.filter((h) => h > ult), ...libres.filter((h) => h <= ult)]; }
-    for (const h of orden) { const r = await ocuparHuecoLinea(zona, cod, quien, u0, h, h, 1); if (r) return r; }
+    for (const h of orden) { const r = await ocuparHuecoLinea(zona, cod, quien, u0, h, h, 1); if (r) { await quitarGemelas(cod, base, u0); return r; } }
     return null;
+  };
+  // la MISMA ventana con otro código (su obra está dos veces: obra del CRM y expediente de Uxcar): al colocarla aquí, la otra copia se quita
+  const quitarGemelas = async (cod, base, u0) => {
+    try { const m = /^cd_(.+)__(.+?)(~H\d?)?$/.exec(String(cod)); if (!m || !base) return; const suf = `__${m[2]}${m[3] || ""}`;
+      for (const [c, u] of Object.entries(u0 || {})) { if (c === cod || !c.startsWith("cd_") || !c.endsWith(suf) || !u || !u.zonaId) continue; const mc = /^cd_(.+)__/.exec(c); const snc = mc && snapCDLin && snapCDLin[mc[1].replace(/__.*$/, "")];
+        const bc = String(u.base || "") || (snc ? (toArray(snc.codigos).map((x) => basePresuDia(x)).find((b) => b.length >= 3) || "") : ""); if (bc && bc === String(base)) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } } } } catch (e) { /* nada */ }
   };
   // Resto de puestos (sin pistola): tocar la ventana = HECHA en este puesto (verde y contador). Otra vez = quitar. No mueve huecos.
   const marcarHechaPuesto = async (req) => {
