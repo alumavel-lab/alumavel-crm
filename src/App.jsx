@@ -49025,9 +49025,13 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
     // Puesto PILASTRA: TODOS los marcos menos las puertas (las puertas solo si llevan travesaño/pilastra)
     const vePilastra = (w) => !esPuertaPanel(w) || toArray(w.ex).includes("PILASTRA");
-    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
-      .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
-  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
+    // Puesto PERSIANA A/B: solo las ventanas que LLEVAN persiana (lo dice la hoja de corte, o hay una persiana suya en los carros)
+    const normPV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+    const persPorRef = new Map(); toArray(ctxPD.persianasAlmacen).forEach((y) => { if (!y || !y.ref) return; const k = normPV(y.ref); if (!persPorRef.has(k)) persPorRef.set(k, []); persPorRef.get(k).push(y); });
+    const llevaPersiana = (c, w) => { if (toArray(w.ex).includes("PERSIANA")) return true; const ys = persPorRef.get(normPV(w.pos)) || []; if (!ys.length) return false; const bs = c.bases || new Set(); return ys.some((y) => { const pr = digitosPresu(String(y.presupuesto || "").split(/[·,;\s]+/)[0]); if (pr && bs.has(pr)) return true; const ex = String(y.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); return ex && toArray(ctxPD.uxExpedientes).some((e) => e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === ex && bs.has(digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]))); }); };
+    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
+      .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
+  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes]);
   const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
   const qPD = String(qPresDia || "").replace(/\D/g, "");
   const columnas = (enTv) => {
@@ -49057,7 +49061,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
-                    {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                    {toArray(v.ex).filter((x) => x !== "PERSIANA").length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).filter((x) => x !== "PERSIANA").map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
                     {!enTv && (() => { const ps = pasosVentana(c, v); return ps.length ? <div className="w-full mt-0.5 space-y-0.5">{ps.slice(-4).map((pz, i) => <div key={i} title={pz.por ? `por ${pz.por}` : ""} className={`text-[9px] leading-tight rounded px-1 ${pz.pu === puestoId ? "bg-black/20 font-extrabold" : "bg-black/10"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pz.pu) || {}).corto || nombrePuestoLinea(pz.pu)} · {fmtTick(pz.ts)}</div>)}</div> : null; })()}
                     {!enTv && <div onClick={(e) => e.stopPropagation()} className="mt-0.5"><BotonIncidenciaFabrica prefill={{ obra: c.obra || c.nombre || (c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : ""), ventana: v.pos || "", ventanaId: String(v.id || ""), puesto: nombrePuestoLinea(puestoId) }} /></div>}
                   </div>
@@ -50273,7 +50277,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               {w.dib ? <div className="bg-white rounded"><DibujoPlan hash={w.dib} alto={50} /></div> : null}
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
-              {toArray(w.ex).map((x) => <span key={x} className={`text-xs font-extrabold px-1.5 py-0.5 rounded ${x === "PILASTRA" ? "bg-rose-600 text-white" : "bg-amber-400 text-amber-950"}`}>LLEVA {x === "PILASTRA" ? "PILASTRA / TRAVESAÑO" : x}</span>)}
+              {toArray(w.ex).filter((x) => x !== "PERSIANA").map((x) => <span key={x} className={`text-xs font-extrabold px-1.5 py-0.5 rounded ${x === "PILASTRA" ? "bg-rose-600 text-white" : "bg-amber-400 text-amber-950"}`}>LLEVA {x === "PILASTRA" ? "PILASTRA / TRAVESAÑO" : x}</span>)}
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
               {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
@@ -61851,7 +61855,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const ih = infoHoja(o, v); if (ih) textos.push(toArray(ih.extras).join(" "), ih.desc || "");
     const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     const t2 = t.replace(/\b(sin|no\s+lleva)\s+(pilastra|travesa[ñn]o)/gi, " ");
-    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i], ["PILASTRA", /pilastra|travesa[ñn]o/i]].filter(([n, re]) => re.test(n === "PILASTRA" ? t2 : t)).map(([n]) => n);
+    const t3 = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(persiana|caj[oó]n|compacto)\w*/gi, " ");
+    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i], ["PILASTRA", /pilastra|travesa[ñn]o/i], ["PERSIANA", /persiana|caj[oó]n|compacto|monoblo/i]].filter(([n, re]) => re.test(n === "PILASTRA" ? t2 : n === "PERSIANA" ? t3 : t)).map(([n]) => n);
   };
   // El «Almacén del día» usa EXACTAMENTE estas ventanas (con su dibujo, color, medidas y lo que lleva: solape, mosquitera, postigo…): se publican solo las obras que cambian
   const publicadoVentCD = useRef({});
