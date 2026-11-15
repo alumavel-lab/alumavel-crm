@@ -47616,6 +47616,9 @@ const useZonasLinea = () => {
 };
 // Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
 const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : 2) : 2; }; // sin otro dato se supone 2 hojas: una hoja de más inventa una pegatina que bloquea el colgado (3 hojas se pone a mano)
+// DE DÓNDE VIENE cada almacén (para «Devolver» cuando no se sabe de dónde vino la pieza): vuelve al almacén del puesto anterior
+const ZONA_ANTERIOR_LINEA = { solape: "sinPersiana", espera: "solape", persianaA: "colgadoA", persianaB: "colgadoB", puertasTerminadas: "puertas", colgadoA: "marcos", colgadoB: "marcos", bancoPuerta: "puertas", hojasHerraje: "hojas" };
+const PUESTO_DE_ZONA_LINEA = { solape: "cristales", espera: "solape", persianaA: "persianaA", persianaB: "persianaB", puertasTerminadas: "puerta", colgadoA: "colgado", colgadoB: "colgado", bancoPuerta: "colgado", hojasHerraje: "herraje" };
 // OBRAS COMPLETAS al final de la línea y su COLOR (el mismo en el mapa y en el aviso de Cristales)
 const ZONAS_FIN_LINEA = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"];
 const COLORES_OBRA_LINEA = ["bg-violet-600 border-violet-800", "bg-blue-600 border-blue-800", "bg-pink-600 border-pink-800", "bg-cyan-700 border-cyan-900", "bg-indigo-800 border-indigo-950", "bg-fuchsia-700 border-fuchsia-900", "bg-sky-800 border-sky-950", "bg-purple-900 border-black"];
@@ -48380,18 +48383,18 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
   // DEVOLVER = deshacer el último paso: si la movió un puesto desde otro almacén, VUELVE ALLÍ (con sus marcas); si no venía de ningún sitio, sale del almacén
   const devolverCD = async (vc) => {
     let u = null; try { u = (await fbGet(ref(fbDb, `ubicacionesLinea/${vc.cod}`))).val(); } catch (e) { /* nada */ }
-    const a = u && u.antes && u.antes.zonaId ? u.antes : null; const zA = a && zonasM.find((q) => q.id === a.zonaId);
-    const nomA = zA ? `${zA.nombre} · estantería ${a.hueco}` : "";
+    const a = u && u.antes && u.antes.zonaId ? u.antes : (ZONA_ANTERIOR_LINEA[zonaId] ? { zonaId: ZONA_ANTERIOR_LINEA[zonaId], hueco: 0, ...(u && u.base ? { base: u.base } : {}), ...(u && u.et ? { et: u.et } : {}), ...(u && u.obra ? { obra: u.obra } : {}) } : null); const zA = a && zonasM.find((q) => q.id === a.zonaId);
+    const nomA = zA ? `${zA.nombre}${a.hueco ? ` · estantería ${a.hueco}` : ""}` : "";
     if (!window.confirm(`¿DEVOLVER ${vc.w ? vc.w.pos : "esta ventana"}${vc.pieza ? ` (${vc.pieza})` : ""}?\n\n${zA ? `Vuelve a ${nomA} (como estaba antes).` : `Sale de ${zonaNombre} · estantería ${hueco}.`}${zA ? "" : " Si se dio de baja su persiana, vuelve a su sitio del carro."}`)) return;
-    const puesto = u && u.porHerraje ? "herraje" : u && u.porColgado ? "colgado" : u && u.porPilastra ? "pilastra" : u && u.porSoldadora ? "soldadora" : zonaId === "puertasTerminadas" ? "puerta" : zonaId;
+    const puesto = u && u.porHerraje ? "herraje" : u && u.porColgado ? "colgado" : u && u.porPilastra ? "pilastra" : u && u.porSoldadora ? "soldadora" : u && u.porCristales ? "cristales" : PUESTO_DE_ZONA_LINEA[zonaId] || zonaId;
     const baseCod = vc.cod.replace(/~H\d?$/, "");
     // las hojas de una ventana van juntas: si las movió Herraje, vuelven todas
     const cods = u && u.porHerraje && /~H$/.test(vc.cod) ? Object.keys(ubic || {}).filter((c) => c === vc.cod || (c.startsWith(`${baseCod}~H`) && ubic[c] && ubic[c].porHerraje)) : [vc.cod]; // cada hoja se devuelve sola (las antiguas «~H» juntas)
     for (const c of [...new Set(cods)]) {
       let uc = u; if (c !== vc.cod) { try { uc = (await fbGet(ref(fbDb, `ubicacionesLinea/${c}`))).val(); } catch (e) { uc = null; } }
-      const ac = uc && uc.antes && uc.antes.zonaId ? uc.antes : null; const zc = ac && zonasM.find((q) => q.id === ac.zonaId);
+      const ac = uc && uc.antes && uc.antes.zonaId ? uc.antes : (c === vc.cod ? a : null); const zc = ac && zonasM.find((q) => q.id === ac.zonaId);
       let ok = false;
-      if (zc) { const r = await ocuparHuecoLinea(zc, c, "", null, Number(ac.hueco), Number(ac.hueco), zc.cap || 1) || await ocuparHuecoLinea(zc, c, "", null, 1, null, zc.cap || 1);
+      if (zc) { const r = (Number(ac.hueco) > 0 && await ocuparHuecoLinea(zc, c, "", null, Number(ac.hueco), Number(ac.hueco), zc.cap || 1)) || await ocuparHuecoLinea(zc, c, "", null, 1, null, zc.cap || 1);
         if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = ac; await fbUpdate(ref(fbDb, `ubicacionesLinea/${c}`), { ...resto, antes: null }).catch(() => {}); ok = true; } }
       if (!ok) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } }
       // Matrimonio: sus hojas vuelven también a donde estaban
@@ -48447,7 +48450,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                   </div>); })()}
                 {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
-                <button type="button" onClick={() => devolverCD(vc)} className={accionPieza ? "px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white text-[11px] font-semibold" : "px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold"}>{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
+                <button type="button" onClick={() => devolverCD(vc)} className={accionPieza ? "px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white text-[11px] font-semibold" : "px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold"}>{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes && uu.antes.zonaId ? uu.antes : (ZONA_ANTERIOR_LINEA[zonaId] ? { zonaId: ZONA_ANTERIOR_LINEA[zonaId] } : null); const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre}${aa.hueco ? ` ${aa.hueco}` : ""}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
             </div>
           ))}
@@ -50537,10 +50540,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId; // Cristales: la coge de la LÍNEA y la manda a Solape (si lleva) o a palet (sin hueco)
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? "solape" : puestoId; // Cristales: la coge de la LÍNEA y la manda SIEMPRE al almacén de Solape (las ventanas de una obra van juntas, lleven solape o no)
+    void llevaSol;
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
+    const antesC = puestoId === "cristales" && ubic && ubic[codCD] && ubic[codCD].zonaId && ubic[codCD].zonaId !== zonaDest ? JSON.parse(JSON.stringify(ubic[codCD])) : null; // de dónde la cogió Cristales (para deshacer)
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
     // PUERTA: al terminarla se coge también su HOJA (o hojas) de su estantería: sale de allí y se dice de dónde cogerla
@@ -50549,7 +50554,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const hs = codsHojas(codCD, uF).filter((c) => uF[c] && uF[c].zonaId); if (hs.length) { hojasAntesP = {}; for (const ch of hs) { hojasAntesP[ch] = JSON.parse(JSON.stringify(uF[ch])); try { await liberarCodigoLinea(ch); } catch (e) { /* nada */ } }
         txtHojasP = `\n⬅ Coge su hoja: ${hs.map((ch) => `${(zonas.find((q) => q.id === uF[ch].zonaId) || {}).nombre || uF[ch].zonaId} · ESTANTERÍA ${uF[ch].hueco}`).join(" · ")}`; }
       else if (nhDeVentanaCD(hit.w) > 0) txtHojasP = "\n⚠ Su hoja no está en ningún almacén del CRM."; }
-    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, ...(hojasAntesP ? { hojasAntes: hojasAntesP } : {}) }).catch(() => {});
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, ...(hojasAntesP ? { hojasAntes: hojasAntesP } : {}), ...(antesC ? { antes: antesC, porCristales: true } : {}) }).catch(() => {});
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
@@ -50576,13 +50581,13 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
       // ya hecha pero SIN hueco (se ticó antes de que su puesto la llevara a una estantería): se coloca ahora, sin preguntar
-      if (yaM && !(ubic && ubic[codCD]) && !(puestoId === "cristales" && !toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO"))) { await ponerPersianaCD(hit, null); return; }
+      if (yaM && !(ubic && ubic[codCD]) && puestoId !== "cristales") { await ponerPersianaCD(hit, null); return; } // (en Cristales, tocar una ya hecha = deshacer: vuelve a la Línea)
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
         try { const uA = (await fbGet(ref(fbDb, `ubicacionesLinea/${codCD}`))).val(); if (uA && uA.hojasAntes) for (const [ch, x] of Object.entries(uA.hojasAntes)) await volverA(ch, x); } catch (e) { /* nada */ } // sus hojas vuelven a su sitio
-        try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ }
+        if (puestoId === "cristales") await devolverALaLinea(codCD, hit); else { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
         if (puestoId === "cristales") bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
         const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior);
         if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
@@ -50607,6 +50612,15 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const zA = a && zonas.find((q) => q.id === a.zonaId); if (!zA) return false;
     const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (!r) return false;
     const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, antes: null }).catch(() => {}); return true;
+  };
+  // CRISTALES deshecho: la ventana vuelve a donde estaba antes (la Línea); si no se sabe (las de antes del cambio), a la LÍNEA
+  const devolverALaLinea = async (cod, hit) => {
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
+      if (u && u.antes && u.antes.zonaId && await volverA(cod, u.antes)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { porCristales: null }).catch(() => {}); return; }
+      const zL = zonas.find((q) => q.id === "sinPersiana"); if (!zL) return; const base = hit ? (toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "") : String((u && u.base) || "");
+      const r = await colocarAgrupado(zL, cod, base, null);
+      if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { et: hit ? `${hit.w.pos || ""}`.slice(0, 30) : String((u && u.et) || ""), obra: hit ? String(hit.sn.nombre || "").slice(0, 60) : String((u && u.obra) || ""), base, porCristales: null, antes: null }).catch(() => {});
+    } catch (e) { /* nada */ }
   };
   // deshacer un movimiento hecho por un puesto (flag «por…»): vuelve a donde estaba o, si no estaba en ningún sitio, sale
   const deshacerMovido = async (cod, flag) => {
@@ -50846,6 +50860,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
       else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
+      else if (puestoId === "cristales") await devolverALaLinea(codCD, hit);
       else if (esPuestoSimple && u) { if (u.hojasAntes) for (const [ch, x] of Object.entries(u.hojasAntes)) await volverA(ch, x); try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
