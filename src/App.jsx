@@ -49031,9 +49031,48 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const normPV = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
     const persPorRef = new Map(); toArray(ctxPD.persianasAlmacen).forEach((y) => { if (!y || !y.ref) return; const k = normPV(y.ref); if (!persPorRef.has(k)) persPorRef.set(k, []); persPorRef.get(k).push(y); });
     const llevaPersiana = (c, w) => { if (toArray(w.ex).includes("PERSIANA")) return true; const ys = persPorRef.get(normPV(w.pos)) || []; if (!ys.length) return false; const bs = c.bases || new Set(); return ys.some((y) => { const pr = digitosPresu(String(y.presupuesto || "").split(/[·,;\s]+/)[0]); if (pr && bs.has(pr)) return true; const ex = String(y.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); return ex && toArray(ctxPD.uxExpedientes).some((e) => e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === ex && bs.has(digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]))); }); };
+    // DIBUJOS sacados directamente de la HOJA DE CORTE leída (por obra o por nº de presupuesto), aunque Control del día aún no los haya pasado
+    const hojasLista = Object.entries(hojasCDpd || {}).filter(([, h]) => h && toArray(h.modelos).length);
+    cajas.forEach((c) => {
+      if (!c.vs.length || c.vs.every((w) => w.dib)) return;
+      const h = (hojasLista.find(([k]) => c.keys.has(k)) || hojasLista.find(([, x]) => x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0]))) || [])[1]; if (!h) return;
+      const ms = toArray(h.modelos);
+      c.vs.forEach((w) => { if (w.dib) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
+    });
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
-  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes]);
+  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd]);
+  // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
+  const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
+  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || c.vs.some((w) => w.dib)) return null; const u = hojaDeCol(c); if (!u || hojaProbadaPd.current[u]) return null;
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && (h.url === u || (toArray(h.probadas).includes(u)) || (toArray(h.modelos).length && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b))); return ya ? null : { b, u }; }).filter(Boolean);
+  const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
+  useEffect(() => {
+    if (!pendHojaPd.length || hojaLeyendoPd.current) return;
+    hojaLeyendoPd.current = true;
+    (async () => {
+      try {
+        for (const { b, u } of pendHojaPd) {
+          hojaProbadaPd.current[u] = true; const kH = `ppto_${b}`;
+          let mia = false;
+          try { const tr = await runTransaction(ref(fbDb, `controlDiaHojaLeyendo/${kH}`), (act) => { if (act && Date.now() - (act.en || 0) < 300000) return undefined; return { en: Date.now() }; }); mia = tr.committed; } catch (er) { mia = true; }
+          if (!mia) continue;
+          try {
+            const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: new Uint8Array(await bajarArchivoGuardado(u)) }).promise;
+            const t1 = (await (await pdfDoc.getPage(1)).getTextContent()).items.map((i) => i.str).join(" ");
+            if (!esTextoHojaCorte(t1)) throw new Error("no es una hoja de corte");
+            const r = await leerHojaCorteControl(lib, pdfDoc, null);
+            if (!r.modelos.length) throw new Error("no encuentro ningún modelo en la hoja");
+            const suyo = basePresuDia(String(r.pres || "").replace(/\./g, "").split("-")[0]);
+            if (suyo && suyo !== b) throw new Error(`la hoja es del presupuesto ${r.pres}`);
+            const ks = Object.keys(r.dibs || {});
+            for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
+            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId })));
+          } catch (e) { await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), { error: e.message || String(e), url: u, probadas: [u], leidoEn: Date.now(), v: 3, pres: b }).catch(() => {}); }
+        }
+      } finally { hojaLeyendoPd.current = false; }
+    })();
+  }, [clavePendHojaPd]);
   const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
   const qPD = String(qPresDia || "").replace(/\D/g, "");
   const columnas = (enTv) => {
