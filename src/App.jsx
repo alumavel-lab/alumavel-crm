@@ -50482,6 +50482,19 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       await ponerPersianaCD(hit, esPuestoPers ? persianaDeVentanaCD(hit.sn, hit.w) : null);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
+  // MARCOS AGRUPADOS POR PRESUPUESTO: el marco va al hueco libre más cerca de los de su mismo presupuesto; si es un presupuesto nuevo, después del último ocupado
+  const colocarAgrupado = async (zona, cod, base, hasta) => {
+    let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
+    const max = Math.min(hasta || zona.huecos, zona.huecos); const ocup = new Map();
+    Object.entries(u0).forEach(([c, u]) => { if (u && u.zonaId === zona.id && String(c) !== String(cod)) ocup.set(Number(u.hueco), String(u.base || "")); });
+    const libres = []; for (let h = 1; h <= max; h++) if (!ocup.has(h)) libres.push(h);
+    const mismos = base ? [...ocup.entries()].filter(([, b]) => b === base).map(([h]) => h) : [];
+    let orden;
+    if (mismos.length) orden = [...libres].sort((a, b) => Math.min(...mismos.map((m) => Math.abs(a - m))) - Math.min(...mismos.map((m) => Math.abs(b - m))) || a - b);
+    else { const ult = ocup.size ? Math.max(...ocup.keys()) : 0; orden = [...libres.filter((h) => h > ult), ...libres.filter((h) => h <= ult)]; }
+    for (const h of orden) { const r = await ocuparHuecoLinea(zona, cod, quien, u0, h, h, 1); if (r) return r; }
+    return null;
+  };
   // Resto de puestos (sin pistola): tocar la ventana = HECHA en este puesto (verde y contador). Otra vez = quitar. No mueve huecos.
   const marcarHechaPuesto = async (req) => {
     try {
@@ -50509,12 +50522,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
       if (puestoId === "soldadora") {
         const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS];
-        if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}.`;
+        if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
         else {
           const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
           const zS = zonas.find((q) => q.id === (esPta ? "puertas" : "marcos"));
-          const r = zS ? await ocuparHuecoLinea(zS, codS, quien, ubic, 1, esPta ? 6 : null, 1) : null;
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
+          const r = zS ? await colocarAgrupado(zS, codS, base, esPta ? 6 : null) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
@@ -50529,8 +50542,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         } else {
           const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
           const zP = zonas.find((q) => q.id === (esPta ? "puertas" : "marcos"));
-          const r = zP ? await ocuparHuecoLinea(zP, codP, quien, ubic, 1, esPta ? 6 : null, 1) : null;
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), porPilastra: true, ...marcas }).catch(() => {}); txtAlm = `\n➡ No estaba en el almacén: METIDA en ${zP.nombre} · ESTANTERÍA ${r.hueco}, con herraje puesto${lleva ? " y pilastra puesta" : ""}.`; }
+          const r = zP ? await colocarAgrupado(zP, codP, base, esPta ? 6 : null) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porPilastra: true, ...marcas }).catch(() => {}); txtAlm = `\n➡ No estaba en el almacén: METIDA en ${zP.nombre} · ESTANTERÍA ${r.hueco}, con herraje puesto${lleva ? " y pilastra puesta" : ""}.`; }
           else txtAlm = `\n⚠ No estaba en el almacén y ${zP ? `${zP.nombre} está LLENO` : "no encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
