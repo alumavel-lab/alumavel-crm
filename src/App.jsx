@@ -53250,6 +53250,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
 
   const [selPl, setSelPl] = useState([]); // obras marcadas para moverlas juntas
   const [diaSelPl, setDiaSelPl] = useState("");
+  const [listaPlAbierta, setListaPlAbierta] = useEstadoLocal("crm_planListaAbierta", true); // la lista de obras para fabricar se abre/cierra (se recuerda)
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
   const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
@@ -53344,7 +53345,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <h3 className="font-display font-bold text-slate-800 mr-auto">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+          <button type="button" onClick={() => setListaPlAbierta(!listaPlAbierta)} title={listaPlAbierta ? "Cerrar la lista" : "Abrir la lista"} className="mr-auto flex items-center gap-2 text-left">
+            <span className="text-slate-500 text-sm w-4">{listaPlAbierta ? "▼" : "▶"}</span>
+            <h3 className="font-display font-bold text-slate-800">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+            <span className="text-[11px] font-semibold text-sky-700 underline">{listaPlAbierta ? "cerrar" : "abrir"}</span>
+          </button>
         </div>
         {onMeterEnPlanning && (() => {
           // BUSCADOR: meter en el planning una obra por nº de presupuesto, nº de obra, nombre o expediente
@@ -53386,6 +53391,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             </div>
           );
         })()}
+        {listaPlAbierta && <>
         <div className="flex flex-wrap items-center justify-end gap-2 mb-2">
           <button onClick={() => setQuitadas(listasOrd.map((o) => o.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">Vaciar planning (elegir yo una a una)</button>
           <button onClick={() => setQuitadas([])} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Marcar todas</button>
@@ -53404,6 +53410,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           {listas.length === 0 && <p className="px-4 py-4 text-sm text-slate-400">No hay obras con todo el material ahora mismo.</p>}
           {listasOrd.map((o, i) => filaObra(o, <input type="checkbox" checked={!quitadas.includes(o.id)} onChange={(e) => setQuitadas(e.target.checked ? quitadas.filter((x) => x !== o.id) : [...quitadas, o.id])} />, listasOrd, i))}
         </div>
+        </>}
         {rapidosHechos.length > 0 && (
           <details className="mb-3 text-xs text-slate-500">
             <summary className="cursor-pointer">Rápidos ya hechos ({rapidosHechos.length})</summary>
