@@ -61406,7 +61406,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const cod = limpiaId(`cd_${k}__${id}`); if (enLineaHechas.current.has(cod)) return;
       const u = ubicLocal[cod];
       const vieneDeAntes = u && ["persianaA", "persianaB", "puertasTerminadas"].includes(u.zonaId);
-      const nueva = !u && x.ts && new Date(x.ts).toLocaleDateString("sv-SE") === hoyL && !(marcasCrCD && marcasCrCD[cod.slice(3)]);
+      const nueva = false; // (quitado) una ventana marcada en Control del día que NO está en ningún almacén ya no se mete sola en la Línea: solo pasan las que ya están en Persiana salida o Puertas terminadas
       if (!vieneDeAntes && !nueva) return;
       const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
       enLineaHechas.current.add(cod);
