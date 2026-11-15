@@ -48241,7 +48241,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
 const claveVivLinea = (h) => (h && h.ventana ? `${h.dueno ? h.dueno.key : ""}|${h.ventana.grupo || ""}|${h.ventana.cliente || ""}` : "");
 // Qué se marca al leer una ventana: su vivienda (verde fuerte) y, además, el resto de la misma obra o del mismo cliente (verde claro)
 const resaltarDe = (h) => (h && h.ventana ? { viv: claveVivLinea(h), obra: h.dueno ? h.dueno.key : "", cli: String(h.ventana.cliente || "").trim().toLowerCase() } : null);
-function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control = false, resaltar = null }) {
+function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control = false, resaltar = null, accionPieza = null }) {
   // Color de la ventana según su persiana (en TODOS los sitios donde sale el mapa): VERDE = persiana puesta y bien · NARANJA = con incidencia
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
@@ -48306,7 +48306,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
         );
       })}
       {abierto && (
-        <HuecoLineaModal zonaId={abierto.z.id} zonaNombre={abierto.z.nombre} hueco={abierto.hu} piezas={abierto.piezas} indice={indice} admin={admin} control={control}
+        <HuecoLineaModal zonaId={abierto.z.id} zonaNombre={abierto.z.nombre} hueco={abierto.hu} piezas={abierto.piezas} indice={indice} admin={admin} control={control} accionPieza={accionPieza}
           onLiberar={() => { const { z, hu, piezas } = abierto; setAbierto(null); liberar(z, hu, piezas); }} onCerrar={() => setAbierto(null)} />
       )}
     </div>
@@ -48314,7 +48314,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
 }
 
 // Detalle de una estantería: la ventana completa (dibujo, piezas, dónde está cada una, historial) y reimprimir la pegatina de cada pieza
-function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin, control = false, onLiberar, onCerrar }) {
+function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin, control = false, onLiberar, onCerrar, accionPieza = null }) {
   const zonasM = useZonasLinea();
   const escaneos = useEscaneosLinea();
   // Ventanas puestas SIN pistola (por la hoja de corte, código «cd_…»): sus datos, su hoja de corte y DEVOLVERLA (deshacer)
@@ -48387,6 +48387,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
+                {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
                 <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
@@ -50723,6 +50724,15 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   useEffect(() => { if (!layoutSimple || !ultimo) return undefined; setToastU(ultimo); const t = setTimeout(() => setToastU(null), 6000); return () => clearTimeout(t); }, [ultimo]);
   const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
+  // Desde el HUECO (pinchando la estantería): hacer el trabajo de este puesto sobre esa pieza, sin buscarla en «Obras del día»
+  const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
+    const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
+    if (puestoId === "herraje" && mh && (zId === "hojas" || zId === "hojasPilastra" || zId === "puertas" || zId === "puertas2")) return { t: `🔧 Herraje puesto → Hojas con herraje`, fn: () => marcarHechaPuesto({ ...req, tipo: `h${mh[1]}` }) };
+    if (puestoId === "pilastra" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) { const u = ubic && ubic[cod]; return u && u.herraje ? null : { t: "🔧 Herraje (y pilastra) puesto", fn: () => marcarHechaPuesto(req) }; }
+    if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) return { t: "💍 Matrimonio hecho → a su banco", fn: () => marcarHechaPuesto(req) };
+    if (esPuestoSimple && !/~H/.test(String(cod)) && zId !== puestoId) return { t: "✓ Hecha en este puesto", fn: () => tocarVentanaPuesto(req) };
+    return null;
+  };
   const quitarTicada = async (claveM, m) => {
     try {
       let hit = null; Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => limpiaCodL(`${k}__${w2.id}`) === claveM); if (w) hit = { k, sn, w }; });
@@ -51013,7 +51023,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {!layoutSimple && puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
-        <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        <MapaZonasLinea accionPieza={accionPiezaPuesto} resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         {toastU && <div onClick={() => setToastU(null)} className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[94vw] w-[40rem] cursor-pointer rounded-xl px-4 py-3 shadow-2xl text-base font-bold whitespace-pre-line ${toastU.ok ? (toastU.repetida ? "bg-amber-500 text-slate-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{toastU.texto}</div>}
         {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const nH = nh == null ? nhDeVentanaCD(hit.w) : nH0(nh);
           const esHerr = !!elegirSold.herraje;
