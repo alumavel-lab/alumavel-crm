@@ -48969,6 +48969,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
   // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
   const marcasTodosPP = useObjetoFb("marcasPuestoLinea"); // ticadas a mano en TODOS los puestos (para ver por dónde ha pasado cada ventana)
+  // HOJA DE CORTE de cada obra (botón en su columna) y si la obra tiene dibujos o no
+  const ctxPD = React.useContext(IncidenciasCristalCtx) || {};
+  const hojasCDpd = useObjetoFb("controlDiaHojaCorte"); const hojasAuxPd = useObjetoFb("auxiliaresHojas");
+  const hojaDeCol = (c) => { for (const k of [...(c.keys || [])]) { const h = hojasCDpd && hojasCDpd[k]; if (h && h.url) return h.url; } const b = [...(c.bases || [])][0] || basePresuDia(c.num); return urlHojaCorte({ pp: b, uxExpedientes: ctxPD.uxExpedientes, proyectos: ctxPD.proyectos, hojasCD: hojasCDpd, hojasAux: hojasAuxPd }); };
   const marcasPP = (marcasTodosPP && marcasTodosPP[puestoId]) || {};
   // Por dónde ha pasado cada ventana: puesto, fecha y hora (y quién), de lo ticado a mano y de lo leído con la pistola
   const fmtTick = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
@@ -49039,6 +49043,12 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                 <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
                 <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin ventanas (falta la hoja de corte o las etiquetas)" : `${c.hechas} de ${c.vs.length} leídas aquí${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
               </button>
+                {!enTv && (() => { const u = hojaDeCol(c); const sinDib = c.vs.length > 0 && !c.vs.some((v) => v.dib || (v.fab && v.tip)); return (
+                  <div className="px-2 py-1 flex flex-wrap items-center gap-1 bg-slate-100" onClick={(e) => e.stopPropagation()}>
+                    {u ? <a href={u} target="_blank" rel="noreferrer" className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-indigo-500 text-white">📄 Hoja de corte</a> : <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white">sin hoja de corte subida</span>}
+                    {sinDib && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950" title="Sube la hoja de corte de la obra en Control del día para que salgan los dibujos">sin dibujos</span>}
+                  </div>
+                ); })()}
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
                   <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
