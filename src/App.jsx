@@ -25534,6 +25534,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
   const filtered = useMemo(() => {
     return instalacionesVisibles.filter((i) => {
       if (estadoFiltro === "__sinfecha") { if (i.estado === "Finalizada" || datos(i).fechaMontaje) return false; }
+      else if (estadoFiltro === "__finsinfecha") { if (i.estado !== "Finalizada" || datos(i).fechaMontaje) return false; }
       else if (estadoFiltro && i.estado !== estadoFiltro) return false;
       if (!q) return true;
       const { nombreMostrar, clienteMostrar } = datos(i);
@@ -25660,6 +25661,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
         <Select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} className="max-w-[220px]">
           <option value="">Todos los estados</option>
           <option value="__sinfecha">🔧 Sin fecha de montaje</option>
+          <option value="__finsinfecha">⚠ Finalizadas SIN fecha (completar)</option>
           {ESTADO_INSTALACION.map((t) => <option key={t}>{t}</option>)}
         </Select>
         <button
@@ -25698,7 +25700,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
                   <td className="px-4 py-3 font-medium text-slate-800">{d.nombreMostrar}{!d.proyecto && <Badge className="ml-2 bg-violet-50 text-violet-700 ring-violet-200">Sin proyecto</Badge>}</td>
                   <td className="px-4 py-3 text-slate-600">{d.clienteMostrar}</td>
                   <td className="px-4 py-3"><Badge className={ESTADO_INSTALACION_STYLE[i.estado]}>{i.estado}</Badge></td>
-                  <td className="px-4 py-3">{d.fechaMontaje ? <span className="font-semibold text-slate-700">{fmtDate(d.fechaMontaje)}</span> : i.estado === "Finalizada" ? "—" : <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-rose-100 text-rose-700">SIN FECHA</span>}</td>
+                  <td className="px-4 py-3">{d.fechaMontaje ? <span className="font-semibold text-slate-700">{fmtDate(d.fechaMontaje)}</span> : <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-rose-100 text-rose-700">SIN FECHA</span>}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-500">{d.presupuesto ? money(d.presupuesto) : "—"}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-600">{money(d.costeTotal)}</td>
                   <td className={`px-4 py-3 text-right font-mono-num font-semibold ${d.diferencia < 0 ? "text-rose-600" : "text-emerald-600"}`}>{d.presupuesto ? money(d.diferencia) : "—"}</td>
