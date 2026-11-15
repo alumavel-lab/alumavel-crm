@@ -49019,8 +49019,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     });
     // Puesto PUERTA: solo las PUERTAS (posición P…, o marcadas como puerta). Lo OSCILOBATIENTE (dibujo con las dos rayas en aspa) es VENTANA aunque sea alta (A01.001 970×2190)
     const esPuertaPanel = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
-    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
-      .filter((c) => (puestoId === "puerta" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
+    // Puesto PILASTRA: TODOS los marcos menos las puertas (las puertas solo si llevan travesaño/pilastra)
+    const vePilastra = (w) => !esPuertaPanel(w) || toArray(w.ex).includes("PILASTRA");
+    return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
+      .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas]);
   const [qPresDia, setQPresDia] = useState(""); // filtrar por presupuesto
   const qPD = String(qPresDia || "").replace(/\D/g, "");
@@ -50237,7 +50239,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
   const res = [];
   if (dP.length >= 2) Object.entries(snapCD || {}).forEach(([k, sn]) => {
     if (!sn || !((sn.tipo === "u" && uxsB.some((u) => String(u.id) === String(sn.id))) || toArray(sn.codigos).some((c) => basesB.has(basePresuDia(c))) || (dP.length >= 3 && String(sn.nombre || "").replace(/\./g, "").includes(dP)))) return;
-    toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
+    toArray(sn.ventanas).forEach((w) => { if (soloPuertas && !esPuerta(w)) return; if (puestoId === "pilastra" && esPuerta(w) && !toArray(w.ex).includes("PILASTRA")) return; const rv = String(w.pos || "").replace(/\D/g, "").replace(/^0+/, ""); if (dV && !(rv === dV || rv.endsWith(dV))) return; res.push({ k, sn, w }); });
   });
   return (
     <div className="mb-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
@@ -50261,6 +50263,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               {w.dib ? <div className="bg-white rounded"><DibujoPlan hash={w.dib} alto={50} /></div> : null}
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
+              {toArray(w.ex).map((x) => <span key={x} className={`text-xs font-extrabold px-1.5 py-0.5 rounded ${x === "PILASTRA" ? "bg-rose-600 text-white" : "bg-amber-400 text-amber-950"}`}>LLEVA {x === "PILASTRA" ? "PILASTRA / TRAVESAÑO" : x}</span>)}
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
               {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
@@ -50426,7 +50429,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
       await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
       fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
-      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.`, false);
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : puestoId === "pilastra" ? "\nSin pilastra: solo herrajes." : ""}`, false);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
@@ -61837,7 +61840,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const inf = infoVent(o, v); if (inf && inf.desc) textos.push(inf.desc);
     const ih = infoHoja(o, v); if (ih) textos.push(toArray(ih.extras).join(" "), ih.desc || "");
     const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
-    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
+    const t2 = t.replace(/\b(sin|no\s+lleva)\s+(pilastra|travesa[ñn]o)/gi, " ");
+    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i], ["PILASTRA", /pilastra|travesa[ñn]o/i]].filter(([n, re]) => re.test(n === "PILASTRA" ? t2 : t)).map(([n]) => n);
   };
   // El «Almacén del día» usa EXACTAMENTE estas ventanas (con su dibujo, color, medidas y lo que lleva: solape, mosquitera, postigo…): se publican solo las obras que cambian
   const publicadoVentCD = useRef({});
