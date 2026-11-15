@@ -48250,7 +48250,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
-  const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = u.et; });
+  const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
   const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return etCDZ[cod] || cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
@@ -50494,12 +50494,33 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(puestoId)}.\n\n¿Quitarla?`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
+        if (puestoId === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
       await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
       fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
-      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : puestoId === "pilastra" ? "\nSin pilastra: solo herrajes." : ""}`, false);
+      // PILASTRA (sin pistola, de momento): se mira si el marco está en el almacén de MARCOS SOLDADOS. Si está, se marca ahí «herraje puesto»
+      // (y «pilastra puesta» si la lleva). Si no está, se mete en el almacén de marcos (las puertas, en su almacén de puertas, huecos 1-6) ya marcado.
+      let txtAlm = "";
+      if (puestoId === "pilastra") {
+        const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const lleva = toArray(hit.w.ex).includes("PILASTRA");
+        const marcas = { herraje: Date.now(), ...(lleva ? { pilas: Date.now() } : {}) };
+        const uP = ubic && ubic[codP];
+        if (uP && uP.zonaId) {
+          await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), marcas).catch(() => {});
+          const zN = (zonas.find((q) => q.id === uP.zonaId) || {}).nombre || uP.zonaId;
+          txtAlm = `\n📍 Estaba en ${zN} · ESTANTERÍA ${uP.hueco}: marcada con herraje puesto${lleva ? " y pilastra puesta" : ""}.`;
+        } else {
+          const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+          const zP = zonas.find((q) => q.id === (esPta ? "puertas" : "marcos"));
+          const r = zP ? await ocuparHuecoLinea(zP, codP, quien, ubic, 1, esPta ? 6 : null, 1) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), porPilastra: true, ...marcas }).catch(() => {}); txtAlm = `\n➡ No estaba en el almacén: METIDA en ${zP.nombre} · ESTANTERÍA ${r.hueco}, con herraje puesto${lleva ? " y pilastra puesta" : ""}.`; }
+          else txtAlm = `\n⚠ No estaba en el almacén y ${zP ? `${zP.nombre} está LLENO` : "no encuentro el almacén de marcos"}: no se ha podido meter.`;
+        }
+      }
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${puestoId === "pilastra" ? (toArray(hit.w.ex).includes("PILASTRA") ? "\n✓ Herraje puesto · ⚠ LLEVA PILASTRA / TRAVESAÑO: pilastra puesta." : "\n✓ Herraje puesto (sin pilastra).") : toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : ""}${txtAlm}`, false);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
