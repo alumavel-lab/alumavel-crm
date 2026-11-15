@@ -47562,7 +47562,7 @@ const ZONAS_LINEA_DEFECTO = [
 ];
 const ZONAS_POR_PUESTO = {
   soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2"],
-  pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas"],
+  pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas", "puertas"],
   herraje: ["hojas", "hojasHerraje"],
   colgado: ["marcosPilastra", "marcos", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana"],
   persianaA: ["colgadoA", "persianaA"],
@@ -50524,6 +50524,23 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
+  // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
+  const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
+  const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
+  const quitarTicada = async (claveM, m) => {
+    try {
+      let hit = null; Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => limpiaCodL(`${k}__${w2.id}`) === claveM); if (w) hit = { k, sn, w }; });
+      const codCD = (m && m.cod) || limpiaCodL(`cd_${claveM}`);
+      await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${(m && m.fecha) || hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+      const u = ubic && ubic[codCD];
+      if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
+      else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
+      if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
+      if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
+      return true;
+    } catch (e) { return false; }
+  };
   // CRISTALES: cuando se dan de baja TODOS los cristales de una ventana (en el caballete), la ventana se da por HECHA sola (como tocarla)
   const marcasCrist = useObjetoFb(`marcasPuestoLinea/${puestoId === "cristales" ? "cristales" : "_ninguno"}`);
   const hechasCrAuto = useRef(new Set());
@@ -50798,6 +50815,36 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        {layoutSimple && (() => { const fT = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
+          const lista = Object.entries(marcasEste || {}).filter(([, m]) => m).sort((a, b) => (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); const hoyT = hoyISO();
+          const deHoy = lista.filter(([, m]) => m.fecha === hoyT); const viejas = lista.filter(([, m]) => m.fecha !== hoyT);
+          const borrarVarias = async (xs, txt) => { if (!xs.length || !window.confirm(`¿Quitar ${xs.length} ventana${xs.length === 1 ? "" : "s"} ticada${xs.length === 1 ? "" : "s"} ${txt} en ${nombrePuestoLinea(puestoId)}?\n\nSe deshace lo que hizo cada tick (contador, hueco que ocupó${esPuestoPers ? ", persiana" : ""}${puestoId === "cristales" ? ", cristales" : ""}${puestoId === "pilastra" ? ", herraje/pilastra" : ""}).`)) return; for (const [k, m] of xs) await quitarTicada(k, m); avisar(true, `Quitadas ${xs.length}.`, false); };
+          return (
+          <div style={{ order: -1 }} className="mb-3 rounded-lg border border-slate-300 bg-slate-50">
+            <button type="button" onClick={() => setVerTicadas(!verTicadas)} className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left text-sm">
+              <span className="text-slate-500 w-4">{verTicadas ? "▼" : "▶"}</span>
+              <b className="text-slate-800">↩ Ticadas en este puesto</b>
+              <span className="text-slate-600">hoy {deHoy.length}{viejas.length ? ` · de otros días ${viejas.length}` : ""}</span>
+              <span className="ml-auto text-[11px] font-semibold text-sky-700 underline">{verTicadas ? "cerrar" : "ver / quitar"}</span>
+            </button>
+            {verTicadas && <div className="px-3 pb-2">
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                {deHoy.length > 0 && <button type="button" onClick={() => borrarVarias(deHoy, "hoy")} className="text-xs font-bold px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white">🗑 Quitar todas las de hoy ({deHoy.length})</button>}
+                {viejas.length > 0 && <button type="button" onClick={() => borrarVarias(viejas, "de otros días")} className="text-xs font-bold px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white">🗑 Quitar las de otros días ({viejas.length})</button>}
+              </div>
+              {!lista.length && <p className="text-xs text-slate-500">No hay ninguna ticada.</p>}
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-200">
+                {lista.map(([k, m]) => { const u = ubic && ubic[(m.cod) || limpiaCodL(`cd_${k}`)]; const zN = u ? ((zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId) : ""; return (
+                  <div key={k} className="flex flex-wrap items-center gap-2 py-1 text-xs">
+                    <b className="text-slate-800">{m.pos || "?"}</b>
+                    <span className="text-slate-600">{m.base ? `Ppto ${pptoBonito(m.base)}` : ""}</span>
+                    <span className="text-slate-500">{fT(m.ts)}{m.por ? ` · ${String(m.por).split("@")[0]}` : ""}</span>
+                    {u && <span className="text-sky-700">📍 {zN} {u.hueco}{u.herraje ? " H✓" : ""}{u.pilas ? " P✓" : ""}</span>}
+                    <button type="button" onClick={async () => { if (!window.confirm(`¿Quitar ${m.pos || "esta ventana"} de ticadas en ${nombrePuestoLinea(puestoId)}?`)) return; const ok = await quitarTicada(k, m); avisar(ok, ok ? `${m.pos || ""}: quitada.` : "No se pudo quitar.", false); }} className="ml-auto text-[11px] font-bold px-2 py-0.5 rounded border border-rose-300 text-rose-700 bg-white">Quitar</button>
+                  </div>); })}
+              </div>
+            </div>}
+          </div>); })()}
         {layoutSimple && !esPuestoPers && <div style={{ order: -2 }}><BuscadorVentanaCD puestoId={puestoId} onTocar={tocarVentanaPuesto} ubic={ubic} soloPuertas={puestoId === "puerta"} /></div>}
         <div style={esPuestoPers ? { order: -2 } : undefined}><AlmacenPuestoSoloLectura plegable={esPuestoPers} puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin || puestoId === "cristales" ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null}
           onPersianaPuesta={(puestoId === "persianaA" || puestoId === "persianaB") ? async (x) => {
