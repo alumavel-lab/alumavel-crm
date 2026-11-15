@@ -48274,6 +48274,8 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // cada OBRA COMPLETA con su COLOR (8 colores que se reparten por orden) y su nº de presupuesto en el hueco
   const COLORES_OBRA = COLORES_OBRA_LINEA;
   const colorObra = useMemo(() => coloresObrasLinea(obrasCompletas, avisosZ), [obrasCompletas, avisosZ]);
+  // nº de presupuesto de una pieza de la hoja de corte («cd_…»): el guardado al colocarla o, si no, el de su obra
+  const pptoDeCodZ = (cod) => { const u = ubic && ubic[cod]; if (u && u.base) return String(u.base); const m = /^cd_(.+)__(.+?)(?:~H\d?)?$/.exec(String(cod)); const sn = m && snapZ && snapZ[m[1]]; return sn ? (toArray(sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "") : ""; };
   const obraDePiezas = (piezas) => { const m = /^cd_(.+)__(.+?)$/.exec(String((piezas[0] || {}).cod || "")); return m ? m[1] : ""; };
   const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
@@ -48319,8 +48321,9 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
                   <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
-                    <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
-                    {ZONAS_FIN.includes(z.id) && piezas.length > 0 && (() => { const b = (ubic && ubic[piezas[0].cod] && ubic[piezas[0].cod].base) || ""; return b ? <div className="truncate text-[9px] font-extrabold opacity-95">Ppto {pptoBonito(b)}</div> : null; })()}
+                    <b>{hu}</b>
+                    {piezas.length > 0 && (() => { const b = pptoDeCodZ(piezas[0].cod); return b ? <div className="truncate text-[10px] font-extrabold">Ppto {pptoBonito(b)}</div> : null; })()}
+                    {piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
               })}
