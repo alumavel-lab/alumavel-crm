@@ -47618,7 +47618,7 @@ const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^
 // ¿Es PUERTA? (por la hoja de corte: tipo puerta, posición P…, o «PUERTA» en la descripción). Lo oscilobatiente es VENTANA aunque sea alto.
 const esPuertaVentanaCD = (w) => { if (!w) return false; const t = `${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`; if (/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(t)) return false; return w.tp === "puerta" || /^P\d/i.test(String(w.pos || "").trim()) || /\bPUERTA\b/i.test(String(w.desc || "")); };
 // Nº de HOJAS de una ventana: lo que dice la hoja de corte; si no, «PUERTA 1 HOJA» / «2 HOJAS» en la descripción; si no, por la medida
-const nhDeVentanaCD = (w) => { if (!w) return 2; if (typeof w.nh === "number") return w.nh; if (w.tp === "fijo") return 0; const d = String(w.desc || ""); const m = /\b(\d)\s*HOJAS?\b/i.exec(d) || /\bOB\s*(\d)\s*H\b/i.exec(d); if (m) return Math.min(4, Number(m[1])); const ml = /\b(una|dos|tres)\s+hojas?\b/i.exec(d); if (ml) return { una: 1, dos: 2, tres: 3 }[ml[1].toLowerCase()]; return hojasSugeridas({ medida: String(w.medida || "").replace(/\s*[x×]\s*/i, "x") }); };
+const nhDeVentanaCD = (w) => { if (!w) return 2; if (typeof w.nh === "number") return w.nh; if (w.tp === "fijo") return 0; const d = String(w.desc || ""); const m = /\b(\d)\s*HOJAS?\b/i.exec(d) || /\bOB\s*(\d)\s*H\b/i.exec(d); if (m) return Math.min(4, Number(m[1])); const ml = /\b(una|dos|tres)\s+hojas?\b/i.exec(d); if (ml) return { una: 1, dos: 2, tres: 3 }[ml[1].toLowerCase()]; if (/\bfijos?\b/i.test(d) && !/practicable|oscilo|abatible|corredera|puerta/i.test(d)) return 0; /* «compuesta 1 Fijo»: sin hojas */ return hojasSugeridas({ medida: String(w.medida || "").replace(/\s*[x×]\s*/i, "x") }); };
 const hojasDe = (v, ov) => {
   const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
   const o = ov && base ? parseInt(ov[base], 10) : 0;
@@ -50619,7 +50619,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
         else {
           const esPta = esPuertaVentanaCD(hit.w);
-          const zS = zonas.find((q) => q.id === (esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
+          // FIJO (sin hojas): no pasa por pilastra/herraje/matrimonio → de la soldadora DIRECTO A LA LÍNEA (si lleva persiana, va al almacén de marcos como los demás)
+          const fijoDirecto = !hojaT && !esPta && nhDeVentanaCD(hit.w) === 0 && !toArray(hit.w.ex).includes("PERSIANA") && !persianaDeVentanaCD(hit.sn, hit.w);
+          const zS = zonas.find((q) => q.id === (fijoDirecto ? "sinPersiana" : esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
           // la otra hoja de la MISMA ventana va al mismo hueco (2 hojas por hueco); si no, al más cerca de su presupuesto. Puertas: marco 1-6 · hoja 7-12
           let uF = ubic || {}; if (hojaT) { try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ } }
           const hermana = hojaT && zS && !esPta ? codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), uF).map((c) => uF[c]).find((u) => u && u.zonaId === zS.id) : null;
@@ -50632,7 +50634,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
               if (r2) { const { zonaId, hueco, slot, ts, ...resto } = datos; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); juntas += `\n↔ Su otra hoja estaba en la ${hueco}: júntalas en la ${r.hueco}.`; }
             }
           }
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.${juntas}`; }
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : fijoDirecto ? "FIJO (sin hojas): directo" : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.${juntas}`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
@@ -50728,6 +50730,11 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
     const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
     if (puestoId === "herraje" && mh && (zId === "hojas" || zId === "hojasPilastra" || zId === "puertas" || zId === "puertas2")) return { t: `🔧 Herraje puesto → Hojas con herraje`, fn: () => marcarHechaPuesto({ ...req, tipo: `h${mh[1]}` }) };
+    // FIJO que está en el almacén de marcos (sin pilastra): aquí no se le hace nada → se manda a la Línea
+    if ((puestoId === "pilastra" || puestoId === "colgado" || puestoId === "soldadora") && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra"].includes(zId) && nhDeVentanaCD(w) === 0 && !toArray(w.ex).includes("PILASTRA") && !toArray(w.ex).includes("PERSIANA")) return { t: "➡ Es FIJO: mandarlo a la Línea", fn: async () => {
+      const zL = zonas.find((q) => q.id === "sinPersiana"); const prev = ubic && ubic[cod] ? JSON.parse(JSON.stringify(ubic[cod])) : null; const r = zL ? await colocarAgrupado(zL, cod, base, null) : null;
+      if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { et: `${w.pos || ""}`.slice(0, 30), obra: String((sn && sn.nombre) || "").slice(0, 60), base, ...(prev ? { antes: prev } : {}) }).catch(() => {}); avisar(true, `${w.pos}: FIJO → Línea · ESTANTERÍA ${r.hueco}.`, false); } else avisar(false, "La Línea está LLENA.");
+    } };
     if (puestoId === "pilastra" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) { const u = ubic && ubic[cod]; return u && u.herraje ? null : { t: "🔧 Herraje (y pilastra) puesto", fn: () => marcarHechaPuesto(req) }; }
     if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) return { t: "💍 Matrimonio hecho → a su banco", fn: () => marcarHechaPuesto(req) };
     if (esPuestoSimple && !/~H/.test(String(cod)) && zId !== puestoId) return { t: "✓ Hecha en este puesto", fn: () => tocarVentanaPuesto(req) };
