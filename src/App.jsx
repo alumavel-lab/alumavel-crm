@@ -50562,8 +50562,16 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           // la otra hoja de la MISMA ventana va al mismo hueco (2 hojas por hueco); si no, al más cerca de su presupuesto. Puertas: marco 1-6 · hoja 7-12
           let uF = ubic || {}; if (hojaT) { try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ } }
           const hermana = hojaT && zS && !esPta ? codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), uF).map((c) => uF[c]).find((u) => u && u.zonaId === zS.id) : null;
-          const r = !zS ? null : (hermana && await ocuparHuecoLinea(zS, codS, quien, uF, Number(hermana.hueco), Number(hermana.hueco), zS.cap || 2)) || await colocarAgrupado(zS, codS, base, esPta ? (hojaT ? 12 : 6) : null, esPta && hojaT ? 7 : 1);
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
+          let r = !zS ? null : (hermana && await ocuparHuecoLinea(zS, codS, quien, uF, Number(hermana.hueco), Number(hermana.hueco), zS.cap || 2)) || await colocarAgrupado(zS, codS, base, esPta ? (hojaT ? 12 : 6) : null, esPta && hojaT ? 7 : 1);
+          // LAS HOJAS DE UNA VENTANA SIEMPRE JUNTAS: si su hueco estaba lleno, esta va a uno vacío y se lleva allí a su(s) hermana(s)
+          let juntas = "";
+          if (r && hermana && Number(hermana.hueco) !== Number(r.hueco)) {
+            for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), uF).filter((c) => c !== codS && uF[c] && uF[c].zonaId === zS.id)) {
+              const datos = JSON.parse(JSON.stringify(uF[ch])); const r2 = await ocuparHuecoLinea(zS, ch, quien, null, Number(r.hueco), Number(r.hueco), zS.cap || 2);
+              if (r2) { const { zonaId, hueco, slot, ts, ...resto } = datos; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); juntas += `\n↔ Su otra hoja estaba en la ${hueco}: júntalas en la ${r.hueco}.`; }
+            }
+          }
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.${juntas}`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
