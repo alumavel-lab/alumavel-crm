@@ -53145,6 +53145,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     } catch (e) { /* nada */ }
     return out;
   };
+  // LO QUE FALTA POR TERMINAR, POR SEMANA: cada obra del planning en su día (el primero en que sale), si está hecha en Control del día y qué documentación le falta
+  const pendPorSemana = (() => { const vistos = new Set(); const sem = new Map(); const lunes = (f) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    try { diasVer.forEach((f) => { const mete = (k, it) => { if (vistos.has(k)) return; vistos.add(k); const l = lunes(f); if (!sem.has(l)) sem.set(l, []); sem.get(l).push({ ...it, f }); };
+      ((plan1.dias[f] && plan1.dias[f].trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; mete(t.id, { txt: o ? pptoTxt(o) : t.nombre, hecha: !!(o && obraHechaCD(o)), inc: !!(o && obraConIncPl(o)), fl: o ? faltasObra(o.ref) : [], horas: Number(t.horas) || 0, ventanas: (o && o.ventanas) || 0 }); });
+      extrasDiaAlm(f).forEach((x) => mete(x.k, { txt: x.ppto || x.nombre, hecha: false, inc: false, fl: faltasObra(x.ref), horas: Number(x.horas) || 0, ventanas: 0 })); }); } catch (e) { /* nada */ }
+    return [...sem.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([l, obras]) => ({ l, obras, faltan: obras.filter((o) => !o.hecha) })); })();
   const obrasConFaltas = (() => { const m = new Map(); try { diasVer.forEach((f) => { ((plan1.dias[f] && plan1.dias[f].trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; if (o && !m.has(t.id)) { const fl = faltasObra(o.ref); if (fl.length) m.set(t.id, { txt: pptoTxt(o), fl }); } }); extrasDiaAlm(f).forEach((x) => { if (!m.has(x.k)) { const fl = faltasObra(x.ref); if (fl.length) m.set(x.k, { txt: x.ppto || x.nombre, fl }); } }); }); } catch (e) { /* nada */ } return [...m.values()]; })();
   const soltarPV = (id, f) => {
     const o = nombrePorId[id]; if (!o || !f) return;
@@ -53250,7 +53256,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
 
   const [selPl, setSelPl] = useState([]); // obras marcadas para moverlas juntas
   const [diaSelPl, setDiaSelPl] = useState("");
-  const [listaPlAbierta, setListaPlAbierta] = useEstadoLocal("crm_planListaAbierta", true); // la lista de obras para fabricar se abre/cierra (se recuerda)
+  const [listaPlAbierta, setListaPlAbierta] = useEstadoLocal("crm_planListaAbierta", true);
+  const [atasAbierto, setAtasAbierto] = useEstadoLocal("crm_planAtasAbierto", true); const [semAtasAbiertas, setSemAtasAbiertas] = useEstadoLocal("crm_planSemAtas", {}); // obras de días pasados: desplegable por semana
+  const [pendPlAbierto, setPendPlAbierto] = useEstadoLocal("crm_planPendAbierto", true); const [semPlAbiertas, setSemPlAbiertas] = useEstadoLocal("crm_planSemAbiertas", {}); // «Lo que falta por terminar», por semana // la lista de obras para fabricar se abre/cierra (se recuerda)
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
   const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
@@ -53280,12 +53288,28 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
       {atascadas.length > 0 && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-2">
           <div className="flex flex-wrap items-center gap-3">
-            <p className="font-bold text-amber-900">⏰ {atascadas.length} obra{atascadas.length > 1 ? "s" : ""} en días ya pasados sin terminar</p>
+            <button type="button" onClick={() => setAtasAbierto(!atasAbierto)} className="flex items-center gap-2 text-left">
+              <span className="text-amber-700 w-4">{atasAbierto ? "▼" : "▶"}</span>
+              <p className="font-bold text-amber-900">⏰ {atascadas.length} obra{atascadas.length > 1 ? "s" : ""} en días ya pasados sin terminar</p>
+              <span className="text-[11px] font-semibold text-sky-700 underline">{atasAbierto ? "cerrar" : "abrir"}</span>
+            </button>
             <button onClick={() => pasarObras(atascadas, primerLaborableDesde(hoy))} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700">Pasar todas a hoy</button>
             <span className="text-xs text-amber-800">Ya no saltan solas de día: decide aquí a qué día van.</span>
           </div>
-          <div className="divide-y divide-amber-200">
-            {atascadas.map((o) => (
+          {atasAbierto && (() => { const lunesA = (f) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); }; const finA = (l) => { const d = new Date(l + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); };
+            const semA = new Map(); atascadas.forEach((o) => { const l = lunesA(plan1.obras[o.id].inicio); if (!semA.has(l)) semA.set(l, []); semA.get(l).push(o); });
+            return [...semA.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([l, obs]) => { const ab = semAtasAbiertas[l] !== false; return (
+          <div key={l} className="rounded-md border border-amber-200 bg-white/60">
+            <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+              <button type="button" onClick={() => setSemAtasAbiertas({ ...semAtasAbiertas, [l]: !ab })} className="flex items-center gap-2 text-left mr-auto">
+                <span className="text-amber-700 w-4">{ab ? "▼" : "▶"}</span>
+                <b className="text-sm text-amber-900 capitalize">Semana del {fmtDia(l)} al {fmtDia(finA(l))}</b>
+                <span className="text-xs font-bold text-amber-800">{obs.length} sin terminar</span>
+              </button>
+              <button onClick={() => pasarObras(obs, primerLaborableDesde(hoy))} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100">→ Pasar esta semana a hoy</button>
+            </div>
+            {ab && <div className="divide-y divide-amber-200 px-2">
+            {obs.map((o) => (
               <div key={o.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
                 <span className="font-semibold text-slate-800 min-w-[200px]">{o.nombre}</span>
                 <span className="text-xs text-amber-800">estaba el {fmtDia(plan1.obras[o.id].inicio)}{plan1.obras[o.id].fin !== plan1.obras[o.id].inicio ? ` – ${fmtDia(plan1.obras[o.id].fin)}` : ""}</span>
@@ -53293,7 +53317,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 <input type="date" min={hoy} onChange={(e) => pasarObras([o], e.target.value)} className="border border-amber-300 rounded px-2 py-0.5 text-xs" title="Pasar a otro día" />
               </div>
             ))}
+            </div>}
           </div>
+            ); }); })()}
         </div>
       )}
       {/* Ajustes */}
@@ -53422,12 +53448,42 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             ⚠ Pasan de {LIM_PERS_DIA} ventanas con persiana: {diasVer.filter((f) => persDia(f) > LIM_PERS_DIA).map((f) => `${fmtDia(f)} (${persDia(f)})`).join(" · ")}
           </div>
         )}
-        {obrasConFaltas.length > 0 && (
-          <div className="mb-2 rounded-lg border-2 border-rose-500 bg-rose-50 px-3 py-2 text-xs text-rose-900">
-            <b className="text-sm">⚠ {obrasConFaltas.length} obra{obrasConFaltas.length === 1 ? "" : "s"} del planning con documentación pendiente</b>
-            {obrasConFaltas.map((x, i) => <div key={i} className="mt-0.5">· <b>{x.txt}</b>: falta {x.fl.join(" · ")}</div>)}
+        {pendPorSemana.length > 0 && (() => { const totF = pendPorSemana.reduce((a, w) => a + w.faltan.length, 0); const totDoc = obrasConFaltas.length; const finSem = (l) => { const d = new Date(l + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); }; return (
+          <div className={`mb-2 rounded-lg border-2 ${totDoc ? "border-rose-500 bg-rose-50" : "border-slate-300 bg-white"} text-xs`}>
+            <button type="button" onClick={() => setPendPlAbierto(!pendPlAbierto)} className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left">
+              <span className="text-slate-500 w-4">{pendPlAbierto ? "▼" : "▶"}</span>
+              <b className="text-sm text-slate-800">📋 Lo que falta por terminar, por semana</b>
+              <span className="font-bold text-slate-700">{totF} obra{totF === 1 ? "" : "s"} sin terminar</span>
+              {totDoc > 0 && <span className="font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {totDoc} con documentación pendiente</span>}
+              <span className="ml-auto text-[11px] font-semibold text-sky-700 underline">{pendPlAbierto ? "cerrar" : "abrir"}</span>
+            </button>
+            {pendPlAbierto && <div className="px-3 pb-2 space-y-1.5">
+              {pendPorSemana.map((w) => { const ab = semPlAbiertas[w.l] !== false; const hechas = w.obras.length - w.faltan.length; const hF = w.faltan.reduce((a, o) => a + o.horas, 0); const nDoc = w.obras.filter((o) => o.fl.length).length; return (
+                <div key={w.l} className="rounded-md border border-slate-200 bg-white">
+                  <button type="button" onClick={() => setSemPlAbiertas({ ...semPlAbiertas, [w.l]: !ab })} className="w-full flex flex-wrap items-center gap-2 px-2 py-1.5 text-left">
+                    <span className="text-slate-500 w-4">{ab ? "▼" : "▶"}</span>
+                    <b className="text-slate-800 capitalize">Semana del {fmtDia(w.l)} al {fmtDia(finSem(w.l))}</b>
+                    <span className={`font-bold ${w.faltan.length ? "text-rose-700" : "text-emerald-700"}`}>{w.faltan.length ? `faltan ${w.faltan.length} de ${w.obras.length} obras · ${Math.round(hF * 10) / 10} h` : `✓ todo terminado (${w.obras.length})`}</span>
+                    <span className="text-slate-500">{hechas} terminada{hechas === 1 ? "" : "s"}</span>
+                    {nDoc > 0 && <span className="font-bold text-rose-700">· ⚠ {nDoc} con documentación pendiente</span>}
+                  </button>
+                  {ab && <div className="px-3 pb-1.5">
+                    {w.obras.filter((o) => !o.hecha || o.fl.length).map((o, i) => (
+                      <div key={i} className={`py-0.5 flex flex-wrap items-baseline gap-x-2 ${o.inc ? "text-orange-700" : "text-slate-800"}`}>
+                        <span className="text-slate-500 capitalize w-24 shrink-0">{fmtDia(o.f)}</span>
+                        <b>{o.hecha ? "✓ " : o.inc ? "⚠ " : ""}{o.txt}</b>
+                        {o.ventanas ? <span className="text-slate-500">{o.ventanas} ventanas</span> : null}{o.horas ? <span className="text-slate-500">· {Math.round(o.horas * 10) / 10} h</span> : null}
+                        {o.inc && <span className="font-bold text-orange-700">· incidencia</span>}
+                        {o.fl.length > 0 && <span className="font-bold text-rose-700">· falta {o.fl.join(" · ")}</span>}
+                      </div>
+                    ))}
+                    {!w.obras.some((o) => !o.hecha || o.fl.length) && <div className="text-emerald-700 font-semibold">Todas terminadas y con su documentación.</div>}
+                  </div>}
+                </div>
+              ); })}
+            </div>}
           </div>
-        )}
+        ); })()}
         {diasVer.length > 0 && (
           <div className="mb-2">
             <div className="flex items-center gap-2">
