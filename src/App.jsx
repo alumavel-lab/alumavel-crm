@@ -48337,7 +48337,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
     const puesto = u && u.porHerraje ? "herraje" : u && u.porColgado ? "colgado" : u && u.porPilastra ? "pilastra" : u && u.porSoldadora ? "soldadora" : zonaId === "puertasTerminadas" ? "puerta" : zonaId;
     const baseCod = vc.cod.replace(/~H\d?$/, "");
     // las hojas de una ventana van juntas: si las movió Herraje, vuelven todas
-    const cods = u && u.porHerraje ? Object.keys(ubic || {}).filter((c) => c === vc.cod || (c.startsWith(`${baseCod}~H`) && ubic[c] && ubic[c].porHerraje)) : [vc.cod];
+    const cods = u && u.porHerraje && /~H$/.test(vc.cod) ? Object.keys(ubic || {}).filter((c) => c === vc.cod || (c.startsWith(`${baseCod}~H`) && ubic[c] && ubic[c].porHerraje)) : [vc.cod]; // cada hoja se devuelve sola (las antiguas «~H» juntas)
     for (const c of [...new Set(cods)]) {
       let uc = u; if (c !== vc.cod) { try { uc = (await fbGet(ref(fbDb, `ubicacionesLinea/${c}`))).val(); } catch (e) { uc = null; } }
       const ac = uc && uc.antes && uc.antes.zonaId ? uc.antes : null; const zc = ac && zonasM.find((q) => q.id === ac.zonaId);
@@ -48348,7 +48348,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
       // Matrimonio: sus hojas vuelven también a donde estaban
       if (uc && uc.porColgado && uc.hojasAntes) for (const [ch, x] of Object.entries(uc.hojasAntes)) { const zh = x && zonasM.find((q) => q.id === x.zonaId); if (!zh) continue; const r = await ocuparHuecoLinea(zh, ch, "", null, Number(x.hueco), Number(x.hueco), zh.cap || 2); if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = x; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); } }
     }
-    const claveM = (puesto === "herraje" ? baseCod : vc.cod).replace(/^cd_/, ""); const hoyH = new Date().toISOString().slice(0, 10);
+    const claveM = (puesto === "herraje" && !/~H\d$/.test(vc.cod) ? baseCod : vc.cod).replace(/^cd_/, ""); // herraje por hoja: se quita el tick de ESA hoja const hoyH = new Date().toISOString().slice(0, 10);
     [...new Set(["persianaA", "persianaB", puesto].filter(Boolean))].forEach((pu) => { if ((pu === "persianaA" || pu === "persianaB") && pu !== puesto) return; fbSet(ref(fbDb, `marcasPuestoLinea/${pu}/${claveM}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyH}/${pu}/${claveM}`), null).catch(() => {}); });
     const px = toArray(ctxH.persianasAlmacen).find((y) => y && y.ventanaId === vc.cod && y.estanteAnterior);
     if (px && ctxH.savePersianasAlmacen) ctxH.savePersianasAlmacen(toArray(ctxH.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
