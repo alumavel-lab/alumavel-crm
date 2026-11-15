@@ -48087,9 +48087,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
   const incFabZ = useObjetoFb("incidenciasFabrica");
+  const sentidoLin = useObjetoFb("configSentidoLinea"); // { sinPersiana: "der" | "izq" }: hacia dónde va la CARGA en el mapa de la Línea
   const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? "ok" : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -48118,8 +48119,16 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
               <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
               {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
             </div>
+            {z.id === "sinPersiana" && (() => { const izq = sentidoLin && sentidoLin.sinPersiana === "izq"; return (
+              <div className="flex items-center gap-2 mb-1 text-xs font-extrabold text-sky-800">
+                {izq ? <span>🚚 CARGA ⟵⟵⟵</span> : <span>Entrada</span>}
+                <div className="flex-1 h-1.5 rounded bg-gradient-to-r from-sky-200 to-sky-600" style={izq ? { transform: "scaleX(-1)" } : undefined} />
+                {izq ? <span>Entrada</span> : <span>⟶⟶⟶ CARGA 🚚</span>}
+                {admin && <button type="button" onClick={() => fbSet(ref(fbDb, "configSentidoLinea/sinPersiana"), izq ? "der" : "izq").catch(() => {})} className="ml-2 text-[10px] font-semibold underline text-slate-500">↔ cambiar sentido</button>}
+              </div>
+            ); })()}
             <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
-              {Array.from({ length: z.huecos }, (_, i) => i + 1).map((hu) => {
+              {(z.id === "sinPersiana" && sentidoLin && sentidoLin.sinPersiana === "izq" ? Array.from({ length: z.huecos }, (_, i) => z.huecos - i) : Array.from({ length: z.huecos }, (_, i) => i + 1)).map((hu) => {
                 const piezas = oc[hu] || [];
                 const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
                 const listo = !!verdes && piezas.some((x) => verdes.has(String(x.cod)));
@@ -50064,6 +50073,8 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
   const ctxB = React.useContext(IncidenciasCristalCtx) || {};
   const snapCD = useObjetoFb("controlDiaVentanasObra"); const hojasCD = useObjetoFb("controlDiaHojaCorte"); const hojasAux = useObjetoFb("auxiliaresHojas");
   const marcas = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
+  const marcasTodasB = useObjetoFb("marcasPuestoLinea"); // por dónde ha pasado (todos los puestos), con fecha y hora
+  const fmtTB = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
   const limpiaB = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   const esPuerta = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
   const dP = String(bP || "").split("-")[0].replace(/\D/g, ""); const dV = String(bV || "").replace(/\D/g, "").replace(/^0+/, "");
@@ -50098,6 +50109,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
+              {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
               {hoja && <a href={hoja} target="_blank" rel="noreferrer" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte</a>}
               <button type="button" onClick={() => onTocar({ q: bases[0] || dP, id: w.id })} className={`${hoja ? "" : "ml-auto "}text-sm font-bold px-3 py-1.5 rounded ${hecha ? "bg-white text-rose-700" : "bg-emerald-600 text-white"}`}>{hecha ? "↩ Quitar (me he equivocado)" : "✓ Hecha"}</button>
@@ -50195,9 +50207,10 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId;
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId; // Cristales: la coge de la LÍNEA y la manda a Solape (si lleva) o a palet (sin hueco)
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+    if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
     if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
@@ -50206,7 +50219,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
     const nCr = puestoId === "cristales" ? bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, true) : 0; // tocar la ventana en Cristales = sus cristales dados de baja
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sin solape: se queda en la LÍNEA para paletizar` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sale de la Línea para PALETIZAR` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -50226,6 +50239,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      // ya hecha pero SIN hueco (se ticó antes de que su puesto la llevara a una estantería): se coloca ahora, sin preguntar
+      if (yaM && !(ubic && ubic[codCD]) && !(puestoId === "cristales" && !toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO"))) { await ponerPersianaCD(hit, null); return; }
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
@@ -60512,19 +60527,37 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return idx;
   }, [marcasTodas, horasTodas, borradasCD]);
   const valorGlobalCD = (k, id) => { const x = (idxMarcasCD[k] || {})[id]; return x ? x.v : 0; };
-  // SIN PISTOLA: la ventana que Persiana A/B puso en su hueco (por la hoja de corte, código «cd_…») sale del hueco
-  // en cuanto Control de línea la tica en VERDE aquí (la echa a la línea)
+  // SIN PISTOLA · CONTROL DE LÍNEA: al ticar una ventana en VERDE aquí, Control de línea la saca de donde esté (Persiana A/B salida,
+  // Puertas terminadas) o la recoge de matrimonio/línea, y la pone en SU almacén: la LÍNEA (de donde la coge Cristales).
   const ubicCDL = useObjetoFb("ubicacionesLinea");
+  const zonasCDL = useZonasLinea();
+  const marcasCrCD = useObjetoFb("marcasPuestoLinea/cristales");
+  const snapCDL2 = useObjetoFb("controlDiaVentanasObra");
+  const enLineaHechas = useRef(new Set());
   useEffect(() => {
     const limpiaId = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
-    Object.keys(ubicCDL || {}).forEach((c) => {
-      const m = /^cd_(.+)__([^_].*)$/.exec(c); if (!m) return;
-      if (!["persianaA", "persianaB", "puertasTerminadas"].includes((ubicCDL[c] || {}).zonaId)) return; // Solape NO: esa la vacía el puesto Solape
-      const a2 = idxMarcasCD[m[1]] || {};
-      const id = Object.keys(a2).find((i) => limpiaId(i) === m[2]);
-      if (id && a2[id] && a2[id].v === 1) liberarCodigoLinea(c).catch(() => {});
-    });
-  }, [ubicCDL, idxMarcasCD]);
+    const zLinea = toArray(zonasCDL).find((z) => z && z.id === "sinPersiana"); if (!zLinea) return;
+    const hoyL = new Date().toLocaleDateString("sv-SE");
+    const ubicLocal = { ...(ubicCDL || {}) };
+    const tareas = [];
+    Object.entries(idxMarcasCD || {}).forEach(([k, ids]) => Object.entries(ids || {}).forEach(([id, x]) => {
+      if (!x || x.v !== 1) return;
+      const cod = limpiaId(`cd_${k}__${id}`); if (enLineaHechas.current.has(cod)) return;
+      const u = ubicLocal[cod];
+      const vieneDeAntes = u && ["persianaA", "persianaB", "puertasTerminadas"].includes(u.zonaId);
+      const nueva = !u && x.ts && new Date(x.ts).toLocaleDateString("sv-SE") === hoyL && !(marcasCrCD && marcasCrCD[cod.slice(3)]);
+      if (!vieneDeAntes && !nueva) return;
+      const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
+      enLineaHechas.current.add(cod);
+      tareas.push({ cod, pos: w.pos || "", obra: sn.nombre || "", ts: x.ts || Date.now(), wid: String(w.id), base: toArray(sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "" });
+    }));
+    if (!tareas.length) return;
+    (async () => { for (const t of tareas) { try { const r = await ocuparHuecoLinea(zLinea, t.cod, "Control de línea", ubicLocal, 1, null, 1); if (r) { ubicLocal[t.cod] = { zonaId: zLinea.id, hueco: r.hueco }; await fbUpdate(ref(fbDb, `ubicacionesLinea/${t.cod}`), { et: String(t.pos).slice(0, 30), obra: String(t.obra).slice(0, 60) }); }
+      // queda apuntado que pasó por CONTROL DE LÍNEA (fecha y hora de la marca), igual que en los demás puestos
+      const claveM = t.cod.slice(3); const ya = (await fbGet(ref(fbDb, `marcasPuestoLinea/lineaPers/${claveM}`))).val();
+      if (!ya) { const f = new Date(t.ts).toLocaleDateString("sv-SE"); await fbSet(ref(fbDb, `marcasPuestoLinea/lineaPers/${claveM}`), { ts: t.ts, ventanaId: t.wid, pos: t.pos, base: t.base, fecha: f, por: "Control del día" }); fbSet(ref(fbDb, `ticksLinea/${f}/lineaPers/${claveM}`), t.ts).catch(() => {}); }
+    } catch (e) { /* se reintenta al recargar */ } } })();
+  }, [ubicCDL, idxMarcasCD, marcasCrCD, snapCDL2, zonasCDL]);
   const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
