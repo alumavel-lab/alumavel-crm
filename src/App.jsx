@@ -48975,6 +48975,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const ctxPD = React.useContext(IncidenciasCristalCtx) || {};
   const hojasCDpd = useObjetoFb("controlDiaHojaCorte"); const hojasAuxPd = useObjetoFb("auxiliaresHojas");
   const hojaDeCol = (c) => { for (const k of [...(c.keys || [])]) { const h = hojasCDpd && hojasCDpd[k]; if (h && h.url) return h.url; } const b = [...(c.bases || [])][0] || basePresuDia(c.num); return urlHojaCorte({ pp: b, uxExpedientes: ctxPD.uxExpedientes, proyectos: ctxPD.proyectos, hojasCD: hojasCDpd, hojasAux: hojasAuxPd }); };
+  const hojaNuevaCol = (c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); return b ? hojaCorteMasNueva({ pp: b, uxExpedientes: ctxPD.uxExpedientes, proyectos: ctxPD.proyectos, hojasCD: hojasCDpd, hojasAux: hojasAuxPd }) : null; };
   const marcasPP = (marcasTodosPP && marcasTodosPP[puestoId]) || {};
   // Por dónde ha pasado cada ventana: puesto, fecha y hora (y quién), de lo ticado a mano y de lo leído con la pistola
   const fmtTick = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
@@ -49035,7 +49036,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const hojasLista = Object.entries(hojasCDpd || {}).filter(([, h]) => h && toArray(h.modelos).length);
     cajas.forEach((c) => {
       if (!c.vs.length || c.vs.every((w) => w.dib)) return;
-      const h = (hojasLista.find(([k]) => c.keys.has(k)) || hojasLista.find(([, x]) => x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0]))) || [])[1]; if (!h) return;
+      const hs = hojasLista.filter(([k, x]) => c.keys.has(k) || (x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0])))).map(([, x]) => x);
+      const h = hs.length ? hs.reduce((a, b) => ((Number(b.leidoEn) || 0) > (Number(a.leidoEn) || 0) ? b : a)) : null; if (!h) return; // la leída MÁS TARDE
       const ms = toArray(h.modelos);
       c.vs.forEach((w) => { if (w.dib) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
     });
@@ -49044,8 +49046,9 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd]);
   // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
-  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || c.vs.some((w) => w.dib)) return null; const u = hojaDeCol(c); if (!u || hojaProbadaPd.current[u]) return null;
-    const ya = Object.values(hojasCDpd || {}).some((h) => h && (h.url === u || (toArray(h.probadas).includes(u)) || (toArray(h.modelos).length && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b))); return ya ? null : { b, u }; }).filter(Boolean);
+  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
+    // ya leída esa misma hoja, o ya falló con ella, o hay una leída del presupuesto DESPUÉS de subirse esta: no se repite. Si se sube otra más nueva, se vuelve a leer
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && (h.url === u || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
   const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
   useEffect(() => {
     if (!pendHojaPd.length || hojaLeyendoPd.current) return;
@@ -50269,15 +50272,25 @@ function PendientesConfirmarCristales({ quien }) {
 // dónde está, su hoja de corte y el botón para darla por HECHA (igual que tocarla en el dibujo)
 // HOJA DE CORTE (PDF) de una obra, buscándola en TODOS los sitios: Auxiliares, Control del día, expediente de Uxcar y documentos del proyecto
 const esHojaCorteDoc = (d) => d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`);
-function urlHojaCorte({ pp = "", expNum = "", uxExpedientes = [], proyectos = [], hojasCD = {}, hojasAux = {} }) {
+// Cuándo se subió una hoja de corte: por la fecha guardada o, si no hay, por el número de tiempo que lleva el nombre del archivo en el almacenamiento
+const msSubidaHoja = (d) => {
+  if (!d) return 0; const n = Number(d.subidoEn || d.subidaEn || d.en || 0); if (n > 0) return n;
+  const f = Date.parse(d.fecha || ""); const m = decodeURIComponent(String(d.url || "")).match(/(?:^|\D)(1[4-9]\d{11})(?=\D|$)/);
+  return Math.max(m ? Number(m[1]) : 0, Number.isFinite(f) ? f : 0);
+};
+// La HOJA DE CORTE de un presupuesto/expediente, esté donde esté subida; si hay varias, GANA LA SUBIDA MÁS TARDE
+function hojaCorteMasNueva({ pp = "", expNum = "", uxExpedientes = [], proyectos = [], hojasCD = {}, hojasAux = {} }) {
   const P = String(pp || ""); const X = String(expNum || "").replace(/\D/g, "").replace(/^0+/, "");
-  if (P) { const h = hojasAux && hojasAux[P]; if (h && h.url) return h.url; const hc = Object.values(hojasCD || {}).find((x) => x && x.url && digitosPresu(x.pres) === P); if (hc) return hc.url; }
+  const cand = []; const mete = (d) => { if (d && d.url && !cand.some((c) => c.url === d.url)) cand.push({ url: d.url, ms: msSubidaHoja(d) }); };
+  if (P) { mete(hojasAux && hojasAux[P]); Object.values(hojasCD || {}).forEach((x) => { if (x && x.url && toArray(x.modelos).length && digitosPresu(String(x.pres || "").split("-")[0]) === P) mete({ url: x.url, en: x.leidoEn }); }); }
   const exps = toArray(uxExpedientes).filter((u) => u && ((X && String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "") === X) || (P && [u.presupuesto, u.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === P)))));
-  for (const e of exps) { const d = toArray(e.documentos).find(esHojaCorteDoc); if (d) return d.url; if (!P) { const pe = digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]); const h = pe && hojasAux && hojasAux[pe]; if (h && h.url) return h.url; } }
+  for (const e of exps) { toArray(e.documentos).filter(esHojaCorteDoc).forEach(mete); Object.values(e.hojasCorteAux || {}).forEach(mete); if (!P) { const pe = digitosPresu(String(e.presupuesto || "").split(/[·,;\s]+/)[0]); mete(pe && hojasAux && hojasAux[pe]); } }
   const prs = toArray(proyectos).filter((pr) => pr && ((P && [pr.presupuestoNumero, presupuestoDeObra(pr)].some((t) => digitosPresu(t) === P)) || exps.some((e) => e.proyectoId === pr.id || pr.uxcarExpedienteId === e.id)));
-  for (const pr of prs) { const d = toArray(pr.documentos).find(esHojaCorteDoc); if (d) return d.url; }
-  return "";
+  for (const pr of prs) toArray(pr.documentos).filter(esHojaCorteDoc).forEach(mete);
+  if (!cand.length) return null;
+  return cand.reduce((a, b) => (b.ms > a.ms ? b : a));
 }
+function urlHojaCorte(args) { const h = hojaCorteMasNueva(args); return h ? h.url : ""; }
 function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }) {
   const [bP, setBP] = useState(""); const [bV, setBV] = useState("");
   const ctxB = React.useContext(IncidenciasCristalCtx) || {};
@@ -60897,9 +60910,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   };
   // Hoja de corte leída de esta obra (por su clave o por el mismo nº de presupuesto: la de Uxcar sale como obra del CRM y como expediente)
   const hojaDeObra = (o) => {
-    const k = limpia(o.d.key); const h0 = hojasCD && hojasCD[k]; if (h0 && toArray(h0.modelos).length) return h0;
-    const mios = [...presCrmDe(o)]; if (!mios.length) return null;
-    return Object.values(hojasCD || {}).find((h) => h && toArray(h.modelos).length && h.pres && mios.some((m) => mismoPresCD(m, String(h.pres).replace(/\./g, "")))) || null;
+    const k = limpia(o.d.key); const h0 = hojasCD && hojasCD[k]; const mios = [...presCrmDe(o)];
+    // si hay varias leídas (la de la obra y otra del mismo presupuesto leída en un puesto), vale la leída MÁS TARDE
+    const todas = [h0, ...(mios.length ? Object.values(hojasCD || {}).filter((h) => h && h !== h0 && h.pres && mios.some((m) => mismoPresCD(m, String(h.pres).replace(/\./g, "")))) : [])].filter((h) => h && toArray(h.modelos).length);
+    return todas.length ? todas.reduce((a, b) => ((Number(b.leidoEn) || 0) > (Number(a.leidoEn) || 0) ? b : a)) : null;
   };
   const infoHoja = (o, v) => { const h = hojaDeObra(o); if (!h) return null; const pb = String((v && v.pos) || "").trim().split(/\s+/)[0].toUpperCase();
     // la etiqueta puede traer delante el modelo o la planta («850 p1-V05.105», «760-V02.003»): se busca también el código A01.001 / V02.003 que lleve dentro
@@ -61513,7 +61527,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const mete = (url, nombre) => { if (url && !ya.has(url)) { ya.add(url); out.push({ url, nombre: nombre || "HOJA DE CORTE.pdf", tipo: "Hoja de corte" }); } };
     try { [...presCrmDe(o)].map((c) => digitosPresu(String(c).split("-")[0])).forEach((b) => { const h = hojasAuxCD && hojasAuxCD[b]; if (h && h.url) mete(h.url, h.archivo); }); } catch (er) { /* nada */ }
     Object.values((e && e.hojasCorteAux) || {}).forEach((h) => { if (h && h.url) mete(h.url, h.archivo); });
-    return out;
+    // la subida MÁS TARDE primero (si hay una hoja vieja y otra corregida, gana la nueva)
+    const msDe = (d) => { const hA = Object.values(hojasAuxCD || {}).find((x) => x && x.url === d.url); const hX = Object.values((e && e.hojasCorteAux) || {}).find((x) => x && x.url === d.url); return Math.max(msSubidaHoja(d), msSubidaHoja(hA), msSubidaHoja(hX)); };
+    return out.map((d) => ({ ...d, ms: msDe(d) })).sort((a, b) => b.ms - a.ms);
   };
   const traerCarga = async (o, fichero) => {
     if (fichero) {
@@ -61666,10 +61682,12 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
   // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
   // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
-  const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
+  // ya leída, pero después se ha subido OTRA hoja más nueva (corregida): se vuelve a leer con la nueva
+  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); };
+  const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = hayHojaMasNueva(o) ? docsHojaDe(o).slice(0, 1) : docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !hojaIntentadas.current[o.d.key] && docsPorProbar(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && (!hojaDeObra(o) || hayHojaMasNueva(o)) && !hojaIntentadas.current[o.d.key] && docsPorProbar(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
