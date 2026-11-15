@@ -48405,7 +48405,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                   </div>); })()}
                 {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
-                <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
+                <button type="button" onClick={() => devolverCD(vc)} className={accionPieza ? "px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white text-[11px] font-semibold" : "px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold"}>{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
             </div>
           ))}
@@ -50751,7 +50751,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   // Desde el HUECO (pinchando la estantería): hacer el trabajo de este puesto sobre esa pieza, sin buscarla en «Obras del día»
   const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
-    const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
+    const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    // CONTROL DE LÍNEA: obra COMPLETA (todas sus ventanas al final de la línea) → avisar a CRISTALES (las ventanas se quedan aquí hasta que Cristales las tique)
+    if (puestoId === "lineaPers" && !/~H/.test(String(cod))) { const mk = /^cd_(.+)__(.+?)$/.exec(String(cod)); const kO = mk && mk[1]; const snO = kO && snapCDLin && snapCDLin[kO];
+      const FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"]; const vsO = toArray(snO && snO.ventanas);
+      const completa = vsO.length > 0 && vsO.every((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; return u && FIN.includes(u.zonaId); });
+      if (completa) { const ya = avisosCrist && avisosCrist[kO]; return { t: ya ? "🪟 Ya avisado a Cristales (volver a avisar)" : "🪟 Obra completa: AVISAR A CRISTALES", info: `${snO.nombre || ""}: ${vsO.length} ventana${vsO.length === 1 ? "" : "s"} al final de la línea.`, fn: async () => {
+        await fbSet(ref(fbDb, `avisosCristales/${kO}`), { k: kO, nombre: String(snO.nombre || "").slice(0, 80), base, ts: Date.now(), por: quien || "" }).catch(() => {});
+        avisar(true, `🪟 Avisado a Cristales: ${snO.nombre || base} (${vsO.length} ventanas).`, false); } }; } } const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
     if (puestoId === "herraje" && mh && (zId === "hojas" || zId === "hojasPilastra" || zId === "puertas" || zId === "puertas2")) return { t: `🔧 Herraje puesto → Hojas con herraje`, fn: () => marcarHechaPuesto({ ...req, tipo: `h${mh[1]}` }) };
     // FIJO que está en el almacén de marcos (sin pilastra): aquí no se le hace nada → se manda a la Línea
     if ((puestoId === "pilastra" || puestoId === "colgado" || puestoId === "soldadora") && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra"].includes(zId) && nhDeVentanaCD(w) === 0 && !toArray(w.ex).includes("PILASTRA") && !toArray(w.ex).includes("PERSIANA")) return { t: "➡ Es FIJO: mandarlo a la Línea", fn: async () => {
@@ -50793,6 +50800,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     } catch (e) { return false; }
   };
   // CRISTALES: cuando se dan de baja TODOS los cristales de una ventana (en el caballete), la ventana se da por HECHA sola (como tocarla)
+  const avisosCrist = useObjetoFb(puestoId === "cristales" || puestoId === "lineaPers" ? "avisosCristales" : "_ninguno"); // obras completas avisadas desde Control de línea
   const marcasCrist = useObjetoFb(`marcasPuestoLinea/${puestoId === "cristales" ? "cristales" : "_ninguno"}`);
   const hechasCrAuto = useRef(new Set());
   useEffect(() => {
@@ -51089,6 +51097,18 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
               <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cerrar</button>
             </div>
           </div>); })()}
+        {puestoId === "cristales" && Object.keys(avisosCrist || {}).length > 0 && <div style={{ order: -4 }} className="mb-3 space-y-2">
+          {Object.entries(avisosCrist || {}).filter(([, a]) => a).sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0)).map(([kO, a]) => { const snO = snapCDLin && snapCDLin[kO]; const vsO = toArray(snO && snO.ventanas);
+            const hechaC = (x) => !!(marcasCrist && marcasCrist[limpiaCodL(`${kO}__${x.id}`)]); const faltan = vsO.filter((x) => !hechaC(x));
+            if (vsO.length && !faltan.length) { fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); return null; } // todas ticadas en Cristales: el aviso se va solo
+            return (
+            <div key={kO} className="rounded-lg border-4 border-violet-600 bg-violet-50 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2"><b className="text-lg text-violet-900">🪟 OBRA COMPLETA EN LÍNEA: {a.nombre || a.base}</b><span className="text-sm text-violet-800">faltan {faltan.length} de {vsO.length}</span>
+                <button type="button" onClick={() => { if (window.confirm("¿Quitar este aviso?")) fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); }} className="ml-auto text-xs underline text-violet-800">quitar aviso</button></div>
+              <div className="mt-1 space-y-0.5">{vsO.map((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; const crs = cristalesDeVentanaCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO, x); const ok = hechaC(x); return (
+                <div key={x.id} className={`text-sm flex flex-wrap gap-x-2 ${ok ? "text-emerald-700 line-through" : "text-slate-900"}`}><b>{ok ? "✓ " : ""}{x.pos}</b>{u ? <span>📍 {(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} {u.hueco}</span> : null}<span className="font-bold text-amber-800">{crs.length ? crs.map(({ c, pz }) => `${pz.ancho}×${pz.alto} caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ") : "cristales: no los encuentro"}</span></div>); })}</div>
+            </div>); })}
+        </div>}
         {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
           <span className="text-sm font-bold text-slate-800">Ahora salen:</span>
           {[["marcos", "🟫 MARCOS", "bg-amber-700 border-amber-900"], ["hojas", "🪟 HOJAS", "bg-sky-700 border-sky-900"], ["preguntar", "❓ Preguntar cada vez", "bg-slate-600 border-slate-800"]].map(([k, t, c]) => (
