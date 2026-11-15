@@ -6003,6 +6003,7 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
+  proyectosCD = toArray(proyectos); // para casar los cristales de los caballetes con su obra (obra del CRM → expediente de Uxcar)
   uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null; uxPedidosGlobal = uxPedidos;
   useEffect(() => {
     if (recuentoStock !== null || !currentUser || !isAdmin) return;
@@ -47624,20 +47625,24 @@ function coloresObrasLinea(completas, avisos) { const m = {}; [...new Set([...Ob
 // referencia de ventana «canónica»: P02.103 = P2.103 = p02-103 = «850 p1-V05.105» → V5.105 (sin ceros, puntos ni espacios que estorben)
 const canonRefVC = (t) => { const u = String(t || "").toUpperCase(); const m = u.match(/([A-Z]{1,3})\s*0*(\d{1,3})\s*[.\-_ ]?\s*0*(\d{1,4})/); return m ? `${m[1]}${Number(m[2])}.${Number(m[3])}` : u.replace(/[\s.\-_]/g, ""); };
 // ¿este cristal (o su caballete) es de esta OBRA? por expediente de Uxcar o por nº de presupuesto (en la pieza o en el caballete)
-const cristalDeObraCD = (c, pz, sn, uxExpedientes) => {
+// mismo presupuesto aunque venga con una cifra REPETIDA de más («66662» por «6662», «67000» por «6700»)
+const mismoPresCristal = (a, b) => { a = String(a || ""); b = String(b || ""); if (!a || !b) return false; if (a === b) return true; const [l, c] = a.length > b.length ? [a, b] : [b, a]; if (l.length !== c.length + 1) return false; for (let i = 0; i < l.length; i++) if (l.slice(0, i) + l.slice(i + 1) === c && (l[i] === l[i - 1] || l[i] === l[i + 1])) return true; return false; };
+const cristalDeObraCD = (c, pz, sn, uxExpedientes, proyectos = []) => {
   const bases = toArray(sn && sn.codigos).map((x) => basePresuDia(x)).filter((b) => b.length >= 3);
-  const ex0 = sn && sn.tipo === "u" ? ((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}) : {};
+  const prO = sn && sn.tipo === "p" ? toArray(proyectos).find((x) => String(x.id) === String(sn.id)) : null; // obra del CRM enlazada a un expediente de Uxcar
+  const ex0 = sn && sn.tipo === "u" ? ((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}) : prO && prO.uxcarExpedienteId ? ((toArray(uxExpedientes).find((u) => String(u.id) === String(prO.uxcarExpedienteId))) || {}) : {};
   const exN = String(ex0.numero || "").replace(/\D/g, "").replace(/^0+/, ""); const exP = digitosPresu(String(ex0.presupuesto || ex0.presupuestoNumero || "").split(/[·,;\s]+/)[0]); if (exP) bases.push(exP);
   const exs = `${pz.expediente || ""} ${c.expediente || ""}`.split(/[·,;\s/]+/).map((x) => x.replace(/\D/g, "").replace(/^0+/, "")).filter(Boolean);
   const prs = `${pz.presupuesto || ""} ${c.presupuesto || ""}`.split(/[·,;\s/]+/).map((x) => digitosPresu(x)).filter(Boolean);
-  return (exN && exs.includes(exN)) || prs.some((p) => bases.includes(p));
+  return (exN && exs.includes(exN)) || prs.some((p) => bases.some((b) => mismoPresCristal(p, b)));
 };
 const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
   if (!sn || !w) return []; const rv = canonRefVC(w.pos); if (!rv) return [];
-  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && canonRefVC(pz.ref) === rv && cristalDeObraCD(c, pz, sn, uxExpedientes));
+  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && canonRefVC(pz.ref) === rv && cristalDeObraCD(c, pz, sn, uxExpedientes, proyectosCD));
 };
 // si no se encuentran por ventana: los CABALLETES con cristales de esta obra (para saber al menos dónde buscar)
-const caballetesDeObraCD = (caballetes, uxExpedientes, sn) => toArray(caballetes).filter((c) => c && toArray(c.piezas).some((pz) => pz && !pz.puesto && cristalDeObraCD(c, pz, sn, uxExpedientes)));
+const caballetesDeObraCD = (caballetes, uxExpedientes, sn) => toArray(caballetes).filter((c) => c && toArray(c.piezas).some((pz) => pz && !pz.puesto && cristalDeObraCD(c, pz, sn, uxExpedientes, proyectosCD)));
+let proyectosCD = []; // proyectos del CRM (se ponen desde la app) para enlazar obra → expediente de Uxcar al buscar cristales
 // ¿Es PUERTA? (por la hoja de corte: tipo puerta, posición P…, o «PUERTA» en la descripción). Lo oscilobatiente es VENTANA aunque sea alto.
 const esPuertaVentanaCD = (w) => { if (!w) return false; const t = `${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`; if (/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(t)) return false; return w.tp === "puerta" || /^P\d/i.test(String(w.pos || "").trim()) || /\bPUERTA\b/i.test(String(w.desc || "")); };
 // Nº de HOJAS de una ventana: lo que dice la hoja de corte; si no, «PUERTA 1 HOJA» / «2 HOJAS» en la descripción; si no, por la medida
@@ -50505,7 +50510,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const out = [];
     toArray(cristales).forEach((c) => toArray(c && c.piezas).forEach((p, i) => {
       if (!p || canonRefVC(p.ref) !== canonRefVC(w && w.pos)) return;
-      if (cristalDeObraCD(c, p, sn, uxExpedientes)) out.push({ c, i, p });
+      if (cristalDeObraCD(c, p, sn, uxExpedientes, ctx.proyectos)) out.push({ c, i, p });
     }));
     return out;
   };
@@ -58423,6 +58428,8 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     const expsQ = presQ ? [...new Set([
       ...toArray(ctx.uxExpedientes).filter((u) => u && [u.presupuesto, u.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === presQ))).map((u) => String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "")),
       ...toArray(ctx.proyectos).filter((pr) => pr && pr.uxcarExpedienteId && [pr.presupuestoNumero, presupuestoDeObra(pr)].some((t) => digitosPresu(t) === presQ)).map((pr) => String(((toArray(ctx.uxExpedientes).find((u) => u.id === pr.uxcarExpedienteId)) || {}).numero || "").replace(/\D/g, "").replace(/^0+/, "")),
+      // y en los propios cristales: piezas con ese presupuesto (aunque venga con una cifra repetida, «66662») → su expediente
+      ...toArray(cristales).flatMap((c) => toArray(c && c.piezas).filter((pz) => pz && `${pz.presupuesto || ""} ${c.presupuesto || ""}`.split(/[·,;\s/]+/).some((x) => mismoPresCristal(digitosPresu(x), presQ))).map((pz) => String(pz.expediente || c.expediente || "").split(/[·,;\s/]+/).map((x) => x.replace(/\D/g, "").replace(/^0+/, "")).filter(Boolean)[0] || "")),
     ].filter(Boolean))] : [];
     const qMapa = expsQ.length ? expsQ[0] : q; // el mapa busca por el expediente
     return (
