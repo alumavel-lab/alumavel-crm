@@ -47615,10 +47615,33 @@ const useZonasLinea = () => {
 };
 // Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
 const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : 2) : 2; }; // sin otro dato se supone 2 hojas: una hoja de más inventa una pegatina que bloquea el colgado (3 hojas se pone a mano)
+// OBRAS COMPLETAS al final de la línea y su COLOR (el mismo en el mapa y en el aviso de Cristales)
+const ZONAS_FIN_LINEA = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"];
+const COLORES_OBRA_LINEA = ["bg-violet-600 border-violet-800", "bg-blue-600 border-blue-800", "bg-pink-600 border-pink-800", "bg-cyan-700 border-cyan-900", "bg-indigo-800 border-indigo-950", "bg-fuchsia-700 border-fuchsia-900", "bg-sky-800 border-sky-950", "bg-purple-900 border-black"];
+function obrasCompletasLinea(snap, ubic) { const set = new Set(); Object.entries(snap || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; if (vs.every((w) => { const u = ubic && ubic[`cd_${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_")]; return u && ZONAS_FIN_LINEA.includes(u.zonaId); })) set.add(k); }); return set; }
+function coloresObrasLinea(completas, avisos) { const m = {}; [...new Set([...Object.keys(avisos || {}), ...completas])].sort().forEach((k, i) => { m[k] = COLORES_OBRA_LINEA[i % COLORES_OBRA_LINEA.length]; }); return m; }
+// CRISTALES de una ventana en los caballetes (misma posición y misma obra: expediente o presupuesto)
+// referencia de ventana «canónica»: P02.103 = P2.103 = p02-103 = «850 p1-V05.105» → V5.105 (sin ceros, puntos ni espacios que estorben)
+const canonRefVC = (t) => { const u = String(t || "").toUpperCase(); const m = u.match(/([A-Z]{1,3})\s*0*(\d{1,3})\s*[.\-_ ]?\s*0*(\d{1,4})/); return m ? `${m[1]}${Number(m[2])}.${Number(m[3])}` : u.replace(/[\s.\-_]/g, ""); };
+// ¿este cristal (o su caballete) es de esta OBRA? por expediente de Uxcar o por nº de presupuesto (en la pieza o en el caballete)
+const cristalDeObraCD = (c, pz, sn, uxExpedientes) => {
+  const bases = toArray(sn && sn.codigos).map((x) => basePresuDia(x)).filter((b) => b.length >= 3);
+  const ex0 = sn && sn.tipo === "u" ? ((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}) : {};
+  const exN = String(ex0.numero || "").replace(/\D/g, "").replace(/^0+/, ""); const exP = digitosPresu(String(ex0.presupuesto || ex0.presupuestoNumero || "").split(/[·,;\s]+/)[0]); if (exP) bases.push(exP);
+  const exs = `${pz.expediente || ""} ${c.expediente || ""}`.split(/[·,;\s/]+/).map((x) => x.replace(/\D/g, "").replace(/^0+/, "")).filter(Boolean);
+  const prs = `${pz.presupuesto || ""} ${c.presupuesto || ""}`.split(/[·,;\s/]+/).map((x) => digitosPresu(x)).filter(Boolean);
+  return (exN && exs.includes(exN)) || prs.some((p) => bases.includes(p));
+};
+const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
+  if (!sn || !w) return []; const rv = canonRefVC(w.pos); if (!rv) return [];
+  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && canonRefVC(pz.ref) === rv && cristalDeObraCD(c, pz, sn, uxExpedientes));
+};
+// si no se encuentran por ventana: los CABALLETES con cristales de esta obra (para saber al menos dónde buscar)
+const caballetesDeObraCD = (caballetes, uxExpedientes, sn) => toArray(caballetes).filter((c) => c && toArray(c.piezas).some((pz) => pz && !pz.puesto && cristalDeObraCD(c, pz, sn, uxExpedientes)));
 // ¿Es PUERTA? (por la hoja de corte: tipo puerta, posición P…, o «PUERTA» en la descripción). Lo oscilobatiente es VENTANA aunque sea alto.
 const esPuertaVentanaCD = (w) => { if (!w) return false; const t = `${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`; if (/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(t)) return false; return w.tp === "puerta" || /^P\d/i.test(String(w.pos || "").trim()) || /\bPUERTA\b/i.test(String(w.desc || "")); };
 // Nº de HOJAS de una ventana: lo que dice la hoja de corte; si no, «PUERTA 1 HOJA» / «2 HOJAS» en la descripción; si no, por la medida
-const nhDeVentanaCD = (w) => { if (!w) return 2; if (typeof w.nh === "number") return w.nh; if (w.tp === "fijo") return 0; const d = String(w.desc || ""); const m = /\b(\d)\s*HOJAS?\b/i.exec(d) || /\bOB\s*(\d)\s*H\b/i.exec(d); if (m) return Math.min(4, Number(m[1])); const ml = /\b(una|dos|tres)\s+hojas?\b/i.exec(d); if (ml) return { una: 1, dos: 2, tres: 3 }[ml[1].toLowerCase()]; return hojasSugeridas({ medida: String(w.medida || "").replace(/\s*[x×]\s*/i, "x") }); };
+const nhDeVentanaCD = (w) => { if (!w) return 2; if (typeof w.nh === "number") return w.nh; if (w.tp === "fijo") return 0; const d = String(w.desc || ""); const m = /\b(\d)\s*HOJAS?\b/i.exec(d) || /\bOB\s*(\d)\s*H\b/i.exec(d); if (m) return Math.min(4, Number(m[1])); const ml = /\b(una|dos|tres)\s+hojas?\b/i.exec(d); if (ml) return { una: 1, dos: 2, tres: 3 }[ml[1].toLowerCase()]; if (/\bfijos?\b/i.test(d) && !/practicable|oscilo|abatible|corredera|puerta/i.test(d)) return 0; /* «compuesta 1 Fijo»: sin hojas */ return hojasSugeridas({ medida: String(w.medida || "").replace(/\s*[x×]\s*/i, "x") }); };
 const hojasDe = (v, ov) => {
   const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
   const o = ov && base ? parseInt(ov[base], 10) : 0;
@@ -48254,6 +48277,18 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
+  // OBRA COMPLETA: todas las ventanas de su obra (según la hoja de corte) ya están al final de la línea (Persiana salida, Puertas terminadas, Línea, Solape) → se ve en MORADO
+  const snapZ = useObjetoFb("controlDiaVentanasObra");
+  const ZONAS_FIN = ZONAS_FIN_LINEA;
+  const avisosZ = useObjetoFb("avisosCristales");
+  const obrasCompletas = useMemo(() => obrasCompletasLinea(snapZ, ubic), [snapZ, ubic]);
+  // cada OBRA COMPLETA con su COLOR (8 colores que se reparten por orden) y su nº de presupuesto en el hueco
+  const COLORES_OBRA = COLORES_OBRA_LINEA;
+  const colorObra = useMemo(() => coloresObrasLinea(obrasCompletas, avisosZ), [obrasCompletas, avisosZ]);
+  // nº de presupuesto de una pieza de la hoja de corte («cd_…»): el guardado al colocarla o, si no, el de su obra
+  const pptoDeCodZ = (cod) => { const u = ubic && ubic[cod]; if (u && u.base) return String(u.base); const m = /^cd_(.+)__(.+?)(?:~H\d?)?$/.exec(String(cod)); const sn = m && snapZ && snapZ[m[1]]; return sn ? (toArray(sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "") : ""; };
+  const obraDePiezas = (piezas) => { const m = /^cd_(.+)__(.+?)$/.exec(String((piezas[0] || {}).cod || "")); return m ? m[1] : ""; };
+  const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
   const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return etCDZ[cod] || cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
@@ -48296,8 +48331,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
-                    <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                    <b>{hu}</b>
+                    {piezas.length > 0 && (() => { const b = pptoDeCodZ(piezas[0].cod); return b ? <div className="truncate text-[10px] font-extrabold">Ppto {pptoBonito(b)}</div> : null; })()}
+                    {piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
               })}
@@ -48346,7 +48383,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
         if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = ac; await fbUpdate(ref(fbDb, `ubicacionesLinea/${c}`), { ...resto, antes: null }).catch(() => {}); ok = true; } }
       if (!ok) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } }
       // Matrimonio: sus hojas vuelven también a donde estaban
-      if (uc && uc.porColgado && uc.hojasAntes) for (const [ch, x] of Object.entries(uc.hojasAntes)) { const zh = x && zonasM.find((q) => q.id === x.zonaId); if (!zh) continue; const r = await ocuparHuecoLinea(zh, ch, "", null, Number(x.hueco), Number(x.hueco), zh.cap || 2); if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = x; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); } }
+      if (uc && uc.hojasAntes && typeof uc.hojasAntes === "object" && !uc.hojasAntes.zonaId) for (const [ch, x] of Object.entries(uc.hojasAntes)) { const zh = x && zonasM.find((q) => q.id === x.zonaId); if (!zh) continue; const r = await ocuparHuecoLinea(zh, ch, "", null, Number(x.hueco), Number(x.hueco), zh.cap || 2); if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = x; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); } }
     }
     const claveM = (puesto === "herraje" && !/~H\d$/.test(vc.cod) ? baseCod : vc.cod).replace(/^cd_/, ""); const hoyH = new Date().toISOString().slice(0, 10); // herraje por hoja: se quita el tick de ESA hoja
     [...new Set(["persianaA", "persianaB", puesto].filter(Boolean))].forEach((pu) => { if ((pu === "persianaA" || pu === "persianaB") && pu !== puesto) return; fbSet(ref(fbDb, `marcasPuestoLinea/${pu}/${claveM}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyH}/${pu}/${claveM}`), null).catch(() => {}); });
@@ -48387,9 +48424,13 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button> : null; })()}
+                {vc.w && !vc.pieza && (() => { const crs = cristalesDeVentanaCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn, vc.w); return (
+                  <div className="w-full rounded-md bg-amber-50 border border-amber-300 px-3 py-1.5 text-sm text-amber-950">
+                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => <span key={ci} className={`inline-block mr-2 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}</span>) : (() => { const cs = caballetesDeObraCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn); return cs.length ? <span className="font-bold">de esta obra hay cristales en: {cs.map((c) => `caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ")} <span className="font-normal text-slate-500">(no sé cuál es el de esta ventana: su referencia no coincide)</span></span> : <span className="text-slate-500">no encuentro cristales de esta obra en los caballetes</span>; })()}
+                  </div>); })()}
+                {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
-                <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
+                <button type="button" onClick={() => devolverCD(vc)} className={accionPieza ? "px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white text-[11px] font-semibold" : "px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold"}>{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
             </div>
           ))}
@@ -50463,9 +50504,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const bases = new Set(toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); const rv = normVC(w && w.pos); if (!rv) return [];
     const out = [];
     toArray(cristales).forEach((c) => toArray(c && c.piezas).forEach((p, i) => {
-      if (!p || normVC(p.ref) !== rv) return;
-      const exp = String(p.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pres = digitosPresu(String(p.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]);
-      if ((uxN && exp === uxN) || (pres && bases.has(pres))) out.push({ c, i, p });
+      if (!p || canonRefVC(p.ref) !== canonRefVC(w && w.pos)) return;
+      if (cristalDeObraCD(c, p, sn, uxExpedientes)) out.push({ c, i, p });
     }));
     return out;
   };
@@ -50486,13 +50526,19 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
-    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base }).catch(() => {});
+    // PUERTA: al terminarla se coge también su HOJA (o hojas) de su estantería: sale de allí y se dice de dónde cogerla
+    let txtHojasP = ""; let hojasAntesP = null;
+    if (r && puestoId === "puerta") { let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ }
+      const hs = codsHojas(codCD, uF).filter((c) => uF[c] && uF[c].zonaId); if (hs.length) { hojasAntesP = {}; for (const ch of hs) { hojasAntesP[ch] = JSON.parse(JSON.stringify(uF[ch])); try { await liberarCodigoLinea(ch); } catch (e) { /* nada */ } }
+        txtHojasP = `\n⬅ Coge su hoja: ${hs.map((ch) => `${(zonas.find((q) => q.id === uF[ch].zonaId) || {}).nombre || uF[ch].zonaId} · ESTANTERÍA ${uF[ch].hueco}`).join(" · ")}`; }
+      else if (nhDeVentanaCD(hit.w) > 0) txtHojasP = "\n⚠ Su hoja no está en ningún almacén del CRM."; }
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, ...(hojasAntesP ? { hojasAntes: hojasAntesP } : {}) }).catch(() => {});
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
     const nCr = puestoId === "cristales" ? bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, true) : 0; // tocar la ventana en Cristales = sus cristales dados de baja
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sale de la Línea para PALETIZAR` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sale de la Línea para PALETIZAR` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}${txtHojasP}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -50518,6 +50564,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        try { const uA = (await fbGet(ref(fbDb, `ubicacionesLinea/${codCD}`))).val(); if (uA && uA.hojasAntes) for (const [ch, x] of Object.entries(uA.hojasAntes)) await volverA(ch, x); } catch (e) { /* nada */ } // sus hojas vuelven a su sitio
         try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ }
         if (puestoId === "cristales") bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
         const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior);
@@ -50619,7 +50666,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
         else {
           const esPta = esPuertaVentanaCD(hit.w);
-          const zS = zonas.find((q) => q.id === (esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
+          // FIJO (sin hojas): no pasa por pilastra/herraje/matrimonio → de la soldadora DIRECTO A LA LÍNEA (si lleva persiana, va al almacén de marcos como los demás)
+          const fijoDirecto = !hojaT && !esPta && nhDeVentanaCD(hit.w) === 0 && !toArray(hit.w.ex).includes("PERSIANA") && !persianaDeVentanaCD(hit.sn, hit.w);
+          const zS = zonas.find((q) => q.id === (fijoDirecto ? "sinPersiana" : esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
           // la otra hoja de la MISMA ventana va al mismo hueco (2 hojas por hueco); si no, al más cerca de su presupuesto. Puertas: marco 1-6 · hoja 7-12
           let uF = ubic || {}; if (hojaT) { try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ } }
           const hermana = hojaT && zS && !esPta ? codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), uF).map((c) => uF[c]).find((u) => u && u.zonaId === zS.id) : null;
@@ -50632,7 +50681,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
               if (r2) { const { zonaId, hueco, slot, ts, ...resto } = datos; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); juntas += `\n↔ Su otra hoja estaba en la ${hueco}: júntalas en la ${r.hueco}.`; }
             }
           }
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.${juntas}`; }
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? ` ${nHojaT === 1 ? "activa" : nHojaT === 2 ? "pasiva" : `hoja ${nHojaT}`}` : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${nombreHoja(nHojaT, 2)}: déjala` : fijoDirecto ? "FIJO (sin hojas): directo" : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.${juntas}`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
@@ -50726,11 +50775,41 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   // Desde el HUECO (pinchando la estantería): hacer el trabajo de este puesto sobre esa pieza, sin buscarla en «Obras del día»
   const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
-    const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
+    const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    // CONTROL DE LÍNEA: obra COMPLETA (todas sus ventanas al final de la línea) → avisar a CRISTALES (las ventanas se quedan aquí hasta que Cristales las tique)
+    if (puestoId === "lineaPers" && !/~H/.test(String(cod))) { const mk = /^cd_(.+)__(.+?)$/.exec(String(cod)); const kO = mk && mk[1]; const snO = kO && snapCDLin && snapCDLin[kO];
+      const FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"]; const vsO = toArray(snO && snO.ventanas);
+      const completa = vsO.length > 0 && vsO.every((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; return u && FIN.includes(u.zonaId); });
+      if (completa) { const ya = avisosCrist && avisosCrist[kO]; return { t: ya ? "🪟 Ya avisado a Cristales (volver a avisar)" : "🪟 Obra completa: AVISAR A CRISTALES", info: `${snO.nombre || ""}: ${vsO.length} ventana${vsO.length === 1 ? "" : "s"} al final de la línea.`, fn: async () => {
+        await fbSet(ref(fbDb, `avisosCristales/${kO}`), { k: kO, nombre: String(snO.nombre || "").slice(0, 80), base, ts: Date.now(), por: quien || "" }).catch(() => {});
+        // TODA LA OBRA a la LÍNEA (la de cristales), juntas: las de Persiana salida y Puertas terminadas se pasan; las que ya están en la Línea se quedan
+        const zL = zonas.find((q) => q.id === "sinPersiana"); const movidas = []; let llena = 0;
+        let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ }
+        for (const x of vsO) { const c = limpiaCodL(`cd_${kO}__${x.id}`); const u = uF[c]; if (!u || u.zonaId === "sinPersiana" || u.zonaId === "solape" || !zL) continue;
+          const prev = JSON.parse(JSON.stringify(u)); const r = await colocarAgrupado(zL, c, base, null);
+          if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = prev; await fbUpdate(ref(fbDb, `ubicacionesLinea/${c}`), { ...resto, et: `${x.pos || ""}`.slice(0, 30), base, antes: prev }).catch(() => {}); movidas.push(`${x.pos}: ${(zonas.find((q) => q.id === prev.zonaId) || {}).nombre || prev.zonaId} ${prev.hueco} → Línea ${r.hueco}`); } else llena++; }
+        avisar(true, `🪟 Avisado a Cristales: ${snO.nombre || base} (${vsO.length} ventanas).${movidas.length ? `\n➡ A la LÍNEA:\n${movidas.join("\n")}` : ""}${llena ? `\n⚠ La Línea está LLENA: ${llena} no han cabido.` : ""}`, false); } }; } } const mh = /~H(\d)$/.exec(String(cod)); const req = { q: base, id: String(w.id), t: Date.now() };
     if (puestoId === "herraje" && mh && (zId === "hojas" || zId === "hojasPilastra" || zId === "puertas" || zId === "puertas2")) return { t: `🔧 Herraje puesto → Hojas con herraje`, fn: () => marcarHechaPuesto({ ...req, tipo: `h${mh[1]}` }) };
+    // FIJO que está en el almacén de marcos (sin pilastra): aquí no se le hace nada → se manda a la Línea
+    if ((puestoId === "pilastra" || puestoId === "colgado" || puestoId === "soldadora") && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra"].includes(zId) && nhDeVentanaCD(w) === 0 && !toArray(w.ex).includes("PILASTRA") && !toArray(w.ex).includes("PERSIANA")) return { t: "➡ Es FIJO: mandarlo a la Línea", fn: async () => {
+      const zL = zonas.find((q) => q.id === "sinPersiana"); const prev = ubic && ubic[cod] ? JSON.parse(JSON.stringify(ubic[cod])) : null; const r = zL ? await colocarAgrupado(zL, cod, base, null) : null;
+      if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { et: `${w.pos || ""}`.slice(0, 30), obra: String((sn && sn.nombre) || "").slice(0, 60), base, ...(prev ? { antes: prev } : {}) }).catch(() => {}); avisar(true, `${w.pos}: FIJO → Línea · ESTANTERÍA ${r.hueco}.`, false); } else avisar(false, "La Línea está LLENA.");
+    } };
     if (puestoId === "pilastra" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) { const u = ubic && ubic[cod]; return u && u.herraje ? null : { t: "🔧 Herraje (y pilastra) puesto", fn: () => marcarHechaPuesto(req) }; }
-    if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) return { t: "💍 Matrimonio hecho → a su banco", fn: () => marcarHechaPuesto(req) };
-    if (esPuestoSimple && !/~H/.test(String(cod)) && zId !== puestoId) return { t: "✓ Hecha en este puesto", fn: () => tocarVentanaPuesto(req) };
+    if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) {
+      // antes de pulsar: DÓNDE ESTÁN SUS HOJAS (estantería de cada una) y si falta alguna
+      const hs = codsHojas(String(cod), ubic).map((c) => ({ c, u: ubic[c] })).filter((x) => x.u && x.u.zonaId);
+      const nEsp = nhDeVentanaCD(w);
+      const lineas = hs.map(({ c, u }) => `${/~H(\d)$/.test(c) ? nombreHoja(Number(c.slice(-1)), nEsp || 2) : "HOJAS"}: ${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} · ESTANTERÍA ${u.hueco}${u.zonaId === "hojasHerraje" ? "" : " ⚠ (aún SIN herraje)"}`);
+      const falta = nEsp > 0 && hs.length < nEsp ? `⚠ Faltan ${nEsp - hs.length} hoja${nEsp - hs.length === 1 ? "" : "s"}: el CRM no la${nEsp - hs.length === 1 ? "" : "s"} tiene en ningún almacén` : "";
+      return { t: "💍 Matrimonio hecho → a su banco", info: nEsp === 0 ? "FIJO: no lleva hojas." : [`🪟 Coge sus hojas (${nEsp}):`, ...lineas, falta].filter(Boolean).join("\n"), fn: () => marcarHechaPuesto(req) };
+    }
+    if (esPuestoSimple && !/~H/.test(String(cod)) && zId !== puestoId) {
+      let info = "";
+      if (puestoId === "puerta") { const hs = codsHojas(String(cod), ubic).filter((c) => ubic[c] && ubic[c].zonaId); const nE = nhDeVentanaCD(w);
+        info = nE === 0 ? "" : hs.length ? `🚪 Coge su hoja: ${hs.map((c) => `${(zonas.find((q) => q.id === ubic[c].zonaId) || {}).nombre || ubic[c].zonaId} · ESTANTERÍA ${ubic[c].hueco}`).join(" · ")}` : "⚠ Su hoja no está en ningún almacén del CRM."; }
+      return { t: puestoId === "puerta" ? "✓ Puerta terminada → Puertas terminadas" : "✓ Hecha en este puesto", info, fn: () => tocarVentanaPuesto(req) };
+    }
     return null;
   };
   const quitarTicada = async (claveM, m) => {
@@ -50744,13 +50823,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
       else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
-      else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
+      else if (esPuestoSimple && u) { if (u.hojasAntes) for (const [ch, x] of Object.entries(u.hojasAntes)) await volverA(ch, x); try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
       return true;
     } catch (e) { return false; }
   };
   // CRISTALES: cuando se dan de baja TODOS los cristales de una ventana (en el caballete), la ventana se da por HECHA sola (como tocarla)
+  const avisosCrist = useObjetoFb(puestoId === "cristales" || puestoId === "lineaPers" ? "avisosCristales" : "_ninguno"); // obras completas avisadas desde Control de línea
   const marcasCrist = useObjetoFb(`marcasPuestoLinea/${puestoId === "cristales" ? "cristales" : "_ninguno"}`);
   const hechasCrAuto = useRef(new Set());
   useEffect(() => {
@@ -51047,6 +51127,18 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
               <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cerrar</button>
             </div>
           </div>); })()}
+        {puestoId === "cristales" && Object.keys(avisosCrist || {}).length > 0 && <div style={{ order: -4 }} className="mb-3 space-y-2">
+          {Object.entries(avisosCrist || {}).filter(([, a]) => a).sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0)).map(([kO, a], iO) => { const snO = snapCDLin && snapCDLin[kO]; const vsO = toArray(snO && snO.ventanas); const colO = coloresObrasLinea(obrasCompletasLinea(snapCDLin, ubic), avisosCrist)[kO] || COLORES_OBRA_LINEA[0];
+            const hechaC = (x) => !!(marcasCrist && marcasCrist[limpiaCodL(`${kO}__${x.id}`)]); const faltan = vsO.filter((x) => !hechaC(x));
+            if (vsO.length && !faltan.length) { fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); return null; } // todas ticadas en Cristales: el aviso se va solo
+            return (
+            <div key={kO} className="rounded-lg border-4 border-slate-300 bg-white px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2"><span className={`px-2 py-1 rounded text-white font-extrabold text-lg border-2 ${colO}`}>{iO === 0 ? "AHORA" : `${iO + 1}º`} · Ppto {pptoBonito(a.base || "")}</span><b className="text-lg text-slate-900">🪟 OBRA COMPLETA EN LÍNEA: {a.nombre || a.base}</b><span className="text-sm text-violet-800">faltan {faltan.length} de {vsO.length}</span>
+                <button type="button" onClick={() => { if (window.confirm("¿Quitar este aviso?")) fbSet(ref(fbDb, `avisosCristales/${kO}`), null).catch(() => {}); }} className="ml-auto text-xs underline text-violet-800">quitar aviso</button></div>
+              <div className="mt-1 space-y-0.5">{vsO.map((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; const crs = cristalesDeVentanaCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO, x); const ok = hechaC(x); return (
+                <div key={x.id} className={`text-sm flex flex-wrap gap-x-2 ${ok ? "text-emerald-700 line-through" : "text-slate-900"}`}><b>{ok ? "✓ " : ""}{x.pos}</b>{u ? <span>📍 {(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} {u.hueco}</span> : null}<span className="font-bold text-amber-800">{crs.length ? crs.map(({ c, pz }) => `${pz.ancho}×${pz.alto} caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ") : (() => { const cs = caballetesDeObraCD(ctx.cristalesCaballetes, ctx.uxExpedientes || uxExpedientes, snO); return cs.length ? `cristales de la obra en: ${cs.map((c) => `caballete ${c.lote || c.numero || "—"}`).join(", ")}` : "cristales: no los encuentro"; })()}</span></div>); })}</div>
+            </div>); })}
+        </div>}
         {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
           <span className="text-sm font-bold text-slate-800">Ahora salen:</span>
           {[["marcos", "🟫 MARCOS", "bg-amber-700 border-amber-900"], ["hojas", "🪟 HOJAS", "bg-sky-700 border-sky-900"], ["preguntar", "❓ Preguntar cada vez", "bg-slate-600 border-slate-800"]].map(([k, t, c]) => (
@@ -58326,6 +58418,13 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
+    // BUSCAR POR PRESUPUESTO: los caballetes llevan el EXPEDIENTE, no el presupuesto → se traduce el presupuesto a su(s) expediente(s) de Uxcar
+    const presQ = /^\s*[\d.]{3,}(-\d+)?\s*$/.test(q || "") ? digitosPresu(String(q).trim().split("-")[0]) : "";
+    const expsQ = presQ ? [...new Set([
+      ...toArray(ctx.uxExpedientes).filter((u) => u && [u.presupuesto, u.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === presQ))).map((u) => String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "")),
+      ...toArray(ctx.proyectos).filter((pr) => pr && pr.uxcarExpedienteId && [pr.presupuestoNumero, presupuestoDeObra(pr)].some((t) => digitosPresu(t) === presQ)).map((pr) => String(((toArray(ctx.uxExpedientes).find((u) => u.id === pr.uxcarExpedienteId)) || {}).numero || "").replace(/\D/g, "").replace(/^0+/, "")),
+    ].filter(Boolean))] : [];
+    const qMapa = expsQ.length ? expsQ[0] : q; // el mapa busca por el expediente
     return (
       <div className="mt-6">
         <div className="flex flex-wrap items-center gap-3 mb-2">
@@ -58334,9 +58433,10 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         </div>
         {destacarCristal && destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-orange-500 text-white text-base font-extrabold">✓ CRISTAL {destacarCristal.viv || ""} PUESTO · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}</div>}
         {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
-        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
-        <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
-        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={q} />}
+        {presQ && <div className={`mb-2 rounded-md px-3 py-1.5 text-sm font-bold ${expsQ.length ? "bg-sky-50 border border-sky-300 text-sky-900" : "bg-amber-50 border border-amber-300 text-amber-900"}`}>{expsQ.length ? <>Presupuesto {pptoBonito(presQ)} = expediente {expsQ.map((x, i) => <span key={x} className={i === 0 ? "underline" : ""}>{i ? " · " : ""}{x}</span>)} → busco sus caballetes por el expediente{expsQ.length > 1 ? " (el primero; escribe otro número de expediente para ver los demás)" : ""}.</> : <>No encuentro el expediente de Uxcar del presupuesto {pptoBonito(presQ)}: busco el número tal cual.</>}</div>}
+        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: qMapa }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
+        <PendientesCristalesPuesto cristales={cristales} q={qMapa} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
+        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={qMapa} />}
       </div>
     );
   }
