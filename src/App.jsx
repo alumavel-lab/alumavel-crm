@@ -48387,7 +48387,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button> : null; })()}
+                {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
                 <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
@@ -50736,7 +50736,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { et: `${w.pos || ""}`.slice(0, 30), obra: String((sn && sn.nombre) || "").slice(0, 60), base, ...(prev ? { antes: prev } : {}) }).catch(() => {}); avisar(true, `${w.pos}: FIJO → Línea · ESTANTERÍA ${r.hueco}.`, false); } else avisar(false, "La Línea está LLENA.");
     } };
     if (puestoId === "pilastra" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) { const u = ubic && ubic[cod]; return u && u.herraje ? null : { t: "🔧 Herraje (y pilastra) puesto", fn: () => marcarHechaPuesto(req) }; }
-    if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) return { t: "💍 Matrimonio hecho → a su banco", fn: () => marcarHechaPuesto(req) };
+    if (puestoId === "colgado" && !/~H/.test(String(cod)) && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(zId)) {
+      // antes de pulsar: DÓNDE ESTÁN SUS HOJAS (estantería de cada una) y si falta alguna
+      const hs = codsHojas(String(cod), ubic).map((c) => ({ c, u: ubic[c] })).filter((x) => x.u && x.u.zonaId);
+      const nEsp = nhDeVentanaCD(w);
+      const lineas = hs.map(({ c, u }) => `${/~H(\d)$/.test(c) ? nombreHoja(Number(c.slice(-1)), nEsp || 2) : "HOJAS"}: ${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} · ESTANTERÍA ${u.hueco}${u.zonaId === "hojasHerraje" ? "" : " ⚠ (aún SIN herraje)"}`);
+      const falta = nEsp > 0 && hs.length < nEsp ? `⚠ Faltan ${nEsp - hs.length} hoja${nEsp - hs.length === 1 ? "" : "s"}: el CRM no la${nEsp - hs.length === 1 ? "" : "s"} tiene en ningún almacén` : "";
+      return { t: "💍 Matrimonio hecho → a su banco", info: nEsp === 0 ? "FIJO: no lleva hojas." : [`🪟 Coge sus hojas (${nEsp}):`, ...lineas, falta].filter(Boolean).join("\n"), fn: () => marcarHechaPuesto(req) };
+    }
     if (esPuestoSimple && !/~H/.test(String(cod)) && zId !== puestoId) return { t: "✓ Hecha en este puesto", fn: () => tocarVentanaPuesto(req) };
     return null;
   };
