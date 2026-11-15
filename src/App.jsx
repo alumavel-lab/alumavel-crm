@@ -48245,7 +48245,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const sentidoLin = useObjetoFb("configSentidoLinea"); // { sinPersiana: "der" | "izq" }: hacia dónde va la CARGA en el mapa de la Línea
   const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const uZ = mcd && ubic ? ubic[String(x.cod)] : null; const sinHerraje = !!(uZ && ["marcos", "marcosPilastra", "puertas", "puertas2"].includes(uZ.zonaId) && !uZ.herraje); // de la SOLDADORA sin herraje aún: verde flojo; con herraje (y pilastra) puesto en Pilastra: verde fuerte
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+?)(?:~H)?$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const uZ = mcd && ubic ? ubic[String(x.cod)] : null; const sinHerraje = !!(uZ && ["marcos", "marcosPilastra", "puertas", "puertas2", "hojas", "hojasPilastra"].includes(uZ.zonaId) && !uZ.herraje); // de la SOLDADORA sin herraje aún: verde flojo; con herraje (y pilastra) puesto en Pilastra: verde fuerte
     const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? (sinHerraje ? "flojo" : "ok") : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; else if (e === "flojo" && !c) c = "flojo"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
@@ -48317,7 +48317,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
   const ctxH = React.useContext(IncidenciasCristalCtx) || {};
   const limpiaH = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   const ventanasCD = piezas.filter((x) => String(x.cod).startsWith("cd_")).map((x) => {
-    const m = /^cd_(.+)__(.+)$/.exec(String(x.cod)); if (!m) return null; const sn = snapCDh && snapCDh[m[1]]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaH(q.id) === m[2]) : null;
+    const m = /^cd_(.+)__(.+?)(?:~H)?$/.exec(String(x.cod)); if (!m) return null; const sn = snapCDh && snapCDh[m[1]]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaH(q.id) === m[2]) : null;
     const bases = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
     const hoja = (hojasCDh && hojasCDh[m[1]] && hojasCDh[m[1]].url) || (bases.map((b) => hojasAuxH && hojasAuxH[b] && hojasAuxH[b].url).find(Boolean)) || "";
     return { cod: String(x.cod), k: m[1], wid: m[2], sn, w, hoja };
@@ -50487,15 +50487,29 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const deshacerColgado = async (cod) => {
     try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (!u || !u.porColgado) return;
       const a = u.antes; const zA = a && zonas.find((q) => q.id === a.zonaId);
-      if (zA) { const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (r) { const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, porColgado: null, antes: null }).catch(() => {}); return; } }
+      const hA = u.hojasAntes; if (hA && hA.zonaId) await volverA(cod + "~H", hA);
+      if (zA && await volverA(cod, a)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { porColgado: null, antes: null, hojasAntes: null }).catch(() => {}); return; }
       await liberarCodigoLinea(cod);
     } catch (e) { /* nada */ }
   };
-  const colocarAgrupado = async (zona, cod, base, hasta) => {
+  // vuelve a poner un código donde estaba (mismo hueco si está libre) con sus datos (herraje, pilastra…)
+  const volverA = async (cod, a) => {
+    const zA = a && zonas.find((q) => q.id === a.zonaId); if (!zA) return false;
+    const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (!r) return false;
+    const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, antes: null }).catch(() => {}); return true;
+  };
+  // deshacer un movimiento hecho por un puesto (flag «por…»): vuelve a donde estaba o, si no estaba en ningún sitio, sale
+  const deshacerMovido = async (cod, flag) => {
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (!u || !u[flag]) return;
+      if (u.antes && await volverA(cod, u.antes)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { [flag]: null, herraje: u.antes.herraje || null }).catch(() => {}); return; }
+      await liberarCodigoLinea(cod);
+    } catch (e) { /* nada */ }
+  };
+  const colocarAgrupado = async (zona, cod, base, hasta, desde = 1) => {
     let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
     const max = Math.min(hasta || zona.huecos, zona.huecos); const ocup = new Map();
     Object.entries(u0).forEach(([c, u]) => { if (u && u.zonaId === zona.id && String(c) !== String(cod)) ocup.set(Number(u.hueco), String(u.base || "")); });
-    const libres = []; for (let h = 1; h <= max; h++) if (!ocup.has(h)) libres.push(h);
+    const libres = []; for (let h = desde; h <= max; h++) if (!ocup.has(h)) libres.push(h);
     const mismos = base ? [...ocup.entries()].filter(([, b]) => b === base).map(([h]) => h) : [];
     let orden;
     if (mismos.length) orden = [...libres].sort((a, b) => Math.min(...mismos.map((m) => Math.abs(a - m))) - Math.min(...mismos.map((m) => Math.abs(b - m))) || a - b);
@@ -50512,7 +50526,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       let hit = null;
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
-      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
+      const hojaT = pE === "soldadora" && tipoSold === "hojas"; // las HOJAS llevan su propio código («~H») y su propio almacén
+      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : "");
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(pE)}.\n\n¿Quitarla?`)) return;
@@ -50521,7 +50536,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
-        if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
+        if (pE === "herraje") await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + "~H", "porHerraje");
+        if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : ""); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
@@ -50532,19 +50548,35 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       let txtAlm = "";
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
       if (pE === "soldadora") {
-        const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS];
+        const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : ""); const uS = ubic && ubic[codS];
         if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
         else {
           const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
-          const zS = zonas.find((q) => q.id === (esPta ? "puertas" : "marcos"));
-          const r = zS ? await colocarAgrupado(zS, codS, base, esPta ? 6 : null) : null;
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
+          const zS = zonas.find((q) => q.id === (esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
+          const r = zS ? await colocarAgrupado(zS, codS, base, esPta ? (hojaT ? 12 : 6) : null, esPta && hojaT ? 7 : 1) : null; // puertas: marco 1-6 · hoja 7-12
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? " hojas" : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
       // MATRIMONIO (colgado): coge el marco del almacén y lo deja en su siguiente sitio. Con persiana → Banco persiana A o B
       // (presupuestos completos en el mismo banco; a partir de 5 ventanas del presupuesto en un banco, al otro; y que los DOS tengan siempre trabajo).
       // Sin persiana → Línea. Puerta → Banco de puerta.
+      // HERRAJE: las hojas pasan de «Hojas (soldadora)» (sin herraje) a «Hojas con herraje». Si no estaban, se meten ya con herraje.
+      if (pE === "herraje") {
+        const codH = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + "~H"; const uH = ubic && ubic[codH];
+        if (uH && uH.zonaId === "hojasHerraje") txtAlm = `\n📍 Ya está en Hojas con herraje · ESTANTERÍA ${uH.hueco}.`;
+        else {
+          const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+          const zH = zonas.find((q) => q.id === "hojasHerraje"); const prevH = uH && uH.zonaId ? JSON.parse(JSON.stringify(uH)) : null;
+          if (esPta && uH && uH.zonaId) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codH}`), { herraje: Date.now() }).catch(() => {}); txtAlm = `\n📍 Hoja de puerta en ${(zonas.find((q) => q.id === uH.zonaId) || {}).nombre || uH.zonaId} · ESTANTERÍA ${uH.hueco}: herraje puesto.`; }
+          else {
+            const r = zH ? await colocarAgrupado(zH, codH, base, null) : null;
+            if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codH}`), { et: `${hit.w.pos || ""} hojas`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, herraje: Date.now(), porHerraje: true, ...(prevH ? { antes: prevH } : {}) }).catch(() => {});
+              txtAlm = `${prevH ? `\n⬅ Cógelas de ${(zonas.find((q) => q.id === prevH.zonaId) || {}).nombre || prevH.zonaId} · ESTANTERÍA ${prevH.hueco}` : ""}\n➡ Déjalas en Hojas con herraje · ESTANTERÍA ${r.hueco}.`; }
+            else txtAlm = `\n⚠ ${zH ? "Hojas con herraje está LLENO" : "No encuentro el almacén de hojas con herraje"}: no se ha podido colocar.`;
+          }
+        }
+      }
       if (pE === "colgado") {
         const codC = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
         let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
@@ -50567,7 +50599,10 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         }
         const zC = zonas.find((q) => q.id === dest);
         const r = zC ? await colocarAgrupado(zC, codC, base, null) : null;
-        if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codC}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porColgado: true, ...(prevC && prevC.zonaId ? { antes: JSON.parse(JSON.stringify(prevC)) } : {}) }).catch(() => {});
+        const uHo = u0[codC + "~H"]; // sus HOJAS (si están en un almacén) se cogen también: el matrimonio junta marco y hojas
+        if (r && uHo && uHo.zonaId) { try { await liberarCodigoLinea(codC + "~H"); } catch (e) { /* nada */ } }
+        if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codC}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porColgado: true, ...(prevC && prevC.zonaId ? { antes: JSON.parse(JSON.stringify(prevC)) } : {}), ...(uHo && uHo.zonaId ? { hojasAntes: JSON.parse(JSON.stringify(uHo)) } : {}) }).catch(() => {});
+          if (uHo && uHo.zonaId) txtAlm += `\n⬅ Sus hojas: ${(zonas.find((q) => q.id === uHo.zonaId) || {}).nombre || uHo.zonaId} · ESTANTERÍA ${uHo.hueco}`;
           txtAlm = `${prevC && prevC.zonaId ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prevC.zonaId) || {}).nombre || prevC.zonaId} · ESTANTERÍA ${prevC.hueco}` : ""}\n➡ Déjala en ${zC.nombre} · ESTANTERÍA ${r.hueco}${llevaP && !esPta ? " (lleva persiana)" : ""}.`; }
         else txtAlm = `\n⚠ ${zC ? `${zC.nombre} está LLENO` : `No encuentro el almacén «${dest}»`}: no se ha podido colocar.`;
       }
@@ -50593,6 +50628,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
   const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
+  const [tipoSold, setTipoSold] = useEstadoLocal("crm_soldadoraTipo", "marco"); // Soldadora sin pistola: lo que se toca es el MARCO o las HOJAS de la ventana
   const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   const quitarTicada = async (claveM, m) => {
@@ -50605,6 +50641,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
+      else if (puestoId === "herraje") await deshacerMovido(limpiaCodL(`cd_${claveM}`) + "~H", "porHerraje");
       else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
@@ -50885,6 +50922,11 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-slate-800">Lo que sale de la soldadora:</span>
+          <button type="button" onClick={() => setTipoSold("marco")} className={`px-4 py-2 rounded-md text-base font-extrabold border-2 ${tipoSold !== "hojas" ? "bg-amber-700 text-white border-amber-900" : "bg-white text-slate-700 border-slate-300"}`}>🟫 MARCO → almacén de marcos</button>
+          <button type="button" onClick={() => setTipoSold("hojas")} className={`px-4 py-2 rounded-md text-base font-extrabold border-2 ${tipoSold === "hojas" ? "bg-sky-700 text-white border-sky-900" : "bg-white text-slate-700 border-slate-300"}`}>🪟 HOJAS → almacén de hojas</button>
+        </div>}
         {puestoId === "pilastra" && <div style={{ order: -2 }} className={`mb-2 rounded-lg border-2 px-3 py-2 flex flex-wrap items-center gap-2 ${entradaPil ? "border-green-500 bg-green-50" : "border-emerald-700 bg-emerald-50"}`}>
           <span className="text-sm font-bold text-slate-800">Al tocar una ventana:</span>
           <button type="button" onClick={() => setEntradaPil(false)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${!entradaPil ? "bg-emerald-600 text-white border-emerald-700" : "bg-white text-slate-700 border-slate-300"}`}>🔧 Herraje puesto (verde fuerte)</button>
