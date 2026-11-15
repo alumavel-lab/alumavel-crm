@@ -48309,7 +48309,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // LA MISMA VENTANA EN DOS SITIOS (la obra está dos veces: como obra del CRM y como expediente de Uxcar → dos códigos): se queda la MÁS RECIENTE
   const duplicadasZ = useMemo(() => { const g = new Map(); Object.entries(ubic || {}).forEach(([c, u]) => { const m = /^cd_(.+)__(.+?)(~H\d?)?$/.exec(c); if (!m || !u || !u.zonaId) return; const b = pptoDeCodZ(c); if (!b) return; const fin = [...ZONAS_FIN_LINEA, "espera"].includes(u.zonaId); const k = `${b}|${m[2]}${m[3] && !fin ? m[3] : ""}`; if (!g.has(k)) g.set(k, []); g.get(k).push([c, u]); }); return [...g.values()].filter((xs) => xs.length > 1); }, [ubic, snapZ]); // al final de la línea va la VENTANA ENTERA: una hoja suelta ahí es un repetido
   const arreglarDuplicadas = async () => { if (!window.confirm(`Hay ${duplicadasZ.length} ventana${duplicadasZ.length === 1 ? "" : "s"} apuntada${duplicadasZ.length === 1 ? "" : "s"} en DOS sitios.\n\n¿Dejo cada una solo en el sitio MÁS RECIENTE (donde se movió la última vez) y quito el otro?`)) return;
-    for (const xs of duplicadasZ) { const orden = [...xs].sort((a, b) => (/~H/.test(a[0]) ? 1 : 0) - (/~H/.test(b[0]) ? 1 : 0) || (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); // se queda el MARCO (la ventana) y, si hay dos, el más reciente for (const [c] of orden.slice(1)) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } } } };
+    for (const xs of duplicadasZ) { const orden = [...xs].sort((a, b) => (/~H/.test(a[0]) ? 1 : 0) - (/~H/.test(b[0]) ? 1 : 0) || (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); /* se queda el MARCO (la ventana) y, si hay dos, el más reciente */ for (const [c] of orden.slice(1)) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } } } };
   const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
@@ -48356,7 +48356,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 return (
                   <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : z.id === "sinPersiana" && acristalada(piezas) ? "bg-slate-500 border-slate-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>
-                    {piezas.length > 0 && (() => { const b = pptoDeCodZ(piezas[0].cod); return b ? <div className="truncate text-[10px] font-extrabold">Ppto {pptoBonito(b)}</div> : null; })()}
+                    {piezas.length > 0 && (() => { const b = pptoDeCodZ(piezas[0].cod); return b ? <div className="truncate text-[11px] font-extrabold tracking-tight" title={`Presupuesto ${pptoBonito(b)}`}>{pptoBonito(b)}</div> : null; })()}
                     {piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                     {z.id === "sinPersiana" && acristalada(piezas) && <div className="truncate text-[9px] font-extrabold">✓ cristal</div>}
                   </div>
@@ -50550,7 +50550,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
     // Cristales, POR OBRA: si alguna ventana de la obra lleva solape/postigo, TODAS van juntas a Solape; si ninguna, todas SIGUEN EN LA LÍNEA (siempre localizadas)
-    const obraConSolape = toArray(hit.sn && hit.sn.ventanas).some((w2) => toArray(w2.ex).some((x) => x === "SOLAPE" || x === "POSTIGO")) || llevaSol;
+    const obraConSolape = llevaSol; // VENTANA POR VENTANA: con solape/postigo → Solape; sin solape → sigue en la Línea
     const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (obraConSolape ? "solape" : "sinPersiana") : puestoId;
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
@@ -61913,8 +61913,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const asignFab = {};
   Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => Object.keys(m || {}).forEach((k) => { const ko = koDeFab.get(k); if (ko) (asignFab[f] = asignFab[f] || {})[ko] = true; }));
   const enFabrica = new Set(); Object.values(asignFab).forEach((d) => Object.keys(d).forEach((ko) => enFabrica.add(ko)));
+  // EL PLANNING MANDA: si un presupuesto ya está en el planning, la misma obra metida por otro lado (otro código: obra del CRM / expediente de Uxcar) NO cuenta
+  const obraDeKo = new Map(); [...obras.values()].forEach((x) => { const kx = limpia(x.d.key); if (!obraDeKo.has(kx)) obraDeKo.set(kx, x); });
+  const basesDeObraCD = (ob) => { try { return [...presCrmDe(ob)].map((c) => basePresuDia(String(c).split("-")[0])).filter((b) => b.length >= 3); } catch (e) { return []; } };
+  const planBasesCD = new Set(); enFabrica.forEach((ko) => { const ob = obraDeKo.get(ko); if (ob) basesDeObraCD(ob).forEach((b) => planBasesCD.add(b)); });
+  const esDupPlan = (ko) => { if (enFabrica.has(ko)) return false; const ob = obraDeKo.get(ko); return !!ob && basesDeObraCD(ob).some((b) => planBasesCD.has(b)); };
+  const claveDupPlan = [...planBasesCD].sort().join(",");
   const asignTodas = {};
-  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko) && !esDupPlan(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   // UNA OBRA = UN DÍA: si sale en varios días (el planning la reparte en 2, o se metió en otro día sin quitarla del suyo), se queda en UNO:
   // el último día en que se le han marcado ventanas (donde de verdad se ha hecho) o, si aún no tiene nada marcado, el primero.
@@ -62566,6 +62572,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       }));
       if (!vs.length || vs.length > 400) return;
       const k = limpia(o.d.key);
+      if (esDupPlan(k)) { if (publicadoVentCD.current[k] !== "__dup") { publicadoVentCD.current[k] = "__dup"; fbSet(ref(fbDb, `controlDiaVentanasObra/${k}`), null).catch(() => {}); } return; } // repetida del planning: los puestos solo ven la del planning
       const codigos = [...presCrmDe(o)];
       if (o.d.tipo === "pl") { const pr = planPres && planPres[o.d.id]; if (pr && pr.pres) codigos.push(String(pr.pres).replace(/\./g, "").trim()); }
       const ent = o.d.tipo === "u" ? toArray(uxExpedientes).find((e) => e.id === o.d.id) : null;
@@ -62575,7 +62582,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       publicadoVentCD.current[k] = h;
       fbSet(ref(fbDb, `controlDiaVentanasObra/${k}`), dato).catch(() => {});
     });
-  }, [ventanasGuardadas, hojasCD, planPres, pinsMov, indice, proyectos, uxExpedientes, hojasAuxCD]);
+  }, [ventanasGuardadas, hojasCD, planPres, pinsMov, indice, proyectos, uxExpedientes, hojasAuxCD, claveDupPlan]);
   // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
   const filasRegistro = () => {
     const vistos = new Set(); const filas = [];
