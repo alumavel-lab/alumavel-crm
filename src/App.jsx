@@ -58390,6 +58390,41 @@ function CaballeteFilas({ c, marcar = "", onUpdateCristal = null, quien = "" }) 
     </div>
   );
 }
+// Presupuestos de los CRISTALES que no son de ninguna obra del CRM (p. ej. «66662» por «6662»): se proponen y se corrigen a mano, uno a uno
+function PresupuestosCristalSinObra({ cristales = [], onUpdateCristal, ctx = {} }) {
+  const [abierto, setAbierto] = useState(false); const [manual, setManual] = useState({});
+  const conocidos = useMemo(() => { const set = new Set(); toArray(ctx.proyectos).forEach((pr) => { [pr && pr.presupuestoNumero, pr && presupuestoDeObra(pr)].forEach((t) => { const d = digitosPresu(t); if (d.length >= 3) set.add(d); }); }); toArray(ctx.uxExpedientes).forEach((u) => { [u && u.presupuesto, u && u.presupuestoNumero].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((z) => { const d = digitosPresu(z); if (d.length >= 3) set.add(d); })); }); return set; }, [ctx.proyectos, ctx.uxExpedientes]);
+  const sinObra = useMemo(() => { const m = new Map();
+    toArray(cristales).forEach((c) => { if (!c) return; toArray(c.piezas).forEach((pz) => { if (!pz || pz.puesto) return; String(pz.presupuesto || "").split(/[·,;\s/]+/).map((x) => digitosPresu(x)).filter((d) => d.length >= 3).forEach((d) => { if (conocidos.has(d)) return; if (!m.has(d)) m.set(d, { d, n: 0, cabs: new Set(), exps: new Set() }); const e = m.get(d); e.n++; e.cabs.add(c.lote || c.numero || c.id); const ex = String(pz.expediente || c.expediente || "").trim(); if (ex) e.exps.add(ex); }); }); });
+    // propuesta: la obra del CRM que sale quitando UNA cifra (66662 → 6662)
+    return [...m.values()].map((e) => { const props = [...new Set(Array.from({ length: e.d.length }, (_, i) => e.d.slice(0, i) + e.d.slice(i + 1)).filter((x) => conocidos.has(x)))]; return { ...e, props }; }).sort((a, b) => (b.props.length - a.props.length) || (b.n - a.n));
+  }, [cristales, conocidos]);
+  if (!sinObra.length) return null;
+  const corregir = (de, a) => {
+    const nA = digitosPresu(a); if (!nA || nA.length < 3) { alert("Pon un nº de presupuesto válido."); return; }
+    const cabs = toArray(cristales).filter((c) => c && toArray(c.piezas).some((pz) => String(pz && pz.presupuesto || "").split(/[·,;\s/]+/).some((x) => digitosPresu(x) === de)));
+    if (!window.confirm(`¿Cambiar el presupuesto ${de} por ${pptoBonito(nA)} en ${cabs.length} caballete${cabs.length === 1 ? "" : "s"}?\n\nSolo en los cristales que dicen ${de}.`)) return;
+    const cambia = (t) => String(t || "").split(/\s*,\s*/).map((x) => (digitosPresu(x) === de ? nA : x)).join(", ");
+    cabs.forEach((c) => onUpdateCristal(c.id, { presupuesto: cambia(c.presupuesto), piezas: toArray(c.piezas).map((pz) => (pz && String(pz.presupuesto || "").split(/[·,;\s/]+/).some((x) => digitosPresu(x) === de) ? { ...pz, presupuesto: cambia(pz.presupuesto) } : pz)) }));
+  };
+  return (
+    <div className="mb-2 rounded-lg border-2 border-amber-400 bg-amber-50">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left text-sm">
+        <span className="w-4 text-amber-700">{abierto ? "▼" : "▶"}</span><b className="text-amber-900">⚠ Presupuestos de cristales que no son de ninguna obra ({sinObra.length})</b>
+        <span className="text-amber-800">{sinObra.filter((e) => e.props.length).length} con propuesta de corrección</span>
+        <span className="ml-auto text-[11px] font-semibold text-sky-700 underline">{abierto ? "cerrar" : "ver / corregir"}</span>
+      </button>
+      {abierto && <div className="px-3 pb-2 divide-y divide-amber-200">
+        {sinObra.map((e) => (
+          <div key={e.d} className="py-1.5 flex flex-wrap items-center gap-2 text-sm">
+            <b className="text-slate-900">Ppto {e.d}</b><span className="text-slate-600">{e.n} cristal{e.n === 1 ? "" : "es"} · caballete {[...e.cabs].join(", ")}{e.exps.size ? ` · ${[...e.exps].slice(0, 3).join(", ")}` : ""}</span>
+            {e.props.map((pp) => <button key={pp} type="button" onClick={() => corregir(e.d, pp)} className="px-2 py-1 rounded bg-emerald-600 text-white text-xs font-bold">✓ Es la {pptoBonito(pp)} → Corregir</button>)}
+            <span className="flex items-center gap-1"><input value={manual[e.d] || ""} onChange={(ev) => setManual({ ...manual, [e.d]: ev.target.value })} placeholder="otro nº" className="w-20 border border-slate-300 rounded px-1.5 py-0.5 text-xs bg-white" /><button type="button" disabled={!manual[e.d]} onClick={() => corregir(e.d, manual[e.d])} className="px-2 py-1 rounded border border-slate-400 bg-white text-xs font-bold disabled:opacity-40">Corregir</button></span>
+          </div>))}
+      </div>}
+    </div>
+  );
+}
 // Puesto Cristales: caballetes «Pendientes de ubicar» (sin hueco en el mapa) para poder buscar ahí el cristal
 function PendientesCristalesPuesto({ cristales, q, destacarCristal, onUpdateCristal = null, quien = "" }) {
   const [abierto, setAbierto] = useState(false);
@@ -58442,6 +58477,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
         {presQ && <div className={`mb-2 rounded-md px-3 py-1.5 text-sm font-bold ${expsQ.length ? "bg-sky-50 border border-sky-300 text-sky-900" : "bg-amber-50 border border-amber-300 text-amber-900"}`}>{expsQ.length ? <>Presupuesto {pptoBonito(presQ)} = expediente {expsQ.map((x, i) => <span key={x} className={i === 0 ? "underline" : ""}>{i ? " · " : ""}{x}</span>)} → busco sus caballetes por el expediente{expsQ.length > 1 ? " (el primero; escribe otro número de expediente para ver los demás)" : ""}.</> : <>No encuentro el expediente de Uxcar del presupuesto {pptoBonito(presQ)}: busco el número tal cual.</>}</div>}
         <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: qMapa }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
+        {onUpdateCristal && <PresupuestosCristalSinObra cristales={cristales} onUpdateCristal={onUpdateCristal} ctx={ctx} />}
         <PendientesCristalesPuesto cristales={cristales} q={qMapa} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
         {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={qMapa} />}
       </div>
