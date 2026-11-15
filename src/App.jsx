@@ -58418,6 +58418,13 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
+    // BUSCAR POR PRESUPUESTO: los caballetes llevan el EXPEDIENTE, no el presupuesto → se traduce el presupuesto a su(s) expediente(s) de Uxcar
+    const presQ = /^\s*[\d.]{3,}(-\d+)?\s*$/.test(q || "") ? digitosPresu(String(q).trim().split("-")[0]) : "";
+    const expsQ = presQ ? [...new Set([
+      ...toArray(ctx.uxExpedientes).filter((u) => u && [u.presupuesto, u.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === presQ))).map((u) => String(u.numero || "").replace(/\D/g, "").replace(/^0+/, "")),
+      ...toArray(ctx.proyectos).filter((pr) => pr && pr.uxcarExpedienteId && [pr.presupuestoNumero, presupuestoDeObra(pr)].some((t) => digitosPresu(t) === presQ)).map((pr) => String(((toArray(ctx.uxExpedientes).find((u) => u.id === pr.uxcarExpedienteId)) || {}).numero || "").replace(/\D/g, "").replace(/^0+/, "")),
+    ].filter(Boolean))] : [];
+    const qMapa = expsQ.length ? expsQ[0] : q; // el mapa busca por el expediente
     return (
       <div className="mt-6">
         <div className="flex flex-wrap items-center gap-3 mb-2">
@@ -58426,9 +58433,10 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
         </div>
         {destacarCristal && destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-orange-500 text-white text-base font-extrabold">✓ CRISTAL {destacarCristal.viv || ""} PUESTO · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}</div>}
         {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
-        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
-        <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
-        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={q} />}
+        {presQ && <div className={`mb-2 rounded-md px-3 py-1.5 text-sm font-bold ${expsQ.length ? "bg-sky-50 border border-sky-300 text-sky-900" : "bg-amber-50 border border-amber-300 text-amber-900"}`}>{expsQ.length ? <>Presupuesto {pptoBonito(presQ)} = expediente {expsQ.map((x, i) => <span key={x} className={i === 0 ? "underline" : ""}>{i ? " · " : ""}{x}</span>)} → busco sus caballetes por el expediente{expsQ.length > 1 ? " (el primero; escribe otro número de expediente para ver los demás)" : ""}.</> : <>No encuentro el expediente de Uxcar del presupuesto {pptoBonito(presQ)}: busco el número tal cual.</>}</div>}
+        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: qMapa }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
+        <PendientesCristalesPuesto cristales={cristales} q={qMapa} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
+        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={qMapa} />}
       </div>
     );
   }
