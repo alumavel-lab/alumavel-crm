@@ -1721,6 +1721,10 @@ export default function App() {
     const antes = new Set(toArray(proyectosRef.current).map((p) => p && p.id));
     const ahora = Date.now();
     if (antes.size) next = next.map((p) => (p && p.id && !antes.has(p.id) && !p.creadoEn ? { ...p, creadoEn: ahora } : p));
+    // DOCUMENTOS REPETIDOS BLOQUEADOS: un documento con el MISMO NOMBRE que otro que ya tiene la obra no entra (se queda el primero).
+    // Antes cada copia automática (Uxcar, Control del día, presupuesto…) volvía a subirlo con otra dirección y se acumulaban cientos.
+    const nomDoc = (d) => String((d && d.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/^(hoja de corte|pedido de persianas\/compactos|listado de vidrios \(pedido de cristales\)|carga de material \/ dibujos|análisis de materiales|listado de mano de obra) — /, "");
+    next = next.map((p) => { const ds = toArray(p && p.documentos); if (ds.length < 2) return p; const vistos = new Set(); const fuera = ds.filter((d) => { const k = nomDoc(d); if (!k) return true; if (vistos.has(k)) return false; vistos.add(k); return true; }); return fuera.length === ds.length ? p : { ...p, documentos: fuera }; });
     proyectosRef.current = next; setProyectos(next); persist("proyectos", next);
   };
 
