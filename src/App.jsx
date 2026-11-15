@@ -49019,18 +49019,19 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     // ticadas a mano en este puesto (pinchando la ventana, sin pistola)
     // SOLDADORA: cada pieza (marco, hoja activa, hoja pasiva…) es una marca; la ventana solo está HECHA cuando están todas → se guardan las piezas
     const piezasS = new Map();
-    if (puestoId === "soldadora") Object.entries(marcasPP || {}).forEach(([k, m]) => { if (!m) return; const mm = /~H(\d)$/.exec(k); const pz = mm ? `H${mm[1]}` : "M"; const kb = k.replace(/~H\d?$/, ""); if (!piezasS.has(kb)) piezasS.set(kb, new Set()); piezasS.get(kb).add(pz); });
-    Object.values(puestoId === "soldadora" ? {} : (marcasPP || {})).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
+    if (puestoId === "soldadora" || puestoId === "herraje") Object.entries(marcasPP || {}).forEach(([k, m]) => { if (!m) return; const mm = /~H(\d)$/.exec(k); const pz = mm ? `H${mm[1]}` : "M"; const kb = k.replace(/~H\d?$/, ""); if (!piezasS.has(kb)) piezasS.set(kb, new Set()); piezasS.get(kb).add(pz); });
+    Object.values(puestoId === "soldadora" || puestoId === "herraje" ? {} : (marcasPP || {})).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
     toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
     return { ids, pp, piezasS };
   }, [escaneos, puestoId, indice, marcasPP]);
-  const hojasVentP = useObjetoFb(puestoId === "soldadora" ? "hojasVentanaCD" : "_ninguno");
+  const hojasVentP = useObjetoFb(puestoId === "soldadora" || puestoId === "herraje" ? "hojasVentanaCD" : "_ninguno");
   // qué piezas le faltan a una ventana en la SOLDADORA (marco y cada hoja); [] = completa
   const faltanSold = (v) => {
-    if (puestoId !== "soldadora" || !v.sk) return null;
+    if ((puestoId !== "soldadora" && puestoId !== "herraje") || !v.sk) return null;
     const kb = `${v.sk}__${v.id}`.replace(/[.#$\[\]\/|\s]/g, "_"); const ov = hojasVentP && hojasVentP[kb];
     const nh = ov != null && ov !== "" ? Number(ov) : nhDeVentanaCD(v);
-    const hay = leidas.piezasS.get(kb) || new Set(); const req = ["M", ...Array.from({ length: nh }, (_, x) => `H${x + 1}`)];
+    const hay = leidas.piezasS.get(kb) || new Set(); if (puestoId === "herraje" && (hay.has("M") || nh === 0)) return []; // herraje: tick antiguo de la ventana entera = todas sus hojas
+    const req = [...(puestoId === "herraje" ? [] : ["M"]), ...Array.from({ length: nh }, (_, x) => `H${x + 1}`)];
     return req.filter((p) => !hay.has(p)).map((p) => (p === "M" ? "marco" : nombreHoja(Number(p.slice(1)), nh).toLowerCase()));
   };
   const esLeida = (c, v) => { const fs = faltanSold(v); if (fs) return fs.length === 0; return esLeidaN(c, v); };
@@ -50588,7 +50589,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         } else { setElegirSold({ req, hit, nh: nhS }); return; }
       }
       // cada HOJA lleva su propio código: «~H1» hoja activa, «~H2» hoja pasiva, «~H3»… (y su propio almacén)
-      const nHojaT = pE === "soldadora" && req && /^h\d$/.test(String(req.tipo || "")) ? Number(String(req.tipo).slice(1)) : 0; const hojaT = nHojaT > 0;
+      // HERRAJE: cada hoja se tica por separado (activa, pasiva…): si lleva más de una, se pregunta cuál
+      if (pE === "herraje" && !(req && req.tipo)) { const nhH = nhDeVentanaCD(hit.w); if (nhH >= 2) { setElegirSold({ req, hit, nh: nhH, herraje: true }); return; } if (nhH === 1) req = { ...req, tipo: "h1" }; }
+      const nHojaT = (pE === "soldadora" || pE === "herraje") && req && /^h\d$/.test(String(req.tipo || "")) ? Number(String(req.tipo).slice(1)) : 0; const hojaT = nHojaT > 0;
       const sufH = hojaT ? `~H${nHojaT}` : "";
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + sufH;
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
@@ -50599,7 +50602,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
-        if (pE === "herraje") for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), ubic)) await deshacerMovido(ch, "porHerraje");
+        if (pE === "herraje") { if (hojaT) await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH, "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
         if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
@@ -50641,8 +50644,10 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // las HOJAS de la ventana (activa, pasiva…) pasan juntas de «Hojas (soldadora)» a «Hojas con herraje»; si falta alguna, se avisa
         const cb = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const esPta = esPuertaVentanaCD(hit.w);
         const nEsp = nhDeVentanaCD(hit.w);
-        let cods = codsHojas(cb, ubic); if (!cods.length) cods = Array.from({ length: nEsp }, (_, x) => `${cb}~H${x + 1}`);
+        let cods = hojaT ? [`${cb}~H${nHojaT}`] : codsHojas(cb, ubic); if (!cods.length) cods = Array.from({ length: nEsp }, (_, x) => `${cb}~H${x + 1}`);
         const zH = zonas.find((q) => q.id === "hojasHerraje"); const lineas = []; let huecoPar = null;
+        // su HERMANA ya con herraje: ésta va al MISMO hueco (las hojas de una ventana siempre juntas)
+        if (hojaT) { let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ } const her = codsHojas(cb, uF).filter((c) => c !== cods[0]).map((c) => uF[c]).find((u) => u && u.zonaId === "hojasHerraje"); if (her) huecoPar = Number(her.hueco); }
         for (const ch of cods) {
           const uH = ubic && ubic[ch]; const nomH = /~H(\d)$/.test(ch) ? nombreHoja(Number(ch.slice(-1)), 2) : "HOJAS";
           if (uH && uH.zonaId === "hojasHerraje") { lineas.push(`📍 ${nomH}: ya está en Hojas con herraje · ${uH.hueco}`); huecoPar = huecoPar || Number(uH.hueco); continue; }
@@ -50728,7 +50733,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
-      else if (puestoId === "herraje") for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje");
+      else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
       else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
@@ -51011,21 +51016,23 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         {toastU && <div onClick={() => setToastU(null)} className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[94vw] w-[40rem] cursor-pointer rounded-xl px-4 py-3 shadow-2xl text-base font-bold whitespace-pre-line ${toastU.ok ? (toastU.repetida ? "bg-amber-500 text-slate-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{toastU.texto}</div>}
         {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const nH = nh == null ? nhDeVentanaCD(hit.w) : nH0(nh);
-          const piezas = [{ t: "marco", nom: "🟫 MARCO", cod: cM, cls: "bg-amber-700" }, ...Array.from({ length: nH }, (_, x) => ({ t: `h${x + 1}`, nom: `🪟 ${nombreHoja(x + 1, nH)}`, cod: `${cM}~H${x + 1}`, cls: "bg-sky-700" }))];
+          const esHerr = !!elegirSold.herraje;
+          const piezas = [...(esHerr ? [] : [{ t: "marco", nom: "🟫 MARCO", cod: cM, cls: "bg-amber-700" }]), ...Array.from({ length: nH }, (_, x) => ({ t: `h${x + 1}`, nom: `🪟 ${nombreHoja(x + 1, nH)}`, cod: `${cM}~H${x + 1}`, cls: "bg-sky-700" }))];
+          const hechaP = (pz) => { const u = ubic && ubic[pz.cod]; return esHerr ? !!(u && u.zonaId === "hojasHerraje") : !!u; };
           const nomZ = (u) => (u ? `${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} ${u.hueco}` : "");
-          const faltan = piezas.filter((pz) => !(ubic && ubic[pz.cod]));
+          const faltan = piezas.filter((pz) => !hechaP(pz));
           const ir = async (tipos) => { setElegirSold(null); for (const t of tipos) await marcarHechaPuesto({ ...req, tipo: t }); };
           return (
           <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setElegirSold(null)}>
             <div className="bg-white rounded-xl p-4 w-full max-w-md space-y-2" onClick={(e) => e.stopPropagation()}>
               <div className="text-lg font-extrabold text-slate-800">{hit.w.pos} <span className="text-sm font-semibold text-slate-500">{hit.sn.nombre || ""}</span></div>
-              <div className="text-sm text-slate-600">{nh == null ? `La hoja de corte no dice cuántas hojas lleva: por la medida pongo ${nH === 1 ? "1 hoja" : "2 (activa y pasiva)"}.` : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} Toca cada pieza que sale de la soldadora:</div>
+              <div className="text-sm text-slate-600">{esHerr ? `Lleva ${nH} hojas. Toca cada hoja a la que le has puesto el HERRAJE (pasa de Hojas soldadora a Hojas con herraje):` : <>{nh == null ? `La hoja de corte no dice cuántas hojas lleva: por la medida pongo ${nH === 1 ? "1 hoja" : "2 (activa y pasiva)"}.` : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} Toca cada pieza que sale de la soldadora:</>}</div>
               <div className="flex flex-wrap items-center gap-1 text-sm"><span className="font-semibold text-slate-700">¿Cuántas hojas lleva?</span>
                 {[[0, "Fija"], [1, "1"], [2, "2"], [3, "3"]].map(([n, t]) => <button key={n} type="button" onClick={async () => { await fbSet(ref(fbDb, `hojasVentanaCD/${limpiaCodL(`${hit.k}__${hit.w.id}`)}`), n).catch(() => {}); setElegirSold({ req, hit: { ...hit, w: { ...hit.w, nh: n, tp: n === 0 ? "fijo" : hit.w.tp === "fijo" ? "ventana" : hit.w.tp } }, nh: n }); }} className={`px-3 py-1 rounded border-2 font-bold ${nH === n && nh != null ? "bg-slate-800 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>{t}</button>)}
                 <span className="text-[11px] text-slate-500 w-full">Si la hoja de corte se equivoca, cámbialo aquí: se guarda para esta ventana en todos los puestos.</span>
               </div>
-              {piezas.map((pz) => { const u = ubic && ubic[pz.cod]; return (
-                <button key={pz.t} type="button" onClick={() => ir([pz.t])} className={`w-full px-4 py-3 rounded-lg ${u ? "bg-emerald-600" : pz.cls} text-white text-lg font-extrabold text-left`}>{u ? "✓ " : ""}{pz.nom}{u ? <span className="block text-xs font-semibold">ya está en {nomZ(u)} (tocar = quitarla)</span> : null}</button>); })}
+              {piezas.map((pz) => { const u = ubic && ubic[pz.cod]; const ok = hechaP(pz); return (
+                <button key={pz.t} type="button" onClick={() => ir([pz.t])} className={`w-full px-4 py-3 rounded-lg ${ok ? "bg-emerald-600" : pz.cls} text-white text-lg font-extrabold text-left`}>{ok ? "✓ " : ""}{pz.nom}{ok ? <span className="block text-xs font-semibold">{esHerr ? "con herraje" : "ya está"} en {nomZ(u)} (tocar = quitarla)</span> : u ? <span className="block text-xs font-semibold">está en {nomZ(u)}</span> : esHerr ? <span className="block text-xs font-semibold">no está en el almacén de hojas</span> : null}</button>); })}
               {faltan.length > 1 && <button type="button" onClick={() => ir(faltan.map((pz) => pz.t))} className="w-full px-4 py-2 rounded-lg border-2 border-slate-400 text-slate-800 text-sm font-bold">Todo lo que falta a la vez ({faltan.length})</button>}
               <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cerrar</button>
             </div>
