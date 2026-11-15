@@ -50497,30 +50497,32 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   };
   // Resto de puestos (sin pistola): tocar la ventana = HECHA en este puesto (verde y contador). Otra vez = quitar. No mueve huecos.
   const marcarHechaPuesto = async (req) => {
+    // en PILASTRA con «Meter marcos de soldadura» activado, el toque cuenta como de la SOLDADORA (marcos que ya estaban aquí sin ticar)
+    const pE = puestoId === "pilastra" && entradaPil ? "soldadora" : puestoId;
     try {
       const id = String((req && req.id) || ""); const qb = basePresuDia(req && req.q);
       let hit = null;
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
-      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
       if (yaM) {
-        if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(puestoId)}.\n\n¿Quitarla?`)) return;
-        await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
-        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(pE)}.\n\n¿Quitarla?`)) return;
+        await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), null).catch(() => {});
+        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), null).catch(() => {});
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
-        if (puestoId === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
-        if (puestoId === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
+        if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
+        if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
-      await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
-      fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+      await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), Date.now()).catch(() => {});
       // PILASTRA (sin pistola, de momento): se mira si el marco está en el almacén de MARCOS SOLDADOS. Si está, se marca ahí «herraje puesto»
       // (y «pilastra puesta» si la lleva). Si no está, se mete en el almacén de marcos (las puertas, en su almacén de puertas, huecos 1-6) ya marcado.
       let txtAlm = "";
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
-      if (puestoId === "soldadora") {
+      if (pE === "soldadora") {
         const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS];
         if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
         else {
@@ -50531,7 +50533,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
-      if (puestoId === "pilastra") {
+      if (pE === "pilastra") {
         const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const lleva = toArray(hit.w.ex).includes("PILASTRA");
         const marcas = { herraje: Date.now(), ...(lleva ? { pilas: Date.now() } : {}) };
         const uP = ubic && ubic[codP];
@@ -50547,12 +50549,13 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           else txtAlm = `\n⚠ No estaba en el almacén y ${zP ? `${zP.nombre} está LLENO` : "no encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
-      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${puestoId === "pilastra" ? (toArray(hit.w.ex).includes("PILASTRA") ? "\n✓ Herraje puesto · ⚠ LLEVA PILASTRA / TRAVESAÑO: pilastra puesta." : "\n✓ Herraje puesto (sin pilastra).") : toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : ""}${txtAlm}`, false);
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(pE)}.${pE === "pilastra" ? (toArray(hit.w.ex).includes("PILASTRA") ? "\n✓ Herraje puesto · ⚠ LLEVA PILASTRA / TRAVESAÑO: pilastra puesta." : "\n✓ Herraje puesto (sin pilastra).") : toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : ""}${txtAlm}`, false);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
   const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
+  const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   const quitarTicada = async (claveM, m) => {
     try {
@@ -50843,6 +50846,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        {puestoId === "pilastra" && <div style={{ order: -2 }} className={`mb-2 rounded-lg border-2 px-3 py-2 flex flex-wrap items-center gap-2 ${entradaPil ? "border-green-500 bg-green-50" : "border-emerald-700 bg-emerald-50"}`}>
+          <span className="text-sm font-bold text-slate-800">Al tocar una ventana:</span>
+          <button type="button" onClick={() => setEntradaPil(false)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${!entradaPil ? "bg-emerald-600 text-white border-emerald-700" : "bg-white text-slate-700 border-slate-300"}`}>🔧 Herraje puesto (verde fuerte)</button>
+          <button type="button" onClick={() => setEntradaPil(true)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${entradaPil ? "bg-green-300 text-green-950 border-green-600" : "bg-white text-slate-700 border-slate-300"}`}>➕ Meter marcos de soldadura (verde flojo)</button>
+          {entradaPil && <span className="text-xs text-green-900 w-full">Para los marcos que ya están aquí y no se ticaron en la soldadora: se meten en el almacén como llegados de soldadura, sin herraje. Cuando acabes, vuelve a «Herraje puesto».</span>}
+        </div>}
         {layoutSimple && (() => { const fT = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
           const lista = Object.entries(marcasEste || {}).filter(([, m]) => m).sort((a, b) => (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); const hoyT = hoyISO();
           const deHoy = lista.filter(([, m]) => m.fecha === hoyT); const viejas = lista.filter(([, m]) => m.fecha !== hoyT);
