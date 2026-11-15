@@ -50691,7 +50691,11 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const nHojaT = (pE === "soldadora" || pE === "herraje") && req && /^h\d$/.test(String(req.tipo || "")) ? Number(String(req.tipo).slice(1)) : 0; const hojaT = nHojaT > 0;
       const sufH = hojaT ? `~H${nHojaT}` : "";
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + sufH;
-      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
+      const yaM0 = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
+      // SOLDADORA: si la pieza estaba ticada pero YA NO ESTÁ en ningún almacén (se quitó, se perdió), al tocarla se vuelve a meter, sin preguntar «¿quitarla?»
+      const codPiezaS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; let sinSitio = false;
+      if (yaM0 && pE === "soldadora") { try { const uP = (await fbGet(ref(fbDb, `ubicacionesLinea/${codPiezaS}`))).val(); sinSitio = !(uP && uP.zonaId); } catch (e) { /* nada */ } }
+      const yaM = sinSitio ? null : yaM0;
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(pE)}.\n\n¿Quitarla?`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), null).catch(() => {});
