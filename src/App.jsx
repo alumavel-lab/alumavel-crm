@@ -26110,7 +26110,10 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
 
       <div className="flex gap-2 mb-6">
         {ESTADO_INSTALACION.map((e) => (
-          <button key={e} onClick={() => { onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
+          <button key={e} onClick={() => {
+            // FECHA DE MONTAJE OBLIGATORIA para pasarla a «En curso» o «Finalizada» (que no quede ninguna sin saber cuándo se montó)
+            if (e !== "Pendiente de instalación" && !(fechaMontajeInput || instalacion.fechaMontaje || (proyecto && proyecto.fechaMontaje))) { window.alert(`Pon primero el DÍA DE MONTAJE.\n\nSin fecha no se puede pasar a «${e}».`); try { const el = document.getElementById("inst-fecha-montaje"); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus(); } } catch (er) { /* nada */ } return; }
+            onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
             {e}
           </button>
@@ -26140,9 +26143,11 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Día de montaje</label>
           <TextInput
-            type="date" value={fechaMontajeInput}
-            onChange={(e) => { setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value }); }}
+            id="inst-fecha-montaje" type="date" value={fechaMontajeInput}
+            onChange={(e) => { if (!e.target.value && instalacion.estado !== "Pendiente de instalación") { window.alert("La fecha de montaje es obligatoria en una instalación en curso o finalizada."); return; } setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value }); }}
+            className={!fechaMontajeInput ? "border-rose-400 bg-rose-50" : ""}
           />
+          {!fechaMontajeInput && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Falta el día de montaje (obligatorio para empezarla o finalizarla)</div>}
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Vehículo asignado</label>
