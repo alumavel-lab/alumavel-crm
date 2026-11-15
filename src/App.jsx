@@ -7556,7 +7556,7 @@ export default function App() {
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
-            onFechaMontaje={(f, fecha) => { if (f.iid) updateInstalacion(f.iid, { fechaBorrador: fecha }); else if (f.pid) updateProyectoInline(f.pid, { fechaMontaje: fecha }); }}
+            onFechaMontaje={(f, fecha, horas) => { if (f.iid) updateInstalacion(f.iid, { fechaBorrador: fecha, ...(horas ? { horasMontaje: horas } : {}) }); else if (f.pid) updateProyectoInline(f.pid, { fechaMontaje: fecha }); }}
             onPublicarMontajes={() => {
               // PUBLICAR el borrador del planning de montaje: la fecha pasa a ser la de verdad (instalación y obra)
               const conB = instalaciones.filter((i) => i && i.fechaBorrador); if (!conB.length) return;
@@ -22759,7 +22759,12 @@ function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], ve
   const sinFecha = filas.filter((f) => !f.fecha).length;
   // PLANNING VIRTUAL DE MONTAJE: semanas por días; tocas una obra y luego el día (o cambias la fecha). La fecha va junta en obra e instalación.
   const dias = []; { const d0 = new Date(semana0 + "T12:00:00"); for (let k = 0; k < 14; k++) { const d = new Date(d0); d.setDate(d0.getDate() + k); if (d.getDay() !== 0) dias.push(d.toLocaleDateString("sv-SE")); } }
-  const ponerDia = (f, fecha) => { if (!onFechaMontaje || !fecha) return; onFechaMontaje(f, fecha); setMoverM(null); };
+  const ponerDia = (f, fecha) => {
+    if (!onFechaMontaje || !fecha) return;
+    let horas = null;
+    if (!(f.horas > 0)) { const r = window.prompt(`¿Cuántas HORAS lleva el montaje de «${f.nombre}»? (obligatorio)`, ""); const h = parseFloat(String(r || "").replace(",", ".")); if (!(h > 0)) { window.alert("Sin horas no se puede poner en el planning de montaje."); return; } horas = h; }
+    onFechaMontaje(f, fecha, horas); setMoverM(null);
+  };
   const tarjeta = (f) => (
     <div key={f.key} onClick={() => setMoverM(moverM && moverM.key === f.key ? null : f)} className={`mb-1 rounded border px-1.5 py-1 text-[11px] cursor-pointer ${moverM && moverM.key === f.key ? "bg-amber-300 border-amber-600" : f.prov ? "bg-amber-50 border-amber-300" : "bg-white border-slate-300"}`} title="Tócala y luego toca el día al que la quieres pasar">
       <div className="font-bold truncate">{f.numero ? `#${f.numero} ` : ""}{f.nombre}</div>
@@ -25980,7 +25985,7 @@ function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o 
   );
 }
 function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
-  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [], fechaMontaje: "" });
+  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [], fechaMontaje: "", horasMontaje: "" });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
@@ -25992,6 +25997,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
       return;
     }
     if (!f.fechaMontaje) { setErrorMsg("Pon el DÍA DE MONTAJE (es obligatorio). Si aún no lo sabes, pon uno aproximado y cámbialo luego."); return; }
+    if (!(parseFloat(f.horasMontaje) > 0)) { setErrorMsg("Pon las HORAS DE MONTAJE (obligatorio): sin horas el planning de montaje no sabe si da tiempo."); return; }
     if (!f.proyectoId && !f.direccion.trim() && !window.confirm("No has puesto DIRECCIÓN y no hay proyecto: el montador no sabrá dónde ir. ¿Crearla igualmente?")) return;
     setErrorMsg("");
     onSave(f);
@@ -26036,9 +26042,14 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
           <Field label="Teléfono de contacto"><TextInput value={f.telefono} onChange={set("telefono")} placeholder="Opcional" /></Field>
         </div>
 
-        <Field label="Día de montaje" required>
-          <TextInput type="date" value={f.fechaMontaje} onChange={set("fechaMontaje")} className={!f.fechaMontaje ? "border-rose-400 bg-rose-50" : ""} />
-        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Día de montaje" required>
+            <TextInput type="date" value={f.fechaMontaje} onChange={set("fechaMontaje")} className={!f.fechaMontaje ? "border-rose-400 bg-rose-50" : ""} />
+          </Field>
+          <Field label="Horas de montaje" required>
+            <TextInput type="number" min="0.5" step="0.5" value={f.horasMontaje} onChange={set("horasMontaje")} className={!(parseFloat(f.horasMontaje) > 0) ? "border-rose-400 bg-rose-50" : ""} placeholder="p. ej. 8" />
+          </Field>
+        </div>
 
         <Field label="Presupuesto de instalación (€)">
           <TextInput type="number" step="0.01" value={f.presupuestoInstalacion} onChange={set("presupuestoInstalacion")} />
@@ -26191,6 +26202,7 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
         {ESTADO_INSTALACION.map((e) => (
           <button key={e} onClick={() => {
             // FECHA DE MONTAJE OBLIGATORIA para pasarla a «En curso» o «Finalizada» (que no quede ninguna sin saber cuándo se montó)
+            if (e !== "Pendiente de instalación" && !(parseFloat(instalacion.horasMontaje) > 0)) { window.alert(`Pon primero las HORAS DE MONTAJE.\n\nSin horas no se puede pasar a «${e}».`); return; }
             if (e !== "Pendiente de instalación" && !(fechaMontajeInput || instalacion.fechaMontaje || (proyecto && proyecto.fechaMontaje))) { window.alert(`Pon primero el DÍA DE MONTAJE.\n\nSin fecha no se puede pasar a «${e}».`); try { const el = document.getElementById("inst-fecha-montaje"); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus(); } } catch (er) { /* nada */ } return; }
             onUpdate({ estado: e }); if (e === "Finalizada" && instalacion.estado !== "Finalizada" && onHacerPresupuesto && !instalacion.presupuestoPedido && window.confirm("Instalación FINALIZADA.\n\n¿Hay que hacer presupuesto (reparación, extras, desplazamiento…)? Aceptar = abre el presupuesto ya relleno.")) onHacerPresupuesto(); }}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
@@ -26228,6 +26240,9 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
           />
           {!fechaMontajeInput && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Falta el día de montaje (obligatorio para empezarla o finalizarla)</div>}
           {fechaMontajeInput && instalacion.fechaProvisional && <div className="mt-1 text-xs font-bold text-amber-700">⏳ Fecha PROVISIONAL (puesta sola a 17 días): cámbiala por la buena</div>}
+          <label className="text-[11px] uppercase tracking-wide text-slate-400 block mt-3 mb-1">Horas de montaje (obligatorio)</label>
+          <TextInput type="number" min="0.5" step="0.5" defaultValue={instalacion.horasMontaje || ""} key={`hm_${instalacion.id}_${instalacion.horasMontaje || ""}`} onBlur={(e) => { const v = parseFloat(e.target.value); if (!(v > 0)) { if (instalacion.horasMontaje) { window.alert("Las horas de montaje son obligatorias."); e.target.value = instalacion.horasMontaje; } return; } if (v !== instalacion.horasMontaje) onUpdate({ horasMontaje: v }); }} className={!(parseFloat(instalacion.horasMontaje) > 0) ? "border-rose-400 bg-rose-50" : ""} placeholder="p. ej. 8" />
+          {!(parseFloat(instalacion.horasMontaje) > 0) && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Faltan las horas de montaje</div>}
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Vehículo asignado</label>
