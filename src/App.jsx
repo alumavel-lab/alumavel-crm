@@ -7458,6 +7458,8 @@ export default function App() {
           />
         )}
         {/* Planning de Fábrica en segundo plano (no se ve): así se recalcula y avisa a Control del día aunque nadie tenga abierta la pantalla del planning */}
+        {/* Control del día en segundo plano: en cuanto una obra está en el planning, lee sola su hoja de corte (y el resto de automatismos) sin entrar en Control del día */}
+        {currentUser && (isAdmin || (veFabrica && !soloOperario)) && <ControlDelDia soloFondo proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={isAdmin} />}
         {currentUser && <Planning soloPublicar proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={[]}
           materiales={materiales} proveedores={proveedores} config={configVentanas.planning} onSaveConfig={() => {}} onGuardarHoras={() => {}} lotesSinObra={etiquetasSinObra} puestos={[]} />}
         {modulo === "informes" && (
@@ -60645,7 +60647,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, soloFondo = false }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -61631,6 +61633,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       try {
         for (const o of pendHoja) {
           hojaIntentadas.current[o.d.key] = true;
+          // candado en la base: si otro ordenador ya la está leyendo (hace menos de 5 min), no se repite
+          let mia = false;
+          try { const tr = await runTransaction(ref(fbDb, `controlDiaHojaLeyendo/${limpia(o.d.key)}`), (act) => { if (act && Date.now() - (act.en || 0) < 300000) return undefined; return { en: Date.now() }; }); mia = tr.committed; } catch (er) { mia = true; }
+          if (!mia) continue;
           const d = docsHojaDe(o)[0];
           let r;
           try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
@@ -62085,6 +62091,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const calCDtxt = JSON.stringify(calCD);
   useEffect(() => { if (!Object.keys(calCD).length || calCDtxt === calPublicado.current) return; const t = setTimeout(() => { calPublicado.current = calCDtxt; fbSet(ref(fbDb, "controlDiaCalendario"), { dias: calCD, en: Date.now() }).catch(() => {}); }, 3000); return () => clearTimeout(t);
   }, [calCDtxt]);
+  if (soloFondo) return null; // copia oculta: lee hojas de corte, pasa ventanas a la Línea y publica el calendario aunque nadie abra Control del día (todos los hooks van antes)
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
