@@ -6508,7 +6508,7 @@ export default function App() {
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
         {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
-        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={(id, f) => actualizarIncFab(id, { llegaPrevista: f || "" })} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
@@ -56960,7 +56960,7 @@ function textoTiempoInc(ms) {
 // Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
 // ENCARGADO / JEFE DE LÍNEA: las incidencias de fábrica abiertas, EN GRANDE y arriba en todas las pantallas, con 5 minutos para resolverlas
 const PLAZO_ENCARGADO_MS = 5 * 60 * 1000;
-function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false }) {
+function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onResolver, onIr, compacto = false, onFechaLlegada = null }) {
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 5000); return () => clearInterval(t); }, []);
   const abiertas = toArray(incidencias).filter((i) => i && i.estado !== "Resuelta").sort((a, b) => (a.creadaTs || 0) - (b.creadaTs || 0));
@@ -56971,10 +56971,11 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
   // Para el resto del equipo: una franja por incidencia (todos se enteran y pueden actuar)
   if (compacto) return (
     <div className="bg-slate-900 px-3 py-1.5 space-y-1">
-      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
-        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
+      {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const hoyI = new Date().toLocaleDateString("sv-SE"); const espera = !!i.llegaPrevista && i.llegaPrevista >= hoyI; const tarde = !espera && resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
+        <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${espera ? "bg-sky-200 text-sky-950" : tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
           <span>🚨 INCIDENCIA · {i.puesto || "?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}{i.obra ? ` · ${i.obra}` : ""}: <span className="font-semibold">{i.texto || i.tipo || ""}</span></span>
-          <span className="ml-auto font-black text-base">{tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          <span className="ml-auto font-black text-base">{espera ? `📅 Llega el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}` : i.llegaPrevista ? `⚠ Tenía que llegar el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}` : tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          {onFechaLlegada && <label className="text-[11px] font-semibold flex items-center gap-1" title="Cuándo está previsto que llegue lo que falta">📅 llega<input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 text-[11px] bg-white" /></label>}
           {i.asignadoA ? <span className="text-xs">{mia ? "VAS TÚ" : "ya va alguien"}</span> : <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">🏃 Voy yo</button>}
           <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-2 py-0.5 rounded bg-emerald-600 text-white text-xs font-extrabold">✓ Resuelta</button>
         </div>
@@ -56986,7 +56987,7 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
       <div className="text-white text-xl font-extrabold">🚨 {abiertas.length} INCIDENCIA{abiertas.length === 1 ? "" : "S"} DE FÁBRICA · tienes 5 minutos</div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
         {abiertas.map((i) => {
-          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = resta < 0;
+          const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const tarde = !(i.llegaPrevista && i.llegaPrevista >= new Date().toLocaleDateString("sv-SE")) && resta < 0;
           const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id;
           return (
             <div key={i.id} className={`rounded-xl border-4 p-3 ${tarde ? "bg-red-600 border-red-900 text-white animate-pulse" : "bg-amber-300 border-amber-600 text-slate-900"}`}>
@@ -56998,8 +56999,10 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
                   <div className="text-xs mt-1 opacity-90">{i.creadaPor && i.creadaPor.nombre ? `Avisa: ${i.creadaPor.nombre} · ` : ""}{i.creadaTs ? new Date(i.creadaTs).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}{i.asignadoA ? (mia ? " · VAS TÚ" : " · ya va alguien") : ""}</div>
                 </div>
                 <div className="text-right">
+                  {i.llegaPrevista ? <div className="text-xl font-black leading-tight">📅 {new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}<div className="text-xs font-bold">{i.llegaPrevista >= new Date().toLocaleDateString("sv-SE") ? "previsto que llegue" : "⚠ YA TENÍA QUE HABER LLEGADO"}</div></div> : <>
                   <div className="text-4xl font-black leading-none">{tarde ? `+${mmss(resta)}` : mmss(resta)}</div>
-                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div>
+                  <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div></>}
+                  {onFechaLlegada && <label className="mt-1 block text-[11px] font-semibold">📅 Llega el <input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 bg-white" /></label>}
                 </div>
               </div>
               {i.foto && <img src={i.foto} alt="" className="mt-2 max-h-40 rounded border border-black/20" />}
