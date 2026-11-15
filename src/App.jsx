@@ -48382,7 +48382,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {vc.hoja ? <a href={vc.hoja} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Ver la hoja de corte</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
+                {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
                 <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
             </div>
@@ -49058,7 +49058,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const hs = hojasLista.filter(([k, x]) => c.keys.has(k) || (x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0])))).map(([, x]) => x);
       const h = hs.length ? hs.reduce((a, b) => ((Number(b.leidoEn) || 0) > (Number(a.leidoEn) || 0) ? b : a)) : null; if (!h) return; // la leída MÁS TARDE
       const ms = toArray(h.modelos);
-      c.vs.forEach((w) => { if (w.dib && w.nh != null) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (typeof m.hojas === "number" && w.nh == null) w.nh = m.hojas; if (m.tipo && !w.tp) w.tp = m.tipo; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
+      c.vs.forEach((w) => { if (w.dib && w.nh != null) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (typeof m.hojas === "number" && w.nh == null) w.nh = m.hojas; if (m.pag && !w.pg) w.pg = m.pag; if (m.tipo && !w.tp) w.tp = m.tipo; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
     });
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
@@ -49067,7 +49067,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
   const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || puestoId !== "soldadora" && puestoId !== "herraje" && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
     // ya leída esa misma hoja, o ya falló con ella, o hay una leída del presupuesto DESPUÉS de subirse esta: no se repite. Si se sube otra más nueva, se vuelve a leer
-    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV >= 2 || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV >= 2 && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
   const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
   useEffect(() => {
     if (!pendHojaPd.length || hojaLeyendoPd.current) return;
@@ -49089,7 +49089,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             if (suyo && suyo !== b) throw new Error(`la hoja es del presupuesto ${r.pres}`);
             const ks = Object.keys(r.dibs || {});
             for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 1 })));
+            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 2 })));
           } catch (e) { await runTransaction(ref(fbDb, `controlDiaHojaCorte/${kH}`), (act) => (act && toArray(act.modelos).length ? undefined : { error: e.message || String(e), url: u, probadas: [u], leidoEn: Date.now(), v: 3, pres: b })).catch(() => {}); } // un fallo NUNCA borra una hoja ya leída bien por otro ordenador
         }
       } finally { hojaLeyendoPd.current = false; }
@@ -50312,6 +50312,13 @@ function hojaCorteMasNueva({ pp = "", expNum = "", uxExpedientes = [], proyectos
   return cand.reduce((a, b) => (b.ms > a.ms ? b : a));
 }
 function urlHojaCorte(args) { const h = hojaCorteMasNueva(args); return h ? h.url : ""; }
+// Abre la hoja de corte EN LA PÁGINA DE ESA VENTANA (#page=N). La página sale de la hoja leída; si el PDF que se abre es otro, se busca su modelo por el nombre
+function pagHoja(url, w, hojaLeida) {
+  if (!url || !w) return url || "";
+  let pg = Number(w.pg) || 0;
+  if (!pg && hojaLeida) { const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; const m = toArray(hojaLeida.modelos).find((x) => cods.includes(String(x.pos || "").toUpperCase())); pg = m && Number(m.pag) || 0; }
+  return pg > 1 ? `${String(url).split("#")[0]}#page=${pg}` : url;
+}
 function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }) {
   const [bP, setBP] = useState(""); const [bV, setBV] = useState("");
   const ctxB = React.useContext(IncidenciasCristalCtx) || {};
@@ -50356,7 +50363,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
               {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
-              {hoja && <a href={hoja} target="_blank" rel="noreferrer" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte</a>}
+              {hoja && <a href={pagHoja(hoja, w, (hojasCD && hojasCD[k]) || null)} target="_blank" rel="noreferrer" title="Se abre en la página de ESTA ventana" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte de esta ventana</a>}
               <button type="button" onClick={() => onTocar({ q: bases[0] || dP, id: w.id })} className={`${hoja ? "" : "ml-auto "}text-sm font-bold px-3 py-1.5 rounded ${hecha ? "bg-white text-rose-700" : "bg-emerald-600 text-white"}`}>{hecha ? "↩ Quitar (me he equivocado)" : "✓ Hecha"}</button>
             </div>
           );
@@ -60877,7 +60884,7 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
     if (!m) { if (cur) cur.texto += " " + t; continue; } // página de continuación del modelo anterior
     const acc = ((t.match(/Accionamiento\s+Tabla\s+Herraje\s*([\s\S]*?)Observaciones/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
     const obsCol = ((t.match(/Observaciones\s*([\s\S]*?)Color\s+Descripci/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
-    cur = { pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
+    cur = { pag: n, pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
     modelos.push(cur);
     if (Date.now() - inicio > 150000) continue; // tiempo máximo para los dibujos
     try {
@@ -61847,7 +61854,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 1 })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 2 })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -62019,7 +62026,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
   // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
   // ya leída, pero después se ha subido OTRA hoja más nueva (corregida): se vuelve a leer con la nueva
-  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !h.hjV && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
+  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !(h.hjV >= 2) && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
   const hojaReleidaHj = useRef({});
   const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = hayHojaMasNueva(o) ? docsHojaDe(o).slice(0, 1) : docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
@@ -62284,7 +62291,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const color = (inf && inf.color) || (ih && ih.color) || v.color || "";
         const medida = v.medida || (ih && ih.ancho ? `${ih.ancho} x ${ih.alto}` : "");
         const ex = [...new Set([...(seguro(() => extrasVentana(o, v), [])), ...(ih ? toArray(ih.extras) : [])])];
-        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, ...(ih && typeof ih.hojas === "number" ? { nh: ih.hojas } : {}), ...(ih && ih.tipo ? { tp: ih.tipo } : {}), hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
+        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, ...(ih && typeof ih.hojas === "number" ? { nh: ih.hojas } : {}), ...(ih && ih.tipo ? { tp: ih.tipo } : {}), ...(ih && ih.pag ? { pg: ih.pag } : {}), hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
       }));
       if (!vs.length || vs.length > 400) return;
       const k = limpia(o.d.key);
