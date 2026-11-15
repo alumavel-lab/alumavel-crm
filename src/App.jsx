@@ -50553,6 +50553,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       let hit = null;
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
+      { const ovN = hojasVentCD && hojasVentCD[limpiaCodL(`${hit.k}__${hit.w.id}`)]; if (ovN != null && ovN !== "") { const n = Number(ovN); hit = { ...hit, w: { ...hit.w, nh: n, tp: n === 0 ? "fijo" : hit.w.tp === "fijo" ? "ventana" : hit.w.tp } }; } } // nº de hojas puesto A MANO (manda sobre la hoja de corte)
       // SOLDADORA: el CRM sabe por la hoja de corte si la ventana es FIJA (solo marco) o cuántas hojas lleva; si lleva hojas, se elige qué sale
       if (pE === "soldadora" && !(req && req.tipo)) {
         const nhS = typeof hit.w.nh === "number" ? hit.w.nh : null; const fija = nhS === 0 || hit.w.tp === "fijo";
@@ -50692,6 +50693,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const [modoSold, setModoSold] = useEstadoLocal("crm_soldadoraModo", "preguntar"); // Soldadora: «marcos» (cada toque = marco), «hojas» (cada toque = la siguiente hoja), o preguntar
   const [elegirSold, setElegirSold] = useState(null); // Soldadora: al tocar una ventana se elige su MARCO o sus HOJAS (el CRM sabe cuántas hojas lleva por la hoja de corte)
   const nH0 = (n) => Math.max(0, Math.min(4, Number(n) || 0));
+  const hojasVentCD = useObjetoFb("hojasVentanaCD"); // nº de hojas de una ventana corregido a mano en la soldadora (0 = fija)
   // Aviso flotante abajo (la pantalla no se mueve al ticar): se ve donde está el chico y se va solo
   const [toastU, setToastU] = useState(null);
   useEffect(() => { if (!layoutSimple || !ultimo) return undefined; setToastU(ultimo); const t = setTimeout(() => setToastU(null), 6000); return () => clearTimeout(t); }, [ultimo]);
@@ -50999,6 +51001,10 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
             <div className="bg-white rounded-xl p-4 w-full max-w-md space-y-2" onClick={(e) => e.stopPropagation()}>
               <div className="text-lg font-extrabold text-slate-800">{hit.w.pos} <span className="text-sm font-semibold text-slate-500">{hit.sn.nombre || ""}</span></div>
               <div className="text-sm text-slate-600">{nh == null ? `La hoja de corte no dice cuántas hojas lleva: por la medida pongo ${nH === 1 ? "1 hoja" : "2 (activa y pasiva)"}.` : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} Toca cada pieza que sale de la soldadora:</div>
+              <div className="flex flex-wrap items-center gap-1 text-sm"><span className="font-semibold text-slate-700">¿Cuántas hojas lleva?</span>
+                {[[0, "Fija"], [1, "1"], [2, "2"], [3, "3"]].map(([n, t]) => <button key={n} type="button" onClick={async () => { await fbSet(ref(fbDb, `hojasVentanaCD/${limpiaCodL(`${hit.k}__${hit.w.id}`)}`), n).catch(() => {}); setElegirSold({ req, hit: { ...hit, w: { ...hit.w, nh: n, tp: n === 0 ? "fijo" : hit.w.tp === "fijo" ? "ventana" : hit.w.tp } }, nh: n }); }} className={`px-3 py-1 rounded border-2 font-bold ${nH === n && nh != null ? "bg-slate-800 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>{t}</button>)}
+                <span className="text-[11px] text-slate-500 w-full">Si la hoja de corte se equivoca, cámbialo aquí: se guarda para esta ventana en todos los puestos.</span>
+              </div>
               {piezas.map((pz) => { const u = ubic && ubic[pz.cod]; return (
                 <button key={pz.t} type="button" onClick={() => ir([pz.t])} className={`w-full px-4 py-3 rounded-lg ${u ? "bg-emerald-600" : pz.cls} text-white text-lg font-extrabold text-left`}>{u ? "✓ " : ""}{pz.nom}{u ? <span className="block text-xs font-semibold">ya está en {nomZ(u)} (tocar = quitarla)</span> : null}</button>); })}
               {faltan.length > 1 && <button type="button" onClick={() => ir(faltan.map((pz) => pz.t))} className="w-full px-4 py-2 rounded-lg border-2 border-slate-400 text-slate-800 text-sm font-bold">Todo lo que falta a la vez ({faltan.length})</button>}
