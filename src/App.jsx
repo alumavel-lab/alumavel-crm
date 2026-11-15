@@ -49012,11 +49012,24 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     const ids = new Set(); const pp = new Set(); const porId = new Map();
     indice.forEach((h) => { const v = h && h.ventana; if (v && !porId.has(String(v.id))) porId.set(String(v.id), v); });
     // ticadas a mano en este puesto (pinchando la ventana, sin pistola)
-    Object.values(marcasPP || {}).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
+    // SOLDADORA: cada pieza (marco, hoja activa, hoja pasiva…) es una marca; la ventana solo está HECHA cuando están todas → se guardan las piezas
+    const piezasS = new Map();
+    if (puestoId === "soldadora") Object.entries(marcasPP || {}).forEach(([k, m]) => { if (!m) return; const mm = /~H(\d)$/.exec(k); const pz = mm ? `H${mm[1]}` : "M"; const kb = k.replace(/~H\d?$/, ""); if (!piezasS.has(kb)) piezasS.set(kb, new Set()); piezasS.get(kb).add(pz); });
+    Object.values(puestoId === "soldadora" ? {} : (marcasPP || {})).forEach((m) => { if (!m) return; if (m.ventanaId) ids.add(String(m.ventanaId)); const b = basePresuDia(m.base); const pos = normP(m.pos); if (b && pos) { pp.add(`${b}|${pos}`); } });
     toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
-    return { ids, pp };
+    return { ids, pp, piezasS };
   }, [escaneos, puestoId, indice, marcasPP]);
-  const esLeida = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
+  const hojasVentP = useObjetoFb(puestoId === "soldadora" ? "hojasVentanaCD" : "_ninguno");
+  // qué piezas le faltan a una ventana en la SOLDADORA (marco y cada hoja); [] = completa
+  const faltanSold = (v) => {
+    if (puestoId !== "soldadora" || !v.sk) return null;
+    const kb = `${v.sk}__${v.id}`.replace(/[.#$\[\]\/|\s]/g, "_"); const ov = hojasVentP && hojasVentP[kb];
+    const nh = ov != null && ov !== "" ? Number(ov) : typeof v.nh === "number" ? v.nh : v.tp === "fijo" ? 0 : hojasSugeridas({ medida: String(v.medida || "").replace(/\s*[x×]\s*/i, "x") });
+    const hay = leidas.piezasS.get(kb) || new Set(); const req = ["M", ...Array.from({ length: nh }, (_, x) => `H${x + 1}`)];
+    return req.filter((p) => !hay.has(p)).map((p) => (p === "M" ? "marco" : nombreHoja(Number(p.slice(1)), nh).toLowerCase()));
+  };
+  const esLeida = (c, v) => { const fs = faltanSold(v); if (fs) return fs.length === 0; return esLeidaN(c, v); };
+  const esLeidaN = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
     const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
@@ -49033,7 +49046,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
       const c = cajas.find((x) => !x.vs.length && (x.keys.has(limpia(k)) || bs.some((b) => x.bases.has(b)))); if (!c) return;
       bs.forEach((b) => c.bases.add(b)); c.fuente = "cd"; c.obra = sn.nombre || c.obra;
-      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ...(typeof w.nh === "number" ? { nh: w.nh } : {}), ...(w.tp ? { tp: w.tp } : {}) }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
+      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ...(typeof w.nh === "number" ? { nh: w.nh } : {}), ...(w.tp ? { tp: w.tp } : {}), sk: k }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
     });
     // 2) Si Control del día aún no tiene esa obra: las ventanas de las ETIQUETAS
     const vistos = new Set();
@@ -49062,7 +49075,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     });
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
-  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd]);
+  }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd, hojasVentP]);
   // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
   const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || puestoId !== "soldadora" && puestoId !== "herraje" && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
@@ -49117,11 +49130,12 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                   </div>
                 ); })()}
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
-                {c.vs.map((v) => { const ok = esLeida(c, v); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                {c.vs.map((v) => { const ok = esLeida(c, v); const fsT = faltanSold(v); const parcial = !!fsT && fsT.length > 0 && leidas.piezasS.has(`${v.sk}__${v.id}`.replace(/[.#$\[\]\/|\s]/g, "_")); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
+                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : parcial ? "bg-amber-300 border-amber-600 text-slate-900" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
                     <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}{conIncP(c, v) ? " ⚠" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
+                    {parcial && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold text-rose-800 text-center leading-tight`}>falta: {fsT.join(", ")}</div>}
                     {alm && <div className={`${enTv ? "text-sm" : "text-[10px]"} font-extrabold`}>📦 {alm}</div>}
                     {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
                     {toArray(v.ex).filter((x) => x !== "PERSIANA").length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).filter((x) => x !== "PERSIANA").map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
