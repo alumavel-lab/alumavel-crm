@@ -52880,6 +52880,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   };
   // fechasPlanEn: cuándo se puso cada obra en su día → dentro del día salen EN EL ORDEN EN QUE SE METIERON (la primera que metes, la primera)
   // ORDEN DENTRO DEL DÍA: subir / bajar / poner la primera (se reescribe la hora en que «se metió» cada obra de ese día)
+  // IR A UNA OBRA del planning: baja hasta su tarjeta (en su día, o en «días ya pasados») y la marca un momento
+  const irAObraPlan = (id) => {
+    const ob = plan1.obras[id]; const ini = ob && ob.inicio;
+    const el = document.getElementById(`plcard-${id}-${ini}`) || document.getElementById(`platas-${id}`) || document.querySelector(`[data-plid="${id}"]`);
+    if (!el) { alert(ini ? `Está en el planning el ${fmtDia(ini)}${ob.fin && ob.fin !== ini ? ` (sigue hasta el ${fmtDia(ob.fin)})` : ""}.\n\nNo la veo en pantalla: puede que ese día esté fuera de lo que se ve, o que el recuadro de «días ya pasados» esté cerrado.` : "Está en el planning, pero aún sin día (esperando material o sin sitio)."); return; }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const prev = el.style.outline; el.style.outline = "4px solid #d946ef"; el.style.outlineOffset = "2px";
+    setTimeout(() => { el.style.outline = prev; el.style.outlineOffset = ""; }, 4000);
+  };
   const moverEnDia = (id, f, ids, a) => {
     const lista = ids.filter((x) => x !== id); let i = ids.indexOf(id); if (i < 0) return;
     if (a === "primera") i = 0; else if (a === "arriba") i = Math.max(0, i - 1); else i = Math.min(lista.length, i + 1);
@@ -53310,7 +53319,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             </div>
             {ab && <div className="divide-y divide-amber-200 px-2">
             {obs.map((o) => (
-              <div key={o.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
+              <div key={o.id} id={`platas-${o.id}`} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
                 <span className="font-semibold text-slate-800 min-w-[200px]">{o.nombre}</span>
                 <span className="text-xs text-amber-800">estaba el {fmtDia(plan1.obras[o.id].inicio)}{plan1.obras[o.id].fin !== plan1.obras[o.id].inicio ? ` – ${fmtDia(plan1.obras[o.id].fin)}` : ""}</span>
                 <button onClick={() => pasarObras([o], primerLaborableDesde(hoy))} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100">→ Hoy</button>
@@ -53407,7 +53416,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   return (
                     <div key={p.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
                       <button type="button" onClick={() => onVerProyecto && onVerProyecto(p.id)} title="Abrir la ficha de la obra para completar lo que falta (informe de materiales, «Qué lleva la obra»…)" className="flex-1 min-w-[12rem] text-left font-semibold text-slate-800 hover:text-indigo-700 underline decoration-dotted">{presupuestoDeObra(p) ? `${presupuestoDeObra(p)} · ` : ""}#{p.numero} {p.nombre} <span className="text-[11px] font-normal text-indigo-600 no-underline">📂 abrir ficha</span></button>
-                      <span className={`text-[11px] font-semibold ${ya ? "text-sky-700" : listo || p.estadoTrabajo === "En proceso" ? "text-emerald-700" : "text-amber-700"}`}>{ya ? "ya está en el planning" : quitada ? "quitada del planning" : p.estadoTrabajo === "En proceso" ? "en fabricación, sin planning" : listo ? "✓ material listo" : "⚠ material sin completar"}</span>
+                      {ya && (() => { const idP = ids.find((i) => enPlan.has(i)); const ob = plan1.obras[idP]; return (
+                        <button type="button" onClick={() => irAObraPlan(idP)} title="Ir a esta obra en el planning" className="text-[11px] font-bold px-2 py-1 rounded-md bg-sky-600 text-white hover:bg-sky-700">
+                          📍 Ya está en el planning{ob && ob.inicio ? `: ${fmtDia(ob.inicio)}${ob.fin && ob.fin !== ob.inicio ? ` – ${fmtDia(ob.fin)}` : ""}` : " (sin día)"} · ir →
+                        </button>); })()}
+                      <span className={`text-[11px] font-semibold ${ya ? "hidden" : listo || p.estadoTrabajo === "En proceso" ? "text-emerald-700" : "text-amber-700"}`}>{ya ? "" : quitada ? "quitada del planning" : p.estadoTrabajo === "En proceso" ? "en fabricación, sin planning" : listo ? "✓ material listo" : "⚠ material sin completar"}</span>
                       {!ya && <button type="button" disabled={!!anadiendo} onClick={async () => { if (!listo && p.estadoTrabajo !== "En proceso" && !window.confirm(`#${p.numero}: el material no está completo según el CRM.\n\n¿Añadirla al planning igualmente?`)) return; setAnadiendo(p.id); try { const ok = await onMeterEnPlanning(p.id, fechaQ); if (ok) setQPlan(""); } finally { setAnadiendo(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{anadiendo === p.id ? "Añadiendo…" : `➕ Añadir el ${fmtDate(fechaQ)}`}</button>}
                     </div>
                   );
@@ -53515,7 +53528,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {pasaH && <div className="text-[11px] mb-1 rounded px-1.5 py-0.5 bg-rose-600 text-white font-bold">⚠ PASA POR {Math.round((totH - capF) * 10) / 10} h (incluye las metidas a mano)</div>}
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; const idsOrd = [...new Set(d.trozos.filter((x) => ((plan1.obras[x.id] && plan1.obras[x.id].inicio) || f) === f).map((x) => x.id))]; const pos = idsOrd.indexOf(t.id); return (
-                  <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
+                  <div key={i} id={`plcard-${t.id}-${f}`} data-plid={t.id} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
                     <label className="float-right ml-1" title="Marcar para moverla con otras" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selPl.includes(t.id)} onChange={(e) => setSelPl(e.target.checked ? [...new Set([...selPl, t.id])] : selPl.filter((x) => x !== t.id))} /></label>
                     {pos >= 0 && idsOrd.length > 1 && <span className="float-right flex gap-0.5 ml-1" onClick={(e) => e.stopPropagation()}>
