@@ -47564,7 +47564,7 @@ const ZONAS_POR_PUESTO = {
   soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2"],
   pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas", "puertas"],
   herraje: ["hojas", "hojasHerraje"],
-  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana"],
+  colgado: ["marcosPilastra", "marcos", "puertas", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana", "bancoPuerta"],
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
   lineaPers: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2", "hojasHerraje", "colgadoA", "colgadoB", "persianaA", "persianaB", "bancoPuerta", "sinPersiana", "puertasTerminadas", "solape", "espera", "especiales"],
@@ -48245,7 +48245,8 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const sentidoLin = useObjetoFb("configSentidoLinea"); // { sinPersiana: "der" | "izq" }: hacia dónde va la CARGA en el mapa de la Línea
   const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? "ok" : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+?)(?:~H)?$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const uZ = mcd && ubic ? ubic[String(x.cod)] : null; const sinHerraje = !!(uZ && ["marcos", "marcosPilastra", "puertas", "puertas2", "hojas", "hojasPilastra"].includes(uZ.zonaId) && !uZ.herraje); // de la SOLDADORA sin herraje aún: verde flojo; con herraje (y pilastra) puesto en Pilastra: verde fuerte
+    const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? (sinHerraje ? "flojo" : "ok") : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; else if (e === "flojo" && !c) c = "flojo"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -48291,7 +48292,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -48316,7 +48317,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
   const ctxH = React.useContext(IncidenciasCristalCtx) || {};
   const limpiaH = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   const ventanasCD = piezas.filter((x) => String(x.cod).startsWith("cd_")).map((x) => {
-    const m = /^cd_(.+)__(.+)$/.exec(String(x.cod)); if (!m) return null; const sn = snapCDh && snapCDh[m[1]]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaH(q.id) === m[2]) : null;
+    const m = /^cd_(.+)__(.+?)(?:~H)?$/.exec(String(x.cod)); if (!m) return null; const sn = snapCDh && snapCDh[m[1]]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaH(q.id) === m[2]) : null;
     const bases = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
     const hoja = (hojasCDh && hojasCDh[m[1]] && hojasCDh[m[1]].url) || (bases.map((b) => hojasAuxH && hojasAuxH[b] && hojasAuxH[b].url).find(Boolean)) || "";
     return { cod: String(x.cod), k: m[1], wid: m[2], sn, w, hoja };
@@ -49014,7 +49015,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
       const c = cajas.find((x) => !x.vs.length && (x.keys.has(limpia(k)) || bs.some((b) => x.bases.has(b)))); if (!c) return;
       bs.forEach((b) => c.bases.add(b)); c.fuente = "cd"; c.obra = sn.nombre || c.obra;
-      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
+      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ...(typeof w.nh === "number" ? { nh: w.nh } : {}), ...(w.tp ? { tp: w.tp } : {}) }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
     });
     // 2) Si Control del día aún no tiene esa obra: las ventanas de las ETIQUETAS
     const vistos = new Set();
@@ -49035,20 +49036,20 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     // DIBUJOS sacados directamente de la HOJA DE CORTE leída (por obra o por nº de presupuesto), aunque Control del día aún no los haya pasado
     const hojasLista = Object.entries(hojasCDpd || {}).filter(([, h]) => h && toArray(h.modelos).length);
     cajas.forEach((c) => {
-      if (!c.vs.length || c.vs.every((w) => w.dib)) return;
+      if (!c.vs.length || c.vs.every((w) => w.dib && w.nh != null)) return;
       const hs = hojasLista.filter(([k, x]) => c.keys.has(k) || (x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0])))).map(([, x]) => x);
       const h = hs.length ? hs.reduce((a, b) => ((Number(b.leidoEn) || 0) > (Number(a.leidoEn) || 0) ? b : a)) : null; if (!h) return; // la leída MÁS TARDE
       const ms = toArray(h.modelos);
-      c.vs.forEach((w) => { if (w.dib) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
+      c.vs.forEach((w) => { if (w.dib && w.nh != null) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (typeof m.hojas === "number" && w.nh == null) w.nh = m.hojas; if (m.tipo && !w.tp) w.tp = m.tipo; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
     });
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd]);
   // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
-  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
+  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || puestoId !== "soldadora" && puestoId !== "herraje" && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
     // ya leída esa misma hoja, o ya falló con ella, o hay una leída del presupuesto DESPUÉS de subirse esta: no se repite. Si se sube otra más nueva, se vuelve a leer
-    const ya = Object.values(hojasCDpd || {}).some((h) => h && (h.url === u || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
   const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
   useEffect(() => {
     if (!pendHojaPd.length || hojaLeyendoPd.current) return;
@@ -49070,7 +49071,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             if (suyo && suyo !== b) throw new Error(`la hoja es del presupuesto ${r.pres}`);
             const ks = Object.keys(r.dibs || {});
             for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId })));
+            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 1 })));
           } catch (e) { await runTransaction(ref(fbDb, `controlDiaHojaCorte/${kH}`), (act) => (act && toArray(act.modelos).length ? undefined : { error: e.message || String(e), url: u, probadas: [u], leidoEn: Date.now(), v: 3, pres: b })).catch(() => {}); } // un fallo NUNCA borra una hoja ya leída bien por otro ordenador
         }
       } finally { hojaLeyendoPd.current = false; }
@@ -50438,8 +50439,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
-    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base }).catch(() => {});
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
@@ -50481,30 +50482,134 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       await ponerPersianaCD(hit, esPuestoPers ? persianaDeVentanaCD(hit.sn, hit.w) : null);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
+  // MARCOS AGRUPADOS POR PRESUPUESTO: el marco va al hueco libre más cerca de los de su mismo presupuesto; si es un presupuesto nuevo, después del último ocupado
+  // Deshacer Matrimonio: la ventana vuelve a donde estaba (con sus marcas de herraje/pilastra), o sale si no estaba en ningún sitio
+  const deshacerColgado = async (cod) => {
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (!u || !u.porColgado) return;
+      const a = u.antes; const zA = a && zonas.find((q) => q.id === a.zonaId);
+      const hA = u.hojasAntes; if (hA && hA.zonaId) await volverA(cod + "~H", hA);
+      if (zA && await volverA(cod, a)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { porColgado: null, antes: null, hojasAntes: null }).catch(() => {}); return; }
+      await liberarCodigoLinea(cod);
+    } catch (e) { /* nada */ }
+  };
+  // vuelve a poner un código donde estaba (mismo hueco si está libre) con sus datos (herraje, pilastra…)
+  const volverA = async (cod, a) => {
+    const zA = a && zonas.find((q) => q.id === a.zonaId); if (!zA) return false;
+    const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (!r) return false;
+    const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, antes: null }).catch(() => {}); return true;
+  };
+  // deshacer un movimiento hecho por un puesto (flag «por…»): vuelve a donde estaba o, si no estaba en ningún sitio, sale
+  const deshacerMovido = async (cod, flag) => {
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (!u || !u[flag]) return;
+      if (u.antes && await volverA(cod, u.antes)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { [flag]: null, herraje: u.antes.herraje || null }).catch(() => {}); return; }
+      await liberarCodigoLinea(cod);
+    } catch (e) { /* nada */ }
+  };
+  const colocarAgrupado = async (zona, cod, base, hasta, desde = 1) => {
+    let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
+    const max = Math.min(hasta || zona.huecos, zona.huecos); const ocup = new Map();
+    Object.entries(u0).forEach(([c, u]) => { if (u && u.zonaId === zona.id && String(c) !== String(cod)) ocup.set(Number(u.hueco), String(u.base || "")); });
+    const libres = []; for (let h = desde; h <= max; h++) if (!ocup.has(h)) libres.push(h);
+    const mismos = base ? [...ocup.entries()].filter(([, b]) => b === base).map(([h]) => h) : [];
+    let orden;
+    if (mismos.length) orden = [...libres].sort((a, b) => Math.min(...mismos.map((m) => Math.abs(a - m))) - Math.min(...mismos.map((m) => Math.abs(b - m))) || a - b);
+    else { const ult = ocup.size ? Math.max(...ocup.keys()) : 0; orden = [...libres.filter((h) => h > ult), ...libres.filter((h) => h <= ult)]; }
+    for (const h of orden) { const r = await ocuparHuecoLinea(zona, cod, quien, u0, h, h, 1); if (r) return r; }
+    return null;
+  };
   // Resto de puestos (sin pistola): tocar la ventana = HECHA en este puesto (verde y contador). Otra vez = quitar. No mueve huecos.
   const marcarHechaPuesto = async (req) => {
+    // en PILASTRA con «Meter marcos de soldadura» activado, el toque cuenta como de la SOLDADORA (marcos que ya estaban aquí sin ticar)
+    const pE = puestoId === "pilastra" && entradaPil ? "soldadora" : puestoId;
     try {
       const id = String((req && req.id) || ""); const qb = basePresuDia(req && req.q);
       let hit = null;
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
-      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
-      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      // SOLDADORA: el CRM sabe por la hoja de corte si la ventana es FIJA (solo marco) o cuántas hojas lleva; si lleva hojas, se elige qué sale
+      if (pE === "soldadora" && !(req && req.tipo)) { const nhS = typeof hit.w.nh === "number" ? hit.w.nh : null; if (nhS === 0 || hit.w.tp === "fijo") req = { ...req, tipo: "marco" }; else { setElegirSold({ req, hit, nh: nhS }); return; } }
+      const hojaT = pE === "soldadora" && req && req.tipo === "hojas"; // las HOJAS llevan su propio código («~H») y su propio almacén
+      const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : "");
+      const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
       if (yaM) {
-        if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(puestoId)}.\n\n¿Quitarla?`)) return;
-        await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
-        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
+        if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(pE)}.\n\n¿Quitarla?`)) return;
+        await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), null).catch(() => {});
+        fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), null).catch(() => {});
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
-        if (puestoId === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
+        if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
+        if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
+        if (pE === "herraje") await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + "~H", "porHerraje");
+        if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : ""); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
       const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
-      await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
-      fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
+      await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "" }).catch(() => {});
+      fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), Date.now()).catch(() => {});
       // PILASTRA (sin pistola, de momento): se mira si el marco está en el almacén de MARCOS SOLDADOS. Si está, se marca ahí «herraje puesto»
       // (y «pilastra puesta» si la lleva). Si no está, se mete en el almacén de marcos (las puertas, en su almacén de puertas, huecos 1-6) ya marcado.
       let txtAlm = "";
-      if (puestoId === "pilastra") {
+      // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
+      if (pE === "soldadora") {
+        const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : ""); const uS = ubic && ubic[codS];
+        if (uS && uS.zonaId) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uS.zonaId) || {}).nombre || uS.zonaId} · ESTANTERÍA ${uS.hueco}${uS.herraje ? ` · ya HECHA en Pilastra (herraje puesto${uS.pilas ? " y pilastra" : ""})` : ""}.`;
+        else {
+          const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+          const zS = zonas.find((q) => q.id === (esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
+          const r = zS ? await colocarAgrupado(zS, codS, base, esPta ? (hojaT ? 12 : 6) : null, esPta && hojaT ? 7 : 1) : null; // puertas: marco 1-6 · hoja 7-12
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? " hojas" : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${typeof hit.w.nh === "number" ? `${hit.w.nh} HOJA${hit.w.nh === 1 ? "" : "S"}` : "HOJAS"}: déjalas` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
+          else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
+        }
+      }
+      // MATRIMONIO (colgado): coge el marco del almacén y lo deja en su siguiente sitio. Con persiana → Banco persiana A o B
+      // (presupuestos completos en el mismo banco; a partir de 5 ventanas del presupuesto en un banco, al otro; y que los DOS tengan siempre trabajo).
+      // Sin persiana → Línea. Puerta → Banco de puerta.
+      // HERRAJE: las hojas pasan de «Hojas (soldadora)» (sin herraje) a «Hojas con herraje». Si no estaban, se meten ya con herraje.
+      if (pE === "herraje" && (hit.w.nh === 0 || hit.w.tp === "fijo")) txtAlm = "\nℹ Es FIJA: no lleva hojas, no hay herraje de hoja.";
+      else if (pE === "herraje") {
+        const codH = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + "~H"; const uH = ubic && ubic[codH];
+        if (uH && uH.zonaId === "hojasHerraje") txtAlm = `\n📍 Ya está en Hojas con herraje · ESTANTERÍA ${uH.hueco}.`;
+        else {
+          const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+          const zH = zonas.find((q) => q.id === "hojasHerraje"); const prevH = uH && uH.zonaId ? JSON.parse(JSON.stringify(uH)) : null;
+          if (esPta && uH && uH.zonaId) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codH}`), { herraje: Date.now() }).catch(() => {}); txtAlm = `\n📍 Hoja de puerta en ${(zonas.find((q) => q.id === uH.zonaId) || {}).nombre || uH.zonaId} · ESTANTERÍA ${uH.hueco}: herraje puesto.`; }
+          else {
+            const r = zH ? await colocarAgrupado(zH, codH, base, null) : null;
+            if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codH}`), { et: `${hit.w.pos || ""} hojas`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, herraje: Date.now(), porHerraje: true, ...(prevH ? { antes: prevH } : {}) }).catch(() => {});
+              txtAlm = `${typeof hit.w.nh === "number" ? `\n🪟 ${hit.w.nh} hoja${hit.w.nh === 1 ? "" : "s"}` : ""}${prevH ? `\n⬅ Cógelas de ${(zonas.find((q) => q.id === prevH.zonaId) || {}).nombre || prevH.zonaId} · ESTANTERÍA ${prevH.hueco}` : ""}\n➡ Déjalas en Hojas con herraje · ESTANTERÍA ${r.hueco}.`; }
+            else txtAlm = `\n⚠ ${zH ? "Hojas con herraje está LLENO" : "No encuentro el almacén de hojas con herraje"}: no se ha podido colocar.`;
+          }
+        }
+      }
+      if (pE === "colgado") {
+        const codC = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+        let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
+        const prevC = u0[codC] || null;
+        const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+        const llevaP = toArray(hit.w.ex).includes("PERSIANA") || !!persianaDeVentanaCD(hit.sn, hit.w);
+        let dest = esPta ? "bancoPuerta" : llevaP ? "" : "sinPersiana";
+        if (!dest) {
+          const cuenta = (zs, f) => Object.values(u0).filter((u) => u && zs.includes(u.zonaId) && (!f || f(u))).length;
+          const nA = cuenta(["colgadoA"]); const nB = cuenta(["colgadoB"]);
+          const deA = base ? cuenta(["colgadoA", "persianaA"], (u) => String(u.base || "") === base) : 0; const deB = base ? cuenta(["colgadoB", "persianaB"], (u) => String(u.base || "") === base) : 0;
+          const zA = zonas.find((q) => q.id === "colgadoA"); const zB = zonas.find((q) => q.id === "colgadoB");
+          const llenoA = !zA || nA >= zA.huecos; const llenoB = !zB || nB >= zB.huecos;
+          let pref;
+          if (deA || deB) { pref = deA >= deB ? "A" : "B"; const enEse = pref === "A" ? deA : deB; const otroN = pref === "A" ? nB : nA; const esteN = pref === "A" ? nA : nB;
+            if (enEse >= 5 || (otroN === 0 && esteN >= 2)) pref = pref === "A" ? "B" : "A"; } // más de 5 del presupuesto, o el otro banco sin trabajo → al otro
+          else pref = nA <= nB ? "A" : "B"; // presupuesto nuevo: al banco con menos ventanas esperando
+          if (pref === "A" && llenoA && !llenoB) pref = "B"; if (pref === "B" && llenoB && !llenoA) pref = "A";
+          dest = pref === "A" ? "colgadoA" : "colgadoB";
+        }
+        const zC = zonas.find((q) => q.id === dest);
+        const r = zC ? await colocarAgrupado(zC, codC, base, null) : null;
+        const uHo = u0[codC + "~H"]; // sus HOJAS (si están en un almacén) se cogen también: el matrimonio junta marco y hojas
+        if (r && uHo && uHo.zonaId) { try { await liberarCodigoLinea(codC + "~H"); } catch (e) { /* nada */ } }
+        if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codC}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porColgado: true, ...(prevC && prevC.zonaId ? { antes: JSON.parse(JSON.stringify(prevC)) } : {}), ...(uHo && uHo.zonaId ? { hojasAntes: JSON.parse(JSON.stringify(uHo)) } : {}) }).catch(() => {});
+          if (uHo && uHo.zonaId) txtAlm += `\n⬅ Sus hojas: ${(zonas.find((q) => q.id === uHo.zonaId) || {}).nombre || uHo.zonaId} · ESTANTERÍA ${uHo.hueco}`;
+          txtAlm = `${prevC && prevC.zonaId ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prevC.zonaId) || {}).nombre || prevC.zonaId} · ESTANTERÍA ${prevC.hueco}` : ""}\n➡ Déjala en ${zC.nombre} · ESTANTERÍA ${r.hueco}${llevaP && !esPta ? " (lleva persiana)" : ""}.`; }
+        else txtAlm = `\n⚠ ${zC ? `${zC.nombre} está LLENO` : `No encuentro el almacén «${dest}»`}: no se ha podido colocar.`;
+      }
+      if (pE === "pilastra") {
         const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const lleva = toArray(hit.w.ex).includes("PILASTRA");
         const marcas = { herraje: Date.now(), ...(lleva ? { pilas: Date.now() } : {}) };
         const uP = ubic && ubic[codP];
@@ -50515,17 +50620,19 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         } else {
           const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
           const zP = zonas.find((q) => q.id === (esPta ? "puertas" : "marcos"));
-          const r = zP ? await ocuparHuecoLinea(zP, codP, quien, ubic, 1, esPta ? 6 : null, 1) : null;
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), porPilastra: true, ...marcas }).catch(() => {}); txtAlm = `\n➡ No estaba en el almacén: METIDA en ${zP.nombre} · ESTANTERÍA ${r.hueco}, con herraje puesto${lleva ? " y pilastra puesta" : ""}.`; }
+          const r = zP ? await colocarAgrupado(zP, codP, base, esPta ? 6 : null) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porPilastra: true, ...marcas }).catch(() => {}); txtAlm = `\n➡ No estaba en el almacén: METIDA en ${zP.nombre} · ESTANTERÍA ${r.hueco}, con herraje puesto${lleva ? " y pilastra puesta" : ""}.`; }
           else txtAlm = `\n⚠ No estaba en el almacén y ${zP ? `${zP.nombre} está LLENO` : "no encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
-      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(puestoId)}.${puestoId === "pilastra" ? (toArray(hit.w.ex).includes("PILASTRA") ? "\n✓ Herraje puesto · ⚠ LLEVA PILASTRA / TRAVESAÑO: pilastra puesta." : "\n✓ Herraje puesto (sin pilastra).") : toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : ""}${txtAlm}`, false);
+      avisar(true, `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA en ${nombrePuestoLinea(pE)}.${pE === "pilastra" ? (toArray(hit.w.ex).includes("PILASTRA") ? "\n✓ Herraje puesto · ⚠ LLEVA PILASTRA / TRAVESAÑO: pilastra puesta." : "\n✓ Herraje puesto (sin pilastra).") : toArray(hit.w.ex).includes("PILASTRA") ? "\n⚠ LLEVA PILASTRA / TRAVESAÑO: pónsela." : ""}${txtAlm}`, false);
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
   const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
+  const [elegirSold, setElegirSold] = useState(null); // Soldadora: al tocar una ventana se elige su MARCO o sus HOJAS (el CRM sabe cuántas hojas lleva por la hoja de corte)
+  const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   const quitarTicada = async (claveM, m) => {
     try {
@@ -50535,6 +50642,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       fbSet(ref(fbDb, `ticksLinea/${(m && m.fecha) || hoyISO()}/${puestoId}/${claveM}`), null).catch(() => {});
       const u = ubic && ubic[codCD];
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
+      else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
+      else if (puestoId === "colgado") await deshacerColgado(codCD);
+      else if (puestoId === "herraje") await deshacerMovido(limpiaCodL(`cd_${claveM}`) + "~H", "porHerraje");
       else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
@@ -50815,6 +50925,26 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uM = ubic && ubic[cM]; const uH = ubic && ubic[cM + "~H"];
+          const nomZ = (u) => (u ? `${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} ${u.hueco}` : "");
+          const ir = async (tipos) => { setElegirSold(null); for (const t of tipos) await marcarHechaPuesto({ ...req, tipo: t }); };
+          return (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setElegirSold(null)}>
+            <div className="bg-white rounded-xl p-4 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-extrabold text-slate-800">{hit.w.pos} <span className="text-sm font-semibold text-slate-500">{hit.sn.nombre || ""}</span></div>
+              <div className="text-sm text-slate-600">{nh == null ? "La hoja de corte no dice cuántas hojas lleva." : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} ¿Qué sale de la soldadora?</div>
+              <button type="button" onClick={() => ir(["marco"])} className="w-full px-4 py-3 rounded-lg bg-amber-700 text-white text-lg font-extrabold text-left">🟫 MARCO{uM ? <span className="block text-xs font-semibold">ya está en {nomZ(uM)} (tocar = quitarlo)</span> : null}</button>
+              <button type="button" onClick={() => ir(["hojas"])} className="w-full px-4 py-3 rounded-lg bg-sky-700 text-white text-lg font-extrabold text-left">🪟 {nh ? `${nh} HOJA${nh === 1 ? "" : "S"}` : "HOJAS"}{uH ? <span className="block text-xs font-semibold">ya están en {nomZ(uH)} (tocar = quitarlas)</span> : null}</button>
+              {!uM && !uH && <button type="button" onClick={() => ir(["marco", "hojas"])} className="w-full px-4 py-2 rounded-lg border-2 border-slate-400 text-slate-800 text-sm font-bold">Las dos cosas a la vez</button>}
+              <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cancelar</button>
+            </div>
+          </div>); })()}
+        {puestoId === "pilastra" && <div style={{ order: -2 }} className={`mb-2 rounded-lg border-2 px-3 py-2 flex flex-wrap items-center gap-2 ${entradaPil ? "border-green-500 bg-green-50" : "border-emerald-700 bg-emerald-50"}`}>
+          <span className="text-sm font-bold text-slate-800">Al tocar una ventana:</span>
+          <button type="button" onClick={() => setEntradaPil(false)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${!entradaPil ? "bg-emerald-600 text-white border-emerald-700" : "bg-white text-slate-700 border-slate-300"}`}>🔧 Herraje puesto (verde fuerte)</button>
+          <button type="button" onClick={() => setEntradaPil(true)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${entradaPil ? "bg-green-300 text-green-950 border-green-600" : "bg-white text-slate-700 border-slate-300"}`}>➕ Meter marcos de soldadura (verde flojo)</button>
+          {entradaPil && <span className="text-xs text-green-900 w-full">Para los marcos que ya están aquí y no se ticaron en la soldadora: se meten en el almacén como llegados de soldadura, sin herraje. Cuando acabes, vuelve a «Herraje puesto».</span>}
+        </div>}
         {layoutSimple && (() => { const fT = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
           const lista = Object.entries(marcasEste || {}).filter(([, m]) => m).sort((a, b) => (Number(b[1].ts) || 0) - (Number(a[1].ts) || 0)); const hoyT = hoyISO();
           const deHoy = lista.filter(([, m]) => m.fecha === hoyT); const viejas = lista.filter(([, m]) => m.fecha !== hoyT);
@@ -60723,6 +60853,8 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
   modelos.forEach((md) => {
     const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
+    // MARCOS Y HOJAS: cuántas hojas lleva cada ventana y si es puerta / fijo (lo mismo que se usa para las etiquetas)
+    try { const an = analizarBloqueCorte(String(md.texto || ""), md.pos, md.uds); if (an.hojas != null && an.hojas >= 0 && an.hojas <= 4) md.hojas = an.hojas; if (an.tipo) md.tipo = an.tipo; } catch (e) { /* sin dato */ }
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -61674,7 +61806,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 1 })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -61846,7 +61978,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
   // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
   // ya leída, pero después se ha subido OTRA hoja más nueva (corregida): se vuelve a leer con la nueva
-  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); };
+  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !h.hjV && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
+  const hojaReleidaHj = useRef({});
   const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = hayHojaMasNueva(o) ? docsHojaDe(o).slice(0, 1) : docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
@@ -61858,7 +61991,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     (async () => {
       try {
         for (const o of pendHoja) {
-          hojaIntentadas.current[o.d.key] = true;
+          hojaIntentadas.current[o.d.key] = true; hojaReleidaHj.current[o.d.key] = true;
           // se prueban TODOS los documentos que parecen hoja de corte, hasta que uno se lea bien
           const er0 = hojasCD && hojasCD[limpia(o.d.key)]; const probadas = new Set(er0 && er0.v >= 3 ? toArray(er0.probadas) : []);
           let r = { ok: false, motivo: "no se pudo leer" }; let dUlt = null;
@@ -62110,7 +62243,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const color = (inf && inf.color) || (ih && ih.color) || v.color || "";
         const medida = v.medida || (ih && ih.ancho ? `${ih.ancho} x ${ih.alto}` : "");
         const ex = [...new Set([...(seguro(() => extrasVentana(o, v), [])), ...(ih ? toArray(ih.extras) : [])])];
-        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
+        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, ...(ih && typeof ih.hojas === "number" ? { nh: ih.hojas } : {}), ...(ih && ih.tipo ? { tp: ih.tipo } : {}), hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
       }));
       if (!vs.length || vs.length > 400) return;
       const k = limpia(o.d.key);
