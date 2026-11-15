@@ -47615,6 +47615,13 @@ const useZonasLinea = () => {
 };
 // Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
 const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : 2) : 2; }; // sin otro dato se supone 2 hojas: una hoja de más inventa una pegatina que bloquea el colgado (3 hojas se pone a mano)
+// CRISTALES de una ventana en los caballetes (misma posición y misma obra: expediente o presupuesto)
+const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
+  if (!sn || !w) return []; const bases = toArray(sn.codigos).map((c) => basePresuDia(c)).filter((b) => b.length >= 3);
+  const exN = sn.tipo === "u" ? String(((toArray(uxExpedientes).find((u) => String(u.id) === String(sn.id))) || {}).numero || "").replace(/\D/g, "").replace(/^0+/, "") : "";
+  const pos = String(w.pos || "").toUpperCase().replace(/\s+/g, "");
+  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => { if (!pz || String(pz.ref || "").toUpperCase().replace(/\s+/g, "") !== pos) return false; const ex = String(pz.expediente || c.expediente || "").replace(/\D/g, "").replace(/^0+/, ""); const pr = digitosPresu(String(pz.presupuesto || c.presupuesto || "").split(/[·,;\s]+/)[0]); return (exN && ex === exN) || (pr && bases.includes(pr)); });
+};
 // ¿Es PUERTA? (por la hoja de corte: tipo puerta, posición P…, o «PUERTA» en la descripción). Lo oscilobatiente es VENTANA aunque sea alto.
 const esPuertaVentanaCD = (w) => { if (!w) return false; const t = `${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`; if (/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(t)) return false; return w.tp === "puerta" || /^P\d/i.test(String(w.pos || "").trim()) || /\bPUERTA\b/i.test(String(w.desc || "")); };
 // Nº de HOJAS de una ventana: lo que dice la hoja de corte; si no, «PUERTA 1 HOJA» / «2 HOJAS» en la descripción; si no, por la medida
@@ -48254,6 +48261,11 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
+  // OBRA COMPLETA: todas las ventanas de su obra (según la hoja de corte) ya están al final de la línea (Persiana salida, Puertas terminadas, Línea, Solape) → se ve en MORADO
+  const snapZ = useObjetoFb("controlDiaVentanasObra");
+  const ZONAS_FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"];
+  const obrasCompletas = useMemo(() => { const set = new Set(); Object.entries(snapZ || {}).forEach(([k, sn]) => { const vs = toArray(sn && sn.ventanas); if (!vs.length) return; const todas = vs.every((w) => { const u = ubic && ubic[`cd_${k}__${w.id}`.replace(/[.#$\[\]\/|\s]/g, "_")]; return u && ZONAS_FIN.includes(u.zonaId); }); if (todas) set.add(k); }); return set; }, [snapZ, ubic]);
+  const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
   const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return etCDZ[cod] || cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${posDib(h.ventana)}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
@@ -48296,7 +48308,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? "bg-violet-600 border-violet-800 text-white font-bold ring-2 ring-violet-300" : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -48387,6 +48399,10 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
+                {vc.w && !vc.pieza && (() => { const crs = cristalesDeVentanaCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn, vc.w); return (
+                  <div className="w-full rounded-md bg-amber-50 border border-amber-300 px-3 py-1.5 text-sm text-amber-950">
+                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => <span key={ci} className={`inline-block mr-2 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}</span>) : <span className="text-slate-500">no encuentro sus cristales en los caballetes</span>}
+                  </div>); })()}
                 {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
                 {vc.hoja ? <a href={pagHoja(vc.hoja, vc.w, (hojasCDh && hojasCDh[vc.k]) || null)} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Hoja de corte de esta ventana</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
                 <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
