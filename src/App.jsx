@@ -50195,9 +50195,10 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "espera") : puestoId; // Cristales sin solape → «Ventanas terminadas (almacén de espera)»
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId; // Cristales: la coge de la LÍNEA y la manda a Solape (si lleva) o a palet (sin hueco)
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+    if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
     if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
@@ -50206,7 +50207,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
     const nCr = puestoId === "cristales" ? bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, true) : 0; // tocar la ventana en Cristales = sus cristales dados de baja
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sale de la Línea para PALETIZAR` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -50227,7 +50228,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
       // ya hecha pero SIN hueco (se ticó antes de que su puesto la llevara a una estantería): se coloca ahora, sin preguntar
-      if (yaM && !(ubic && ubic[codCD])) { await ponerPersianaCD(hit, null); return; }
+      if (yaM && !(ubic && ubic[codCD]) && !(puestoId === "cristales" && !toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO"))) { await ponerPersianaCD(hit, null); return; }
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
@@ -60514,19 +60515,33 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return idx;
   }, [marcasTodas, horasTodas, borradasCD]);
   const valorGlobalCD = (k, id) => { const x = (idxMarcasCD[k] || {})[id]; return x ? x.v : 0; };
-  // SIN PISTOLA: la ventana que Persiana A/B puso en su hueco (por la hoja de corte, código «cd_…») sale del hueco
-  // en cuanto Control de línea la tica en VERDE aquí (la echa a la línea)
+  // SIN PISTOLA · CONTROL DE LÍNEA: al ticar una ventana en VERDE aquí, Control de línea la saca de donde esté (Persiana A/B salida,
+  // Puertas terminadas) o la recoge de matrimonio/línea, y la pone en SU almacén: la LÍNEA (de donde la coge Cristales).
   const ubicCDL = useObjetoFb("ubicacionesLinea");
+  const zonasCDL = useZonasLinea();
+  const marcasCrCD = useObjetoFb("marcasPuestoLinea/cristales");
+  const snapCDL2 = useObjetoFb("controlDiaVentanasObra");
+  const enLineaHechas = useRef(new Set());
   useEffect(() => {
     const limpiaId = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
-    Object.keys(ubicCDL || {}).forEach((c) => {
-      const m = /^cd_(.+)__([^_].*)$/.exec(c); if (!m) return;
-      if (!["persianaA", "persianaB", "puertasTerminadas"].includes((ubicCDL[c] || {}).zonaId)) return; // Solape NO: esa la vacía el puesto Solape
-      const a2 = idxMarcasCD[m[1]] || {};
-      const id = Object.keys(a2).find((i) => limpiaId(i) === m[2]);
-      if (id && a2[id] && a2[id].v === 1) liberarCodigoLinea(c).catch(() => {});
-    });
-  }, [ubicCDL, idxMarcasCD]);
+    const zLinea = toArray(zonasCDL).find((z) => z && z.id === "sinPersiana"); if (!zLinea) return;
+    const hoyL = new Date().toLocaleDateString("sv-SE");
+    const ubicLocal = { ...(ubicCDL || {}) };
+    const tareas = [];
+    Object.entries(idxMarcasCD || {}).forEach(([k, ids]) => Object.entries(ids || {}).forEach(([id, x]) => {
+      if (!x || x.v !== 1) return;
+      const cod = limpiaId(`cd_${k}__${id}`); if (enLineaHechas.current.has(cod)) return;
+      const u = ubicLocal[cod];
+      const vieneDeAntes = u && ["persianaA", "persianaB", "puertasTerminadas"].includes(u.zonaId);
+      const nueva = !u && x.ts && new Date(x.ts).toLocaleDateString("sv-SE") === hoyL && !(marcasCrCD && marcasCrCD[cod.slice(3)]);
+      if (!vieneDeAntes && !nueva) return;
+      const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
+      enLineaHechas.current.add(cod);
+      tareas.push({ cod, pos: w.pos || "", obra: sn.nombre || "" });
+    }));
+    if (!tareas.length) return;
+    (async () => { for (const t of tareas) { try { const r = await ocuparHuecoLinea(zLinea, t.cod, "Control de línea", ubicLocal, 1, null, 1); if (r) { ubicLocal[t.cod] = { zonaId: zLinea.id, hueco: r.hueco }; await fbUpdate(ref(fbDb, `ubicacionesLinea/${t.cod}`), { et: String(t.pos).slice(0, 30), obra: String(t.obra).slice(0, 60) }); } } catch (e) { /* se reintenta al recargar */ } } })();
+  }, [ubicCDL, idxMarcasCD, marcasCrCD, snapCDL2, zonasCDL]);
   const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
