@@ -49137,6 +49137,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   const claveCDde = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
   const colMapa = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
   const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
+  // un día que Control del día aún no ha publicado (p. ej. la semana recién publicada en el planning) se pinta directamente del PLANNING de Fábrica
+  const conCalCD = (f) => !!(calCDp && calCDp.dias && calCDp.dias[f] && Object.keys(calCDp.dias[f]).length);
   const mapaMes = () => {
     const [yy, mm] = mesMapa.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
     const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
@@ -49156,11 +49158,11 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); const sel = f === dia; return (
               <div key={f} onClick={() => setDia(f)} className={`min-h-[3.5rem] rounded border p-0.5 cursor-pointer ${sel ? "border-slate-900 ring-2 ring-slate-900" : f === hoy ? "border-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mesMapa ? "opacity-40" : ""}`}>
                 <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
-                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
-                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
+                {conCalCD(f) ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!conCalCD(f) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estadoCDk(claveCDde(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return (
                   <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>
                 ); })}
-                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
+                {!conCalCD(f) && man.map((k) => { const sn = snapCD[k]; const e = estadoCDk(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return (
                   <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${colMapa[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>
                 ); })}
               </div>
@@ -63236,6 +63238,8 @@ function MapaMesControlDia() {
   const claveDe = (ob) => { const bs = new Set(toArray(ob && ob.pres).map((c) => basePresuDia(c)).filter((b) => b.length >= 3)); if (!bs.size) return ""; const e = Object.entries(snapCD || {}).find(([, sn]) => sn && toArray(sn.codigos).some((c) => bs.has(basePresuDia(c)))); return e ? e[0] : ""; };
   const col = { verde: "bg-emerald-500 border border-emerald-700 text-white", medio: "bg-sky-100 border border-sky-300 text-sky-900", naranja: "bg-orange-300 border border-orange-500 text-slate-900", gris: "bg-sky-100 border border-sky-300 text-sky-900", "": "bg-sky-100 border border-sky-300 text-sky-900" };
   const calCDp = useObjetoFb("controlDiaCalendario"); // el calendario TAL CUAL lo ve Control del día
+  // un día que Control del día aún no ha publicado (p. ej. la semana recién publicada en el planning) se pinta directamente del PLANNING de Fábrica
+  const conCalCD = (f) => !!(calCDp && calCDp.dias && calCDp.dias[f] && Object.keys(calCDp.dias[f]).length);
   const [yy, mm] = mes.split("-").map(Number); const d0 = new Date(yy, mm - 1, 1, 12); const ini = new Date(d0); ini.setDate(1 - ((d0.getDay() + 6) % 7));
   const celdas = []; for (let i = 0; i < 42; i++) { const d = new Date(ini); d.setDate(ini.getDate() + i); celdas.push(d.toLocaleDateString("sv-SE")); }
   const semanas = []; for (let i = 0; i < 6; i++) { const w = celdas.slice(i * 7, i * 7 + 7); if (i < 4 || w.some((f) => f.slice(0, 7) === mes)) semanas.push(w); }
@@ -63254,9 +63258,9 @@ function MapaMesControlDia() {
             {w.map((f) => { const ks = clavesDiaOrden(((planFab && planFab.dias) || {})[f]); const man = Object.keys(((manual || {})[f]) || {}).filter((k) => manual[f][k] && snapCD && snapCD[k]); return (
               <div key={f} className={`min-h-[3.5rem] rounded border p-0.5 ${f === hoy ? "border-emerald-500 ring-1 ring-emerald-500" : "border-slate-200"} ${f.slice(0, 7) !== mes ? "opacity-40" : ""}`}>
                 <div className="text-[10px] font-bold">{Number(f.slice(8))}</div>
-                {calCDp && calCDp.dias ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
-                {!(calCDp && calCDp.dias) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>; })}
-                {!(calCDp && calCDp.dias) && man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
+                {conCalCD(f) ? Object.entries((calCDp.dias || {})[f] || {}).sort((a, b) => (a[1].o || 0) - (b[1].o || 0)).map(([k, x]) => <div key={`c_${k}`} title={x.n} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[x.e === "v" ? "verde" : x.e === "x" ? "naranja" : "gris"]}`}>{x.e === "v" ? "✓ " : "📌 "}{x.n}</div>) : null}
+                {!conCalCD(f) && ks.map((k) => { const ob = ((planFab && planFab.obras) || {})[k] || {}; const e = estado(claveDe(ob)); const nom = toArray(ob.pres).length ? pptoBonito(basePresuDia(toArray(ob.pres)[0])) : String(ob.nombre || k).replace(/^Uxcar exp\.\s*/, ""); return <div key={k} title={ob.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>{e === "verde" ? "✓ " : "📌 "}{nom}</div>; })}
+                {!conCalCD(f) && man.map((k) => { const sn = snapCD[k]; const e = estado(k); const nom = toArray(sn.codigos).length ? pptoBonito(basePresuDia(toArray(sn.codigos)[0])) : String(sn.nombre || k); return <div key={`m_${k}`} title={sn.nombre || k} className={`mt-0.5 truncate rounded px-1 text-[9px] font-bold leading-tight ${col[e]}`}>📌 {e === "verde" ? "✓ " : ""}{nom}</div>; })}
               </div>
             ); })}
           </div>
