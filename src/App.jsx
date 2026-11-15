@@ -50064,6 +50064,8 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
   const ctxB = React.useContext(IncidenciasCristalCtx) || {};
   const snapCD = useObjetoFb("controlDiaVentanasObra"); const hojasCD = useObjetoFb("controlDiaHojaCorte"); const hojasAux = useObjetoFb("auxiliaresHojas");
   const marcas = useObjetoFb(`marcasPuestoLinea/${puestoId}`);
+  const marcasTodasB = useObjetoFb("marcasPuestoLinea"); // por dónde ha pasado (todos los puestos), con fecha y hora
+  const fmtTB = (ts) => { const d = new Date(Number(ts) || 0); return `${d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`; };
   const limpiaB = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
   const esPuerta = (w) => (typeof w.esPuerta === "boolean" ? w.esPuerta : (!/oscilo|osc\.?\s*bat|oscilobat|o\/b\b|abatible.*oscil/i.test(`${w.desc || ""} ${w.tip || ""} ${w.tipo || ""}`) && /^P\d/i.test(String(w.pos || "").trim())));
   const dP = String(bP || "").split("-")[0].replace(/\D/g, ""); const dV = String(bV || "").replace(/\D/g, "").replace(/^0+/, "");
@@ -50098,6 +50100,7 @@ function BuscadorVentanaCD({ puestoId, onTocar, ubic = {}, soloPuertas = false }
               <b className="text-lg">{w.pos}</b>
               <span className="text-sm">{sn.nombre || ""}{w.medida ? ` · ${w.medida} mm` : ""}{w.g ? ` · ${w.g}` : ""}</span>
               {u && <b className="text-sm">📍 estantería {u.hueco}</b>}
+              {Object.entries(marcasTodasB || {}).map(([pu, ms]) => { const m = ms && ms[claveM]; return m ? <span key={pu} title={m.por ? `por ${m.por}` : ""} className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${hecha ? "bg-white/25" : "bg-emerald-100 text-emerald-900"}`}>✓ {(PUESTOS_LINEA.find((q) => q.id === pu) || {}).corto || nombrePuestoLinea(pu)} · {fmtTB(m.ts)}</span> : null; })}
               {crs.map(({ c, pz }, ci) => <span key={ci} className={`text-xs font-bold px-1.5 py-0.5 rounded ${pz.puesto ? "bg-slate-200 text-slate-500" : "bg-amber-300 text-amber-950"}`}>🪟 {pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " · puesto" : ""}</span>)}
               {hoja && <a href={hoja} target="_blank" rel="noreferrer" className={`ml-auto text-xs font-bold px-2 py-1 rounded ${hecha ? "bg-white text-emerald-800" : "bg-indigo-700 text-white"}`}>📄 Hoja de corte</a>}
               <button type="button" onClick={() => onTocar({ q: bases[0] || dP, id: w.id })} className={`${hoja ? "" : "ml-auto "}text-sm font-bold px-3 py-1.5 rounded ${hecha ? "bg-white text-rose-700" : "bg-emerald-600 text-white"}`}>{hecha ? "↩ Quitar (me he equivocado)" : "✓ Hecha"}</button>
@@ -60537,10 +60540,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       if (!vieneDeAntes && !nueva) return;
       const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
       enLineaHechas.current.add(cod);
-      tareas.push({ cod, pos: w.pos || "", obra: sn.nombre || "" });
+      tareas.push({ cod, pos: w.pos || "", obra: sn.nombre || "", ts: x.ts || Date.now(), wid: String(w.id), base: toArray(sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "" });
     }));
     if (!tareas.length) return;
-    (async () => { for (const t of tareas) { try { const r = await ocuparHuecoLinea(zLinea, t.cod, "Control de línea", ubicLocal, 1, null, 1); if (r) { ubicLocal[t.cod] = { zonaId: zLinea.id, hueco: r.hueco }; await fbUpdate(ref(fbDb, `ubicacionesLinea/${t.cod}`), { et: String(t.pos).slice(0, 30), obra: String(t.obra).slice(0, 60) }); } } catch (e) { /* se reintenta al recargar */ } } })();
+    (async () => { for (const t of tareas) { try { const r = await ocuparHuecoLinea(zLinea, t.cod, "Control de línea", ubicLocal, 1, null, 1); if (r) { ubicLocal[t.cod] = { zonaId: zLinea.id, hueco: r.hueco }; await fbUpdate(ref(fbDb, `ubicacionesLinea/${t.cod}`), { et: String(t.pos).slice(0, 30), obra: String(t.obra).slice(0, 60) }); }
+      // queda apuntado que pasó por CONTROL DE LÍNEA (fecha y hora de la marca), igual que en los demás puestos
+      const claveM = t.cod.slice(3); const ya = (await fbGet(ref(fbDb, `marcasPuestoLinea/lineaPers/${claveM}`))).val();
+      if (!ya) { const f = new Date(t.ts).toLocaleDateString("sv-SE"); await fbSet(ref(fbDb, `marcasPuestoLinea/lineaPers/${claveM}`), { ts: t.ts, ventanaId: t.wid, pos: t.pos, base: t.base, fecha: f, por: "Control del día" }); fbSet(ref(fbDb, `ticksLinea/${f}/lineaPers/${claveM}`), t.ts).catch(() => {}); }
+    } catch (e) { /* se reintenta al recargar */ } } })();
   }, [ubicCDL, idxMarcasCD, marcasCrCD, snapCDL2, zonasCDL]);
   const guardarBorrada = (dk, ids, si) => { ids.forEach((i) => { fbSet(ref(fbDb, `controlDiaBorradas/${dia}/${limpia(dk)}/${String(i).replace(/[.#$/[\]]/g, "_")}`), si ? Date.now() : null).catch(() => {}); }); };
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
