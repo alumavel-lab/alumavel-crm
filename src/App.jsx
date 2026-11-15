@@ -60862,7 +60862,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const mios = [...presCrmDe(o)]; if (!mios.length) return null;
     return Object.values(hojasCD || {}).find((h) => h && toArray(h.modelos).length && h.pres && mios.some((m) => mismoPresCD(m, String(h.pres).replace(/\./g, "")))) || null;
   };
-  const infoHoja = (o, v) => { const h = hojaDeObra(o); if (!h) return null; const pb = String((v && v.pos) || "").trim().split(/\s+/)[0].toUpperCase(); return toArray(h.modelos).find((m) => String(m.pos || "").toUpperCase() === pb) || null; };
+  const infoHoja = (o, v) => { const h = hojaDeObra(o); if (!h) return null; const pb = String((v && v.pos) || "").trim().split(/\s+/)[0].toUpperCase();
+    // la etiqueta puede traer delante el modelo o la planta («850 p1-V05.105», «760-V02.003»): se busca también el código A01.001 / V02.003 que lleve dentro
+    const cods = [pb, ...(`${(v && v.pos) || ""} ${(v && v.tip) || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])];
+    const ms = toArray(h.modelos); for (const c of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === c); if (m) return m; } return null; };
   // El PLANING lista cada posición una sola vez aunque la hoja de corte diga «Uds: 2»: se cuentan tantas ventanas como unidades (si el planning ya repite la posición, se deja tal cual)
   const expandePlan = (o, arr) => {
     const hc = hojaDeObra(o); const cuenta = {}; arr.forEach((w) => { const k = String((w && w.pos) || "").trim().toUpperCase(); cuenta[k] = (cuenta[k] || 0) + 1; });
@@ -61622,9 +61625,12 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // La HOJA DE CORTE se lee SOLA de los documentos de la obra (o de su expediente de Uxcar): obras del día que miras y de hoy en adelante.
   // Una vez por obra (si falla, se apunta el motivo y no se reintenta; se puede subir a mano).
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
+  // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
+  // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
+  const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !hojaIntentadas.current[o.d.key] && docsPorProbar(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
@@ -61637,10 +61643,15 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
           let mia = false;
           try { const tr = await runTransaction(ref(fbDb, `controlDiaHojaLeyendo/${limpia(o.d.key)}`), (act) => { if (act && Date.now() - (act.en || 0) < 300000) return undefined; return { en: Date.now() }; }); mia = tr.committed; } catch (er) { mia = true; }
           if (!mia) continue;
-          const d = docsHojaDe(o)[0];
-          let r;
-          try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
-          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
+          // se prueban TODOS los documentos que parecen hoja de corte, hasta que uno se lea bien
+          const er0 = hojasCD && hojasCD[limpia(o.d.key)]; const probadas = new Set(er0 && er0.v >= 3 ? toArray(er0.probadas) : []);
+          let r = { ok: false, motivo: "no se pudo leer" }; let dUlt = null;
+          for (const d of docsPorProbar(o)) {
+            dUlt = d; probadas.add(d.url);
+            try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
+            if (r.ok) break;
+          }
+          if (!r.ok && dUlt) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: dUlt.nombre || "", leidoEn: Date.now(), v: 3, probadas: [...probadas] }).catch(() => {});
         }
       } finally { hojaLeyendo.current = false; }
     })();
