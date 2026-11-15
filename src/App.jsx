@@ -6512,7 +6512,13 @@ export default function App() {
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
         {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
-        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={(id, f) => actualizarIncFab(id, { llegaPrevista: f || "" })} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
+          actualizarIncFab(id, { llegaPrevista: f || "" }); if (!f) return;
+          // la OBRA de la incidencia se pone en el planning ese día (cuando llega lo que faltaba)
+          const inc = incidenciasFabrica.find((x) => x.id === id); if (!inc || !inc.obra) return;
+          try { const sn = (await fbGet(ref(fbDb, "controlDiaVentanasObra"))).val() || {}; const e = Object.values(sn).find((x) => x && String(x.nombre || "").trim() === String(inc.obra || "").trim());
+            if (!e) return; const ids = e.tipo === "u" ? [`u-${e.id}`, ...(e.proyectoId ? [`p-${e.proyectoId}`] : [])] : e.tipo === "p" ? [`p-${e.id}`] : [];
+            ids.forEach((oid) => moverDiaPlanningFab(oid, f)); if (ids.length) showToast(`${inc.obra}: puesta en el planning el ${fmtDate(f)}`); } catch (er) { /* sin planning */ } }} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
@@ -56978,7 +56984,7 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
       {abiertas.map((i) => { const resta = (i.creadaTs || 0) + PLAZO_ENCARGADO_MS - ahora; const hoyI = new Date().toLocaleDateString("sv-SE"); const espera = !!i.llegaPrevista && i.llegaPrevista >= hoyI; const tarde = !espera && resta < 0; const mia = i.asignadoA && currentUser && i.asignadoA === currentUser.id; return (
         <div key={i.id} className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold ${espera ? "bg-sky-200 text-sky-950" : tarde ? "bg-red-600 text-white animate-pulse" : "bg-amber-300 text-slate-900"}`}>
           <span>🚨 INCIDENCIA · {i.puesto || "?"}{i.ventana ? ` · ${String(i.ventana).split("·")[0].trim()}` : ""}{i.obra ? ` · ${i.obra}` : ""}: <span className="font-semibold">{i.texto || i.tipo || ""}</span></span>
-          <span className="ml-auto font-black text-base">{espera ? `📅 Llega el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}` : i.llegaPrevista ? `⚠ Tenía que llegar el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}` : tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
+          <span className="ml-auto font-black text-base">{i.llegaPrevista === hoyI ? "📦 HOY llega lo que faltaba: si ya está, pulsa ✓ Resuelta" : espera ? `📅 Llega el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}` : i.llegaPrevista ? `⚠ Tenía que llegar el ${new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}` : tarde ? `FUERA DE PLAZO +${mmss(resta)}` : mmss(resta)}</span>
           {onFechaLlegada && <label className="text-[11px] font-semibold flex items-center gap-1" title="Cuándo está previsto que llegue lo que falta">📅 llega<input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 text-[11px] bg-white" /></label>}
           {i.asignadoA ? <span className="text-xs">{mia ? "VAS TÚ" : "ya va alguien"}</span> : <button type="button" onClick={() => onAsignar(i.id, currentUser && currentUser.id)} className="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">🏃 Voy yo</button>}
           <button type="button" onClick={() => { const n = window.prompt("¿Qué se ha hecho? (opcional)", ""); if (n === null) return; onResolver(i.id, n); }} className="px-2 py-0.5 rounded bg-emerald-600 text-white text-xs font-extrabold">✓ Resuelta</button>
@@ -57003,7 +57009,7 @@ function PanelIncidenciasEncargado({ incidencias, currentUser, onAsignar, onReso
                   <div className="text-xs mt-1 opacity-90">{i.creadaPor && i.creadaPor.nombre ? `Avisa: ${i.creadaPor.nombre} · ` : ""}{i.creadaTs ? new Date(i.creadaTs).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}{i.asignadoA ? (mia ? " · VAS TÚ" : " · ya va alguien") : ""}</div>
                 </div>
                 <div className="text-right">
-                  {i.llegaPrevista ? <div className="text-xl font-black leading-tight">📅 {new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}<div className="text-xs font-bold">{i.llegaPrevista >= new Date().toLocaleDateString("sv-SE") ? "previsto que llegue" : "⚠ YA TENÍA QUE HABER LLEGADO"}</div></div> : <>
+                  {i.llegaPrevista ? <div className="text-xl font-black leading-tight">📅 {new Date(i.llegaPrevista + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" })}<div className="text-xs font-bold">{i.llegaPrevista === new Date().toLocaleDateString("sv-SE") ? "📦 HOY llega: si ya está, pulsa ✓ Resuelta" : i.llegaPrevista > new Date().toLocaleDateString("sv-SE") ? "previsto que llegue" : "⚠ YA TENÍA QUE HABER LLEGADO"}</div></div> : <>
                   <div className="text-4xl font-black leading-none">{tarde ? `+${mmss(resta)}` : mmss(resta)}</div>
                   <div className="text-xs font-bold">{tarde ? "FUERA DE PLAZO" : "quedan"}</div></>}
                   {onFechaLlegada && <label className="mt-1 block text-[11px] font-semibold">📅 Llega el <input type="date" value={i.llegaPrevista || ""} onChange={(e) => onFechaLlegada(i.id, e.target.value)} className="text-slate-900 border border-slate-400 rounded px-1 py-0.5 bg-white" /></label>}
@@ -58892,6 +58898,21 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const piezasTodas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
   // cada puesto de corte ve SOLO sus perfiles (doble cabezal / mosquiteras y postigos)
   const piezas = useMemo(() => piezasTodas.filter((x) => !(quitadasAux && quitadasAux[kQuit(x.id)]) && auxPuestoDeRef(toArray(cfg.refs).find((r) => String(r.ref).trim() === String(x.ref).trim()), x.ref) === puestoCorte), [piezasTodas, quitadasAux, cfg, puestoCorte]);
+  // AVISO «han llegado persianas: cortar guías…»: cada expediente se quita SOLO del aviso cuando ya está cortado todo lo suyo
+  const alertasAuxL = useObjetoFb("alertasAuxPersianas");
+  useEffect(() => {
+    if (puestoCorte !== "doble") return;
+    Object.values(alertasAuxL || {}).forEach((a) => {
+      if (!a || a.estado !== "abierta" || !a.exp) return;
+      const exN = String(a.exp).replace(/\D/g, "").replace(/^0+/, "");
+      const ps = new Set(String(a.presupuesto || "").split(/[·,;\s]+/).map((t) => digitosPresu(t)).filter((b) => b.length >= 3));
+      toArray(uxExpedientes).forEach((e) => { if (e && String(e.numero || "").replace(/\D/g, "").replace(/^0+/, "") === exN) [e.presupuesto, e.presupuestoNumero].forEach((t) => { const b = digitosPresu(String(t || "").split(/[·,;\s]+/)[0]); if (b.length >= 3) ps.add(b); }); });
+      if (!ps.size) return;
+      const suyas = piezasTodas.filter((x) => x && ps.has(String(x.ppto)) && !(quitadasAux && quitadasAux[kQuit(x.id)]));
+      if (!suyas.length || !suyas.every((x) => est && est[x.id] && est[x.id].cortada)) return;
+      fbSet(ref(fbDb, `alertasAuxPersianas/${a.exp}`), { ...a, estado: "resuelta", resueltaPor: "Auxiliares (todo cortado)", resueltaEn: Date.now() }).catch(() => {});
+    });
+  }, [alertasAuxL, piezasTodas, est, quitadasAux, uxExpedientes, puestoCorte]);
   const quitarPiezas = (ps, txt) => {
     const L = toArray(ps).filter((x) => x && !(est && est[x.id] && est[x.id].cortada)); if (!L.length) return;
     if (!window.confirm(`${txt || `¿Quitar ${L.length} pieza${L.length === 1 ? "" : "s"}?`}\n\nNo saldrán para cortar. Se pueden recuperar abajo en «Piezas quitadas».`)) return;
