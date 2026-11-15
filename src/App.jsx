@@ -48303,6 +48303,9 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   // nº de presupuesto de una pieza de la hoja de corte («cd_…»): el guardado al colocarla o, si no, el de su obra
   const pptoDeCodZ = (cod) => { const u = ubic && ubic[cod]; if (u && u.base) return String(u.base); const m = /^cd_(.+)__(.+?)(?:~H\d?)?$/.exec(String(cod)); const sn = m && snapZ && snapZ[m[1]]; return sn ? (toArray(sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "") : ""; };
   const obraDePiezas = (piezas) => { const m = /^cd_(.+)__(.+?)$/.exec(String((piezas[0] || {}).cod || "")); return m ? m[1] : ""; };
+  // ACRISTALADAS (ticadas en Cristales) que siguen en la Línea: en GRIS con «✓ cristal», para distinguirlas de las que aún no lo tienen
+  const marcasCrZ = useObjetoFb("marcasPuestoLinea/cristales");
+  const acristalada = (piezas) => piezas.length > 0 && piezas.every((x) => String(x.cod).startsWith("cd_") && marcasCrZ && marcasCrZ[String(x.cod).slice(3)]);
   const esCompleta = (piezas) => piezas.length > 0 && piezas.every((x) => { const m = /^cd_(.+)__(.+?)$/.exec(String(x.cod)); return m && !/~H/.test(String(x.cod)) && obrasCompletas.has(m[1]); });
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
   const etCDZ = {}; Object.entries(ubic || {}).forEach(([c, u]) => { if (u && u.et) etCDZ[c] = `${u.et}${u.herraje ? " H✓" : ""}${u.pilas ? " P✓" : ""}`; }); // H✓ herraje puesto · P✓ pilastra puesta
@@ -48346,10 +48349,11 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
                 if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (cPers === "inc" ? "bg-orange-500 border-orange-700 text-white font-bold" : z.id === "sinPersiana" && acristalada(piezas) ? "bg-slate-500 border-slate-700 text-white font-bold" : ZONAS_FIN.includes(z.id) && esCompleta(piezas) ? `${colorObra[obraDePiezas(piezas)] || COLORES_OBRA[0]} text-white font-bold border-2` : cPers === "ok" ? "bg-emerald-500 border-emerald-700 text-white font-bold" : cPers === "flojo" ? "bg-green-100 border-green-500 text-green-900 font-semibold" : listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>
                     {piezas.length > 0 && (() => { const b = pptoDeCodZ(piezas[0].cod); return b ? <div className="truncate text-[10px] font-extrabold">Ppto {pptoBonito(b)}</div> : null; })()}
                     {piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
+                    {z.id === "sinPersiana" && acristalada(piezas) && <div className="truncate text-[9px] font-extrabold">✓ cristal</div>}
                   </div>
                 );
               })}
@@ -50540,8 +50544,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    // Cristales: con solape/postigo → almacén de Solape; SIN solape → SIGUE EN LA LÍNEA (no sale del mapa: siempre localizada)
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "sinPersiana") : puestoId;
+    // Cristales, POR OBRA: si alguna ventana de la obra lleva solape/postigo, TODAS van juntas a Solape; si ninguna, todas SIGUEN EN LA LÍNEA (siempre localizadas)
+    const obraConSolape = toArray(hit.sn && hit.sn.ventanas).some((w2) => toArray(w2.ex).some((x) => x === "SOLAPE" || x === "POSTIGO")) || llevaSol;
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (obraConSolape ? "solape" : "sinPersiana") : puestoId;
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
