@@ -52879,6 +52879,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     guardarCfg({ horasRapido: n });
   };
   // fechasPlanEn: cuándo se puso cada obra en su día → dentro del día salen EN EL ORDEN EN QUE SE METIERON (la primera que metes, la primera)
+  // ORDEN DENTRO DEL DÍA: subir / bajar / poner la primera (se reescribe la hora en que «se metió» cada obra de ese día)
+  const moverEnDia = (id, f, ids, a) => {
+    const lista = ids.filter((x) => x !== id); let i = ids.indexOf(id); if (i < 0) return;
+    if (a === "primera") i = 0; else if (a === "arriba") i = Math.max(0, i - 1); else i = Math.min(lista.length, i + 1);
+    lista.splice(i, 0, id);
+    const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const base = Date.now() - lista.length * 1000;
+    lista.forEach((x, k) => { n[x] = f; en[x] = base + k * 1000; });
+    guardarCfg({ fechasPlan: n, fechasPlanEn: en });
+  };
   const ponerDia = (id, v) => { const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; if (v) { if (n[id] !== v) en[id] = Date.now(); n[id] = v; } else { delete n[id]; delete en[id]; } guardarCfg({ fechasPlan: n, fechasPlanEn: en }); };
   // Horas del taller por día: lo normal y, si algún día hay menos gente, ese día concreto (se guarda como "horas ya ocupadas")
   const horasEsp = cfg.horasDiaEsp || {};
@@ -53442,10 +53451,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 </div>
                 {pasaH && <div className="text-[11px] mb-1 rounded px-1.5 py-0.5 bg-rose-600 text-white font-bold">⚠ PASA POR {Math.round((totH - capF) * 10) / 10} h (incluye las metidas a mano)</div>}
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
-                {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
+                {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; const idsOrd = [...new Set(d.trozos.filter((x) => ((plan1.obras[x.id] && plan1.obras[x.id].inicio) || f) === f).map((x) => x.id))]; const pos = idsOrd.indexOf(t.id); return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
                     <label className="float-right ml-1" title="Marcar para moverla con otras" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selPl.includes(t.id)} onChange={(e) => setSelPl(e.target.checked ? [...new Set([...selPl, t.id])] : selPl.filter((x) => x !== t.id))} /></label>
+                    {pos >= 0 && idsOrd.length > 1 && <span className="float-right flex gap-0.5 ml-1" onClick={(e) => e.stopPropagation()}>
+                      <button type="button" disabled={pos === 0} onClick={() => moverEnDia(t.id, f, idsOrd, "primera")} title="Ponerla la PRIMERA del día" className="text-[11px] leading-none px-1 py-0.5 rounded border border-slate-300 bg-white disabled:opacity-30">⤒</button>
+                      <button type="button" disabled={pos === 0} onClick={() => moverEnDia(t.id, f, idsOrd, "arriba")} title="Subirla un puesto" className="text-[11px] leading-none px-1 py-0.5 rounded border border-slate-300 bg-white disabled:opacity-30">▲</button>
+                      <button type="button" disabled={pos === idsOrd.length - 1} onClick={() => moverEnDia(t.id, f, idsOrd, "abajo")} title="Bajarla un puesto" className="text-[11px] leading-none px-1 py-0.5 rounded border border-slate-300 bg-white disabled:opacity-30">▼</button>
+                    </span>}
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className={`block w-full text-left text-sm font-bold ${o && obraHechaCD(o) ? "text-white" : "text-slate-800 hover:text-[#2E8B57]"}`}>{o && obraConIncPl(o) ? "⚠ " : o && obraHechaCD(o) ? "✓ " : ""}{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
