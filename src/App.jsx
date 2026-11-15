@@ -48089,7 +48089,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const incFabZ = useObjetoFb("incidenciasFabrica");
   const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
-  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : estPersZ[String(x.cod)] || ""; if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
+  const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? "ok" : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -50195,7 +50195,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "") : puestoId;
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "espera") : puestoId; // Cristales sin solape → «Ventanas terminadas (almacén de espera)»
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
@@ -50206,7 +50206,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
     const nCr = puestoId === "cristales" ? bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, true) : 0; // tocar la ventana en Cristales = sus cristales dados de baja
     if (x && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === x.id ? { ...y, estanteAnterior: y.estante || null, almacenAnterior: y.almacenId || "", estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: codCD, ventanaPos: hit.w.pos || "", puestaPor: quien || "" } : y)));
-    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA · sin solape: se queda en la LÍNEA para paletizar` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
+    avisar(true, `${!zP ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) HECHA` : r ? `✓ ${hit.w.pos} (${hit.sn.nombre || ""}) → ${zP.nombre} · ESTANTERÍA ${r.hueco}` : `⚠ ${zP.nombre} está LLENA: ${hit.w.pos} no tiene hueco`}${x ? ` · persiana ${x.ref || ""} dada de baja del carro ${x.estante ? x.estante.carro : ""}` : esPuestoPers ? " · (no encuentro su persiana en el carro)" : ""}${puestoId === "cristales" ? (nCr ? ` · ${nCr} cristal${nCr === 1 ? "" : "es"} dado${nCr === 1 ? "" : "s"} de baja` : cristalesDeVentana(hit.sn, hit.w).length ? " · sus cristales ya estaban puestos" : " · (no encuentro sus cristales en los caballetes)") : ""}`, false);
     return true;
   };
   // ¿Qué persiana del carro es la de esta ventana? (misma obra y misma vivienda)
@@ -50226,6 +50226,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`); const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`))).val();
+      // ya hecha pero SIN hueco (se ticó antes de que su puesto la llevara a una estantería): se coloca ahora, sin preguntar
+      if (yaM && !(ubic && ubic[codCD])) { await ponerPersianaCD(hit, null); return; }
       if (yaM) {
         if (!window.confirm(`${hit.w.pos} ya está HECHA en este puesto.\n\n¿Quitarla? (sale de su hueco y, si se dio de baja su persiana, vuelve al carro)`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), null).catch(() => {});
