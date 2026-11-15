@@ -50540,8 +50540,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const ponerPersianaCD = async (hit, x) => {
     // Puerta → «Puertas terminadas»; Cristales → «Solape» si lleva solape/postigo (si no, se queda en la Línea para paletizar, sin hueco)
     const llevaSol = toArray(hit.w.ex).some((x) => x === "SOLAPE" || x === "POSTIGO");
-    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? "solape" : puestoId; // Cristales: la coge de la LÍNEA y la manda SIEMPRE al almacén de Solape (las ventanas de una obra van juntas, lleven solape o no)
-    void llevaSol;
+    // Cristales: con solape/postigo → almacén de Solape; SIN solape → SIGUE EN LA LÍNEA (no sale del mapa: siempre localizada)
+    const zonaDest = puestoId === "puerta" ? "puertasTerminadas" : puestoId === "cristales" ? (llevaSol ? "solape" : "sinPersiana") : puestoId;
     const zP = zonaDest ? zonas.find((q) => q.id === zonaDest) : null; if (zonaDest && !zP) return false;
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
@@ -50615,7 +50615,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   };
   // CRISTALES deshecho: la ventana vuelve a donde estaba antes (la Línea); si no se sabe (las de antes del cambio), a la LÍNEA
   const devolverALaLinea = async (cod, hit) => {
-    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (u && u.zonaId === "sinPersiana") return; // ya está en la Línea
       if (u && u.antes && u.antes.zonaId && await volverA(cod, u.antes)) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { porCristales: null }).catch(() => {}); return; }
       const zL = zonas.find((q) => q.id === "sinPersiana"); if (!zL) return; const base = hit ? (toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "") : String((u && u.base) || "");
       const r = await colocarAgrupado(zL, cod, base, null);
