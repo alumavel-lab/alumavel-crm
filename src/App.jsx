@@ -61464,6 +61464,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
     const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
     toArray(e && e.documentos).forEach(add); toArray(p && p.documentos).forEach(add);
+    // y DONDE SEA que se haya subido: la de Auxiliares (guarda el PDF), la del portal de Uxcar y la de Control del día de su gemela
+    const ya = new Set(out.map((d) => d.url));
+    const mete = (url, nombre) => { if (url && !ya.has(url)) { ya.add(url); out.push({ url, nombre: nombre || "HOJA DE CORTE.pdf", tipo: "Hoja de corte" }); } };
+    try { [...presCrmDe(o)].map((c) => digitosPresu(String(c).split("-")[0])).forEach((b) => { const h = hojasAuxCD && hojasAuxCD[b]; if (h && h.url) mete(h.url, h.archivo); }); } catch (er) { /* nada */ }
+    Object.values((e && e.hojasCorteAux) || {}).forEach((h) => { if (h && h.url) mete(h.url, h.archivo); });
     return out;
   };
   const traerCarga = async (o, fichero) => {
