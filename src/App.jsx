@@ -48087,6 +48087,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
   const ctxPZ = React.useContext(IncidenciasCristalCtx) || {};
   const incVentZ = useObjetoFb("incidenciaVentanaLinea");
   const incFabZ = useObjetoFb("incidenciasFabrica");
+  const sentidoLin = useObjetoFb("configSentidoLinea"); // { sinPersiana: "der" | "izq" }: hacia dónde va la CARGA en el mapa de la Línea
   const incFabIdsZ = useMemo(() => new Set(toArray(incFabZ).filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).map((i) => String(i.ventanaId))), [incFabZ]);
   const estPersZ = useMemo(() => { const m = {}; toArray(ctxPZ.persianasAlmacen).forEach((x) => { if (!x || !x.ventanaId) return; const k = String(x.ventanaId); if (x.incidencia) m[k] = "inc"; else if (x.colocadaVentana && m[k] !== "inc") m[k] = "ok"; }); return m; }, [ctxPZ.persianasAlmacen]);
   const colorPersZ = (piezas) => { let c = ""; piezas.forEach((x) => { if (incVentZ && incVentZ[String(x.cod)]) { c = "inc"; return; } const hh = indice && indice.get(String(x.cod)); const mcd = /^cd_.+__(.+)$/.exec(String(x.cod)); if ((hh && hh.ventana && incFabIdsZ.has(String(hh.ventana.id))) || (mcd && [...incFabIdsZ].some((id) => id.replace(/[.#$\[\]\/|\s]/g, "_") === mcd[1]))) { c = "inc"; return; } const e = hh && hh.ventana ? estPersZ[String(hh.ventana.id)] : (estPersZ[String(x.cod)] || (mcd ? "ok" : "")); if (e === "inc") c = "inc"; else if (e === "ok" && c !== "inc") c = "ok"; }); return c; };
@@ -48118,8 +48119,16 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
               <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
               {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
             </div>
+            {z.id === "sinPersiana" && (() => { const izq = sentidoLin && sentidoLin.sinPersiana === "izq"; return (
+              <div className="flex items-center gap-2 mb-1 text-xs font-extrabold text-sky-800">
+                {izq ? <span>🚚 CARGA ⟵⟵⟵</span> : <span>Entrada</span>}
+                <div className="flex-1 h-1.5 rounded bg-gradient-to-r from-sky-200 to-sky-600" style={izq ? { transform: "scaleX(-1)" } : undefined} />
+                {izq ? <span>Entrada</span> : <span>⟶⟶⟶ CARGA 🚚</span>}
+                {admin && <button type="button" onClick={() => fbSet(ref(fbDb, "configSentidoLinea/sinPersiana"), izq ? "der" : "izq").catch(() => {})} className="ml-2 text-[10px] font-semibold underline text-slate-500">↔ cambiar sentido</button>}
+              </div>
+            ); })()}
             <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
-              {Array.from({ length: z.huecos }, (_, i) => i + 1).map((hu) => {
+              {(z.id === "sinPersiana" && sentidoLin && sentidoLin.sinPersiana === "izq" ? Array.from({ length: z.huecos }, (_, i) => z.huecos - i) : Array.from({ length: z.huecos }, (_, i) => i + 1)).map((hu) => {
                 const piezas = oc[hu] || [];
                 const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
                 const listo = !!verdes && piezas.some((x) => verdes.has(String(x.cod)));
