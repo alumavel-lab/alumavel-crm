@@ -5042,10 +5042,12 @@ export default function App() {
     const faltan = [];
     for (const p of faltan0) { try { const r = await runTransaction(ref(fbDb, `instalacionAutoCreada/${p.id}`), (cur) => (cur ? undefined : Date.now())); if (r && r.committed) faltan.push(p); } catch (e) { /* otro ordenador */ } }
     if (!faltan.length) return;
+    // Sin fecha en la obra: se le pone una PROVISIONAL a 17 días (se cambia en la instalación)
+    const en17 = (() => { const d = new Date(); d.setDate(d.getDate() + 17); return d.toLocaleDateString("sv-SE"); })();
     const nuevas = faltan.map((p) => ({
       id: uid(), proyectoId: p.id, estado: "Pendiente de instalación",
       presupuestoInstalacion: "", registroHoras: [], gastos: [], materialFurgoneta: [], notas: "",
-      fechaMontaje: p.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
+      fechaMontaje: p.fechaMontaje || en17, fechaProvisional: !p.fechaMontaje, vehiculoId: null, creadaEn: Date.now(),
     }));
     setInstalaciones((prev) => { const ya = new Set(toArray(prev).map((i) => i.proyectoId)); const add = nuevas.filter((n) => !ya.has(n.proyectoId)); if (!add.length) return prev; const updated = [...add, ...toArray(prev)]; persist("instalaciones", updated); return updated; });
     showToast(`🔧 ${faltan.length === 1 ? `Instalación creada para la obra #${faltan[0].numero}` : `${faltan.length} instalaciones creadas`}: ponle fecha de montaje en Instalaciones`);
@@ -6534,14 +6536,25 @@ export default function App() {
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {(() => {
+          // FINALIZADAS SIN FECHA: hay que completarlas (sale hasta que no quede ninguna)
+          if (!currentUser || modulo === "instalaciones" || !(isAdmin || tieneAcceso("instalaciones"))) return null;
+          const fin = toArray(instalaciones).filter((i) => i && i.estado === "Finalizada" && !i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje));
+          if (!fin.length) return null;
+          return (
+            <button onClick={() => { try { window.sessionStorage.setItem("crm_inst_filtro", "__finsinfecha"); } catch (e) { /* nada */ } setModulo("instalaciones"); }} className="w-full flex items-center gap-2 px-6 py-2 text-sm font-bold text-left transition bg-amber-100 text-amber-900 hover:bg-amber-200">
+              ⚠ INSTALACIONES: {fin.length} finalizada{fin.length === 1 ? "" : "s"} SIN día de montaje. Toca para completarlas →
+            </button>
+          );
+        })()}
+        {(() => {
           // INSTALACIONES SIN FECHA DE MONTAJE: que no se escape ninguna (a quien lleva Instalaciones)
           if (!currentUser || modulo === "instalaciones" || !(isAdmin || tieneAcceso("instalaciones"))) return null;
-          const sinFecha = toArray(instalaciones).filter((i) => i && !["Finalizada", "Cancelada", "Terminada"].includes(i.estado) && !i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje));
+          const sinFecha = toArray(instalaciones).filter((i) => i && !["Finalizada", "Cancelada", "Terminada"].includes(i.estado) && (i.fechaProvisional || (!i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje))));
           if (!sinFecha.length) return null;
           const nom = (i) => { const p = toArray(proyectos).find((q) => q.id === i.proyectoId); return p ? `#${p.numero} ${p.nombre || ""}`.trim() : (i.nombre || "instalación"); };
           return (
             <button onClick={() => { try { window.sessionStorage.setItem("crm_inst_filtro", "__sinfecha"); } catch (e) { /* nada */ } setModulo("instalaciones"); }} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-left transition bg-emerald-100 text-emerald-900 hover:bg-emerald-200">
-              🔧 INSTALACIONES: {sinFecha.length} sin fecha de montaje · {sinFecha.slice(0, 3).map(nom).join(" · ")}{sinFecha.length > 3 ? "…" : ""}. Toca para ponerles fecha →
+              🔧 INSTALACIONES: {sinFecha.length} sin fecha de montaje buena (o con fecha provisional) · {sinFecha.slice(0, 3).map(nom).join(" · ")}{sinFecha.length > 3 ? "…" : ""}. Toca para ponerles fecha →
             </button>
           );
         })()}
@@ -25533,7 +25546,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
 
   const filtered = useMemo(() => {
     return instalacionesVisibles.filter((i) => {
-      if (estadoFiltro === "__sinfecha") { if (i.estado === "Finalizada" || datos(i).fechaMontaje) return false; }
+      if (estadoFiltro === "__sinfecha") { if (i.estado === "Finalizada" || (datos(i).fechaMontaje && !i.fechaProvisional)) return false; }
       else if (estadoFiltro === "__finsinfecha") { if (i.estado !== "Finalizada" || datos(i).fechaMontaje) return false; }
       else if (estadoFiltro && i.estado !== estadoFiltro) return false;
       if (!q) return true;
@@ -25700,7 +25713,7 @@ function InstalacionesModulo({ onHacerPresupuesto = null, instalaciones, proyect
                   <td className="px-4 py-3 font-medium text-slate-800">{d.nombreMostrar}{!d.proyecto && <Badge className="ml-2 bg-violet-50 text-violet-700 ring-violet-200">Sin proyecto</Badge>}</td>
                   <td className="px-4 py-3 text-slate-600">{d.clienteMostrar}</td>
                   <td className="px-4 py-3"><Badge className={ESTADO_INSTALACION_STYLE[i.estado]}>{i.estado}</Badge></td>
-                  <td className="px-4 py-3">{d.fechaMontaje ? <span className="font-semibold text-slate-700">{fmtDate(d.fechaMontaje)}</span> : <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-rose-100 text-rose-700">SIN FECHA</span>}</td>
+                  <td className="px-4 py-3">{d.fechaMontaje ? <span className="font-semibold text-slate-700">{fmtDate(d.fechaMontaje)}{i.fechaProvisional ? <span className="ml-1 text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">PROVISIONAL</span> : null}</span> : <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-rose-100 text-rose-700">SIN FECHA</span>}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-500">{d.presupuesto ? money(d.presupuesto) : "—"}</td>
                   <td className="px-4 py-3 text-right font-mono-num text-slate-600">{money(d.costeTotal)}</td>
                   <td className={`px-4 py-3 text-right font-mono-num font-semibold ${d.diferencia < 0 ? "text-rose-600" : "text-emerald-600"}`}>{d.presupuesto ? money(d.diferencia) : "—"}</td>
@@ -25908,7 +25921,7 @@ function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o 
   );
 }
 function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
-  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [] });
+  const [f, setF] = useState({ proyectoId: "", nombre: "", clienteNombre: "", direccion: "", telefono: "", presupuestoInstalacion: "", notas: "", archivos: [], fechaMontaje: "" });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
@@ -25919,6 +25932,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
       setErrorMsg("Si no eliges un proyecto, tienes que ponerle un nombre a la instalación (es obligatorio).");
       return;
     }
+    if (!f.fechaMontaje) { setErrorMsg("Pon el DÍA DE MONTAJE (es obligatorio). Si aún no lo sabes, pon uno aproximado y cámbialo luego."); return; }
     if (!f.proyectoId && !f.direccion.trim() && !window.confirm("No has puesto DIRECCIÓN y no hay proyecto: el montador no sabrá dónde ir. ¿Crearla igualmente?")) return;
     setErrorMsg("");
     onSave(f);
@@ -25962,6 +25976,10 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
           <div className="col-span-2"><Field label={f.proyectoId ? "Dirección (si es otra distinta de la de la obra)" : "Dirección"}><TextInput value={f.direccion} onChange={set("direccion")} placeholder="Calle, número, población" /></Field></div>
           <Field label="Teléfono de contacto"><TextInput value={f.telefono} onChange={set("telefono")} placeholder="Opcional" /></Field>
         </div>
+
+        <Field label="Día de montaje" required>
+          <TextInput type="date" value={f.fechaMontaje} onChange={set("fechaMontaje")} className={!f.fechaMontaje ? "border-rose-400 bg-rose-50" : ""} />
+        </Field>
 
         <Field label="Presupuesto de instalación (€)">
           <TextInput type="number" step="0.01" value={f.presupuestoInstalacion} onChange={set("presupuestoInstalacion")} />
@@ -26146,10 +26164,11 @@ function InstalacionDetail({ onHacerPresupuesto = null, instalacion, proyecto, c
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Día de montaje</label>
           <TextInput
             id="inst-fecha-montaje" type="date" value={fechaMontajeInput}
-            onChange={(e) => { if (!e.target.value && instalacion.estado !== "Pendiente de instalación") { window.alert("La fecha de montaje es obligatoria en una instalación en curso o finalizada."); return; } setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value }); }}
-            className={!fechaMontajeInput ? "border-rose-400 bg-rose-50" : ""}
+            onChange={(e) => { if (!e.target.value && instalacion.estado !== "Pendiente de instalación") { window.alert("La fecha de montaje es obligatoria en una instalación en curso o finalizada."); return; } setFechaMontajeInput(e.target.value); onUpdate({ fechaMontaje: e.target.value, fechaProvisional: false }); }}
+            className={!fechaMontajeInput ? "border-rose-400 bg-rose-50" : instalacion.fechaProvisional ? "border-amber-400 bg-amber-50" : ""}
           />
           {!fechaMontajeInput && <div className="mt-1 text-xs font-bold text-rose-700">⚠ Falta el día de montaje (obligatorio para empezarla o finalizarla)</div>}
+          {fechaMontajeInput && instalacion.fechaProvisional && <div className="mt-1 text-xs font-bold text-amber-700">⏳ Fecha PROVISIONAL (puesta sola a 17 días): cámbiala por la buena</div>}
         </div>
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Vehículo asignado</label>
