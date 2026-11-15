@@ -49015,7 +49015,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
       const c = cajas.find((x) => !x.vs.length && (x.keys.has(limpia(k)) || bs.some((b) => x.bases.has(b)))); if (!c) return;
       bs.forEach((b) => c.bases.add(b)); c.fuente = "cd"; c.obra = sn.nombre || c.obra;
-      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
+      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "", ...(typeof w.nh === "number" ? { nh: w.nh } : {}), ...(w.tp ? { tp: w.tp } : {}) }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
     });
     // 2) Si Control del día aún no tiene esa obra: las ventanas de las ETIQUETAS
     const vistos = new Set();
@@ -49036,20 +49036,20 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
     // DIBUJOS sacados directamente de la HOJA DE CORTE leída (por obra o por nº de presupuesto), aunque Control del día aún no los haya pasado
     const hojasLista = Object.entries(hojasCDpd || {}).filter(([, h]) => h && toArray(h.modelos).length);
     cajas.forEach((c) => {
-      if (!c.vs.length || c.vs.every((w) => w.dib)) return;
+      if (!c.vs.length || c.vs.every((w) => w.dib && w.nh != null)) return;
       const hs = hojasLista.filter(([k, x]) => c.keys.has(k) || (x.pres && c.bases.has(basePresuDia(String(x.pres).split("-")[0])))).map(([, x]) => x);
       const h = hs.length ? hs.reduce((a, b) => ((Number(b.leidoEn) || 0) > (Number(a.leidoEn) || 0) ? b : a)) : null; if (!h) return; // la leída MÁS TARDE
       const ms = toArray(h.modelos);
-      c.vs.forEach((w) => { if (w.dib) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
+      c.vs.forEach((w) => { if (w.dib && w.nh != null) return; const cods = [String(w.pos || "").trim().split(/\s+/)[0].toUpperCase(), ...(`${w.pos || ""} ${w.tip || ""}`.toUpperCase().match(/[A-Z]{1,2}\d{2}\.\d{3}/g) || [])]; for (const cd of cods) { const m = ms.find((x) => String(x.pos || "").toUpperCase() === cd); if (m) { if (m.dib) w.dib = m.dib; if (typeof m.hojas === "number" && w.nh == null) w.nh = m.hojas; if (m.tipo && !w.tp) w.tp = m.tipo; if (!w.medida && m.ancho && m.alto) w.medida = `${m.ancho}x${m.alto}`; if (m.desc && !w.desc) w.desc = m.desc; break; } } });
     });
     return cajas.map((c, i) => { const vs = (puestoId === "puerta" ? c.vs.filter(esPuertaPanel) : puestoId === "pilastra" ? c.vs.filter(vePilastra) : (puestoId === "persianaA" || puestoId === "persianaB") ? c.vs.filter((w) => llevaPersiana(c, w)) : c.vs).sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => (puestoId === "puerta" || puestoId === "pilastra" || puestoId === "persianaA" || puestoId === "persianaB" ? c.vs.length > 0 : (c.vs.length || c.nombre)));
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd]);
   // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
-  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
+  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || puestoId !== "soldadora" && puestoId !== "herraje" && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
     // ya leída esa misma hoja, o ya falló con ella, o hay una leída del presupuesto DESPUÉS de subirse esta: no se repite. Si se sube otra más nueva, se vuelve a leer
-    const ya = Object.values(hojasCDpd || {}).some((h) => h && (h.url === u || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
   const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
   useEffect(() => {
     if (!pendHojaPd.length || hojaLeyendoPd.current) return;
@@ -49071,7 +49071,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             if (suyo && suyo !== b) throw new Error(`la hoja es del presupuesto ${r.pres}`);
             const ks = Object.keys(r.dibs || {});
             for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId })));
+            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 1 })));
           } catch (e) { await runTransaction(ref(fbDb, `controlDiaHojaCorte/${kH}`), (act) => (act && toArray(act.modelos).length ? undefined : { error: e.message || String(e), url: u, probadas: [u], leidoEn: Date.now(), v: 3, pres: b })).catch(() => {}); } // un fallo NUNCA borra una hoja ya leída bien por otro ordenador
         }
       } finally { hojaLeyendoPd.current = false; }
@@ -50526,7 +50526,9 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       let hit = null;
       Object.entries(snapCDLin || {}).forEach(([k, sn]) => { if (hit || !sn) return; const w = toArray(sn.ventanas).find((w2) => String(w2.id) === id); if (!w) return; if (qb && !toArray(sn.codigos).some((c) => basePresuDia(c) === qb)) return; hit = { k, sn, w }; });
       if (!hit) { avisar(false, "No encuentro esa ventana en la hoja de corte."); return; }
-      const hojaT = pE === "soldadora" && tipoSold === "hojas"; // las HOJAS llevan su propio código («~H») y su propio almacén
+      // SOLDADORA: el CRM sabe por la hoja de corte si la ventana es FIJA (solo marco) o cuántas hojas lleva; si lleva hojas, se elige qué sale
+      if (pE === "soldadora" && !(req && req.tipo)) { const nhS = typeof hit.w.nh === "number" ? hit.w.nh : null; if (nhS === 0 || hit.w.tp === "fijo") req = { ...req, tipo: "marco" }; else { setElegirSold({ req, hit, nh: nhS }); return; } }
+      const hojaT = pE === "soldadora" && req && req.tipo === "hojas"; // las HOJAS llevan su propio código («~H») y su propio almacén
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + (hojaT ? "~H" : "");
       const yaM = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
       if (yaM) {
@@ -50554,7 +50556,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
           const zS = zonas.find((q) => q.id === (esPta ? "puertas" : hojaT ? "hojas" : "marcos"));
           const r = zS ? await colocarAgrupado(zS, codS, base, esPta ? (hojaT ? 12 : 6) : null, esPta && hojaT ? 7 : 1) : null; // puertas: marco 1-6 · hoja 7-12
-          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? " hojas" : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}${hojaT ? " hojas" : ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ ${hojaT ? `${typeof hit.w.nh === "number" ? `${hit.w.nh} HOJA${hit.w.nh === 1 ? "" : "S"}` : "HOJAS"}: déjalas` : "MARCO: déjalo"} en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
       }
@@ -50562,7 +50564,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       // (presupuestos completos en el mismo banco; a partir de 5 ventanas del presupuesto en un banco, al otro; y que los DOS tengan siempre trabajo).
       // Sin persiana → Línea. Puerta → Banco de puerta.
       // HERRAJE: las hojas pasan de «Hojas (soldadora)» (sin herraje) a «Hojas con herraje». Si no estaban, se meten ya con herraje.
-      if (pE === "herraje") {
+      if (pE === "herraje" && (hit.w.nh === 0 || hit.w.tp === "fijo")) txtAlm = "\nℹ Es FIJA: no lleva hojas, no hay herraje de hoja.";
+      else if (pE === "herraje") {
         const codH = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + "~H"; const uH = ubic && ubic[codH];
         if (uH && uH.zonaId === "hojasHerraje") txtAlm = `\n📍 Ya está en Hojas con herraje · ESTANTERÍA ${uH.hueco}.`;
         else {
@@ -50572,7 +50575,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           else {
             const r = zH ? await colocarAgrupado(zH, codH, base, null) : null;
             if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codH}`), { et: `${hit.w.pos || ""} hojas`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, herraje: Date.now(), porHerraje: true, ...(prevH ? { antes: prevH } : {}) }).catch(() => {});
-              txtAlm = `${prevH ? `\n⬅ Cógelas de ${(zonas.find((q) => q.id === prevH.zonaId) || {}).nombre || prevH.zonaId} · ESTANTERÍA ${prevH.hueco}` : ""}\n➡ Déjalas en Hojas con herraje · ESTANTERÍA ${r.hueco}.`; }
+              txtAlm = `${typeof hit.w.nh === "number" ? `\n🪟 ${hit.w.nh} hoja${hit.w.nh === 1 ? "" : "s"}` : ""}${prevH ? `\n⬅ Cógelas de ${(zonas.find((q) => q.id === prevH.zonaId) || {}).nombre || prevH.zonaId} · ESTANTERÍA ${prevH.hueco}` : ""}\n➡ Déjalas en Hojas con herraje · ESTANTERÍA ${r.hueco}.`; }
             else txtAlm = `\n⚠ ${zH ? "Hojas con herraje está LLENO" : "No encuentro el almacén de hojas con herraje"}: no se ha podido colocar.`;
           }
         }
@@ -50628,7 +50631,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const tocarVentanaPuesto = esPuestoSimple ? ventanaPersianaPuesta : conBuscadorViejo ? setAbrirReq : marcarHechaPuesto;
   // TICADAS EN ESTE PUESTO: lista para quitarlas (una a una o todas). Quitar = deshacer lo que hizo el tick (marca, contador, hueco que ocupó, persiana, cristales)
   const marcasEste = useObjetoFb(`marcasPuestoLinea/${puestoId || "_ninguno"}`);
-  const [tipoSold, setTipoSold] = useEstadoLocal("crm_soldadoraTipo", "marco"); // Soldadora sin pistola: lo que se toca es el MARCO o las HOJAS de la ventana
+  const [elegirSold, setElegirSold] = useState(null); // Soldadora: al tocar una ventana se elige su MARCO o sus HOJAS (el CRM sabe cuántas hojas lleva por la hoja de corte)
   const [entradaPil, setEntradaPil] = useEstadoLocal("crm_pilastraEntrada", false); // Pilastra: modo «meter marcos que vienen de la soldadora» (verde flojo, sin herraje)
   const [verTicadas, setVerTicadas] = useEstadoLocal(`crm_verTicadas_${puestoId}`, false);
   const quitarTicada = async (claveM, m) => {
@@ -50922,11 +50925,20 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4" style={layoutSimple ? { order: -3, marginTop: 0, marginBottom: "0.75rem" } : undefined}>{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        {puestoId === "soldadora" && <div style={{ order: -2 }} className="mb-2 rounded-lg border-2 border-slate-400 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
-          <span className="text-sm font-bold text-slate-800">Lo que sale de la soldadora:</span>
-          <button type="button" onClick={() => setTipoSold("marco")} className={`px-4 py-2 rounded-md text-base font-extrabold border-2 ${tipoSold !== "hojas" ? "bg-amber-700 text-white border-amber-900" : "bg-white text-slate-700 border-slate-300"}`}>🟫 MARCO → almacén de marcos</button>
-          <button type="button" onClick={() => setTipoSold("hojas")} className={`px-4 py-2 rounded-md text-base font-extrabold border-2 ${tipoSold === "hojas" ? "bg-sky-700 text-white border-sky-900" : "bg-white text-slate-700 border-slate-300"}`}>🪟 HOJAS → almacén de hojas</button>
-        </div>}
+        {elegirSold && (() => { const { req, hit, nh } = elegirSold; const cM = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uM = ubic && ubic[cM]; const uH = ubic && ubic[cM + "~H"];
+          const nomZ = (u) => (u ? `${(zonas.find((q) => q.id === u.zonaId) || {}).nombre || u.zonaId} ${u.hueco}` : "");
+          const ir = async (tipos) => { setElegirSold(null); for (const t of tipos) await marcarHechaPuesto({ ...req, tipo: t }); };
+          return (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setElegirSold(null)}>
+            <div className="bg-white rounded-xl p-4 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-extrabold text-slate-800">{hit.w.pos} <span className="text-sm font-semibold text-slate-500">{hit.sn.nombre || ""}</span></div>
+              <div className="text-sm text-slate-600">{nh == null ? "La hoja de corte no dice cuántas hojas lleva." : `Según la hoja de corte: 1 marco y ${nh} hoja${nh === 1 ? "" : "s"}${hit.w.tp === "puerta" ? " (PUERTA)" : ""}.`} ¿Qué sale de la soldadora?</div>
+              <button type="button" onClick={() => ir(["marco"])} className="w-full px-4 py-3 rounded-lg bg-amber-700 text-white text-lg font-extrabold text-left">🟫 MARCO{uM ? <span className="block text-xs font-semibold">ya está en {nomZ(uM)} (tocar = quitarlo)</span> : null}</button>
+              <button type="button" onClick={() => ir(["hojas"])} className="w-full px-4 py-3 rounded-lg bg-sky-700 text-white text-lg font-extrabold text-left">🪟 {nh ? `${nh} HOJA${nh === 1 ? "" : "S"}` : "HOJAS"}{uH ? <span className="block text-xs font-semibold">ya están en {nomZ(uH)} (tocar = quitarlas)</span> : null}</button>
+              {!uM && !uH && <button type="button" onClick={() => ir(["marco", "hojas"])} className="w-full px-4 py-2 rounded-lg border-2 border-slate-400 text-slate-800 text-sm font-bold">Las dos cosas a la vez</button>}
+              <button type="button" onClick={() => setElegirSold(null)} className="w-full text-sm text-slate-500 underline">Cancelar</button>
+            </div>
+          </div>); })()}
         {puestoId === "pilastra" && <div style={{ order: -2 }} className={`mb-2 rounded-lg border-2 px-3 py-2 flex flex-wrap items-center gap-2 ${entradaPil ? "border-green-500 bg-green-50" : "border-emerald-700 bg-emerald-50"}`}>
           <span className="text-sm font-bold text-slate-800">Al tocar una ventana:</span>
           <button type="button" onClick={() => setEntradaPil(false)} className={`px-3 py-1.5 rounded-md text-sm font-bold border ${!entradaPil ? "bg-emerald-600 text-white border-emerald-700" : "bg-white text-slate-700 border-slate-300"}`}>🔧 Herraje puesto (verde fuerte)</button>
@@ -60841,6 +60853,8 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
   modelos.forEach((md) => {
     const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
+    // MARCOS Y HOJAS: cuántas hojas lleva cada ventana y si es puerta / fijo (lo mismo que se usa para las etiquetas)
+    try { const an = analizarBloqueCorte(String(md.texto || ""), md.pos, md.uds); if (an.hojas != null && an.hojas >= 0 && an.hojas <= 4) md.hojas = an.hojas; if (an.tipo) md.tipo = an.tipo; } catch (e) { /* sin dato */ }
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -61792,7 +61806,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 1 })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -61964,7 +61978,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
   // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
   // ya leída, pero después se ha subido OTRA hoja más nueva (corregida): se vuelve a leer con la nueva
-  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); };
+  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !h.hjV && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
+  const hojaReleidaHj = useRef({});
   const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = hayHojaMasNueva(o) ? docsHojaDe(o).slice(0, 1) : docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
@@ -61976,7 +61991,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     (async () => {
       try {
         for (const o of pendHoja) {
-          hojaIntentadas.current[o.d.key] = true;
+          hojaIntentadas.current[o.d.key] = true; hojaReleidaHj.current[o.d.key] = true;
           // se prueban TODOS los documentos que parecen hoja de corte, hasta que uno se lea bien
           const er0 = hojasCD && hojasCD[limpia(o.d.key)]; const probadas = new Set(er0 && er0.v >= 3 ? toArray(er0.probadas) : []);
           let r = { ok: false, motivo: "no se pudo leer" }; let dUlt = null;
@@ -62228,7 +62243,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const color = (inf && inf.color) || (ih && ih.color) || v.color || "";
         const medida = v.medida || (ih && ih.ancho ? `${ih.ancho} x ${ih.alto}` : "");
         const ex = [...new Set([...(seguro(() => extrasVentana(o, v), [])), ...(ih ? toArray(ih.extras) : [])])];
-        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
+        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex, ...(ih && typeof ih.hojas === "number" ? { nh: ih.hojas } : {}), ...(ih && ih.tipo ? { tp: ih.tipo } : {}), hi: (ih || (inf && inf.desc)) ? 1 : 0, cr: toArray(ih && ih.cristales).map((c) => ({ comp: c.comp || "", uds: c.uds || 1, ancho: c.ancho || 0, alto: c.alto || 0 })) };
       }));
       if (!vs.length || vs.length > 400) return;
       const k = limpia(o.d.key);
