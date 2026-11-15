@@ -5029,13 +5029,18 @@ export default function App() {
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
   // Se apuntan las URLs ya copiadas (uxDocsVistos) para no volver a meter uno que el usuario haya quitado.
   // Obras que llevan instalación y todavía no tienen ficha en Instalaciones (marcadas desde otros sitios): se crean solas, una sola vez por sesión. Solo el administrador, para no duplicar si hay varios conectados.
-  const instAutoRef = useRef(false);
+  // AHORA: al momento (no una vez por sesión) y desde cualquier ordenador; un candado en la base de datos evita crearla dos veces.
+  const instAutoRef = useRef(new Set());
   useEffect(() => {
-    if (!currentUser || currentUser.rol !== "Administrador" || loading || instAutoRef.current) return;
+    if (!currentUser || loading) return;
     if (!Array.isArray(instalaciones)) return;
     const conFicha = new Set(toArray(instalaciones).map((i) => i.proyectoId));
-    const faltan = toArray(proyectos).filter((p) => p && p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conFicha.has(p.id));
-    instAutoRef.current = true;
+    const faltan0 = toArray(proyectos).filter((p) => p && p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conFicha.has(p.id) && !instAutoRef.current.has(p.id));
+    if (!faltan0.length) return;
+    faltan0.forEach((p) => instAutoRef.current.add(p.id));
+    (async () => {
+    const faltan = [];
+    for (const p of faltan0) { try { const r = await runTransaction(ref(fbDb, `instalacionAutoCreada/${p.id}`), (cur) => (cur ? undefined : Date.now())); if (r && r.committed) faltan.push(p); } catch (e) { /* otro ordenador */ } }
     if (!faltan.length) return;
     const nuevas = faltan.map((p) => ({
       id: uid(), proyectoId: p.id, estado: "Pendiente de instalación",
@@ -5043,7 +5048,8 @@ export default function App() {
       fechaMontaje: p.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
     }));
     setInstalaciones((prev) => { const ya = new Set(toArray(prev).map((i) => i.proyectoId)); const add = nuevas.filter((n) => !ya.has(n.proyectoId)); if (!add.length) return prev; const updated = [...add, ...toArray(prev)]; persist("instalaciones", updated); return updated; });
-    showToast(`${faltan.length} obra${faltan.length === 1 ? "" : "s"} con instalación sin ficha: ya se han creado en Instalaciones`);
+    showToast(`🔧 ${faltan.length === 1 ? `Instalación creada para la obra #${faltan[0].numero}` : `${faltan.length} instalaciones creadas`}: ponle fecha de montaje en Instalaciones`);
+    })();
   }, [proyectos, instalaciones, currentUser?.id, loading]); // eslint-disable-line
   const uxDocsSyncRef = useRef(false);
   // 14/11/2026: un pedido de Uxcar (persianas/compactos, cristales) lleva varios expedientes y un PDF por expediente («compactos 703.pdf»).
@@ -6527,6 +6533,18 @@ export default function App() {
             ids.forEach((oid) => moverDiaPlanningFab(oid, f)); if (ids.length) showToast(`${inc.obra}: puesta en el planning el ${fmtDate(f)}`); } catch (er) { /* sin planning */ } }} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
+        {(() => {
+          // INSTALACIONES SIN FECHA DE MONTAJE: que no se escape ninguna (a quien lleva Instalaciones)
+          if (!currentUser || modulo === "instalaciones" || !(isAdmin || tieneAcceso("instalaciones"))) return null;
+          const sinFecha = toArray(instalaciones).filter((i) => i && !["Finalizada", "Cancelada", "Terminada"].includes(i.estado) && !i.fechaMontaje && !((toArray(proyectos).find((p) => p.id === i.proyectoId) || {}).fechaMontaje));
+          if (!sinFecha.length) return null;
+          const nom = (i) => { const p = toArray(proyectos).find((q) => q.id === i.proyectoId); return p ? `#${p.numero} ${p.nombre || ""}`.trim() : (i.nombre || "instalación"); };
+          return (
+            <button onClick={() => setModulo("instalaciones")} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-left transition bg-emerald-100 text-emerald-900 hover:bg-emerald-200">
+              🔧 INSTALACIONES: {sinFecha.length} sin fecha de montaje · {sinFecha.slice(0, 3).map(nom).join(" · ")}{sinFecha.length > 3 ? "…" : ""}. Toca para ponerles fecha →
+            </button>
+          );
+        })()}
         {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
           <button
             onClick={() => setModulo("portalclientes")}
