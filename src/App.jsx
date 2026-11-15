@@ -52880,6 +52880,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   };
   // fechasPlanEn: cuándo se puso cada obra en su día → dentro del día salen EN EL ORDEN EN QUE SE METIERON (la primera que metes, la primera)
   // ORDEN DENTRO DEL DÍA: subir / bajar / poner la primera (se reescribe la hora en que «se metió» cada obra de ese día)
+  // IR A UNA OBRA del planning: baja hasta su tarjeta (en su día, o en «días ya pasados») y la marca un momento
+  const irAObraPlan = (id) => {
+    const ob = plan1.obras[id]; const ini = ob && ob.inicio;
+    const el = document.getElementById(`plcard-${id}-${ini}`) || document.getElementById(`platas-${id}`) || document.querySelector(`[data-plid="${id}"]`);
+    if (!el) { alert(ini ? `Está en el planning el ${fmtDia(ini)}${ob.fin && ob.fin !== ini ? ` (sigue hasta el ${fmtDia(ob.fin)})` : ""}.\n\nNo la veo en pantalla: puede que ese día esté fuera de lo que se ve, o que el recuadro de «días ya pasados» esté cerrado.` : "Está en el planning, pero aún sin día (esperando material o sin sitio)."); return; }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const prev = el.style.outline; el.style.outline = "4px solid #d946ef"; el.style.outlineOffset = "2px";
+    setTimeout(() => { el.style.outline = prev; el.style.outlineOffset = ""; }, 4000);
+  };
   const moverEnDia = (id, f, ids, a) => {
     const lista = ids.filter((x) => x !== id); let i = ids.indexOf(id); if (i < 0) return;
     if (a === "primera") i = 0; else if (a === "arriba") i = Math.max(0, i - 1); else i = Math.min(lista.length, i + 1);
@@ -53145,6 +53154,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     } catch (e) { /* nada */ }
     return out;
   };
+  // LO QUE FALTA POR TERMINAR, POR SEMANA: cada obra del planning en su día (el primero en que sale), si está hecha en Control del día y qué documentación le falta
+  const pendPorSemana = (() => { const vistos = new Set(); const sem = new Map(); const lunes = (f) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    try { diasVer.forEach((f) => { const mete = (k, it) => { if (vistos.has(k)) return; vistos.add(k); const l = lunes(f); if (!sem.has(l)) sem.set(l, []); sem.get(l).push({ ...it, f }); };
+      ((plan1.dias[f] && plan1.dias[f].trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; mete(t.id, { txt: o ? pptoTxt(o) : t.nombre, hecha: !!(o && obraHechaCD(o)), inc: !!(o && obraConIncPl(o)), fl: o ? faltasObra(o.ref) : [], horas: Number(t.horas) || 0, ventanas: (o && o.ventanas) || 0 }); });
+      extrasDiaAlm(f).forEach((x) => mete(x.k, { txt: x.ppto || x.nombre, hecha: false, inc: false, fl: faltasObra(x.ref), horas: Number(x.horas) || 0, ventanas: 0 })); }); } catch (e) { /* nada */ }
+    return [...sem.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([l, obras]) => ({ l, obras, faltan: obras.filter((o) => !o.hecha) })); })();
   const obrasConFaltas = (() => { const m = new Map(); try { diasVer.forEach((f) => { ((plan1.dias[f] && plan1.dias[f].trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; if (o && !m.has(t.id)) { const fl = faltasObra(o.ref); if (fl.length) m.set(t.id, { txt: pptoTxt(o), fl }); } }); extrasDiaAlm(f).forEach((x) => { if (!m.has(x.k)) { const fl = faltasObra(x.ref); if (fl.length) m.set(x.k, { txt: x.ppto || x.nombre, fl }); } }); }); } catch (e) { /* nada */ } return [...m.values()]; })();
   const soltarPV = (id, f) => {
     const o = nombrePorId[id]; if (!o || !f) return;
@@ -53250,6 +53265,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
 
   const [selPl, setSelPl] = useState([]); // obras marcadas para moverlas juntas
   const [diaSelPl, setDiaSelPl] = useState("");
+  const [listaPlAbierta, setListaPlAbierta] = useEstadoLocal("crm_planListaAbierta", true);
+  const [atasAbierto, setAtasAbierto] = useEstadoLocal("crm_planAtasAbierto", true); const [semAtasAbiertas, setSemAtasAbiertas] = useEstadoLocal("crm_planSemAtas", {}); // obras de días pasados: desplegable por semana
+  const [pendPlAbierto, setPendPlAbierto] = useEstadoLocal("crm_planPendAbierto", true); const [semPlAbiertas, setSemPlAbiertas] = useEstadoLocal("crm_planSemAbiertas", {}); // «Lo que falta por terminar», por semana // la lista de obras para fabricar se abre/cierra (se recuerda)
   if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
   const pasarObras = (lista, dia) => { if (!dia || !lista.length) return; if (lista.length > 1 && !window.confirm(`¿Pasar ${lista.length} obras al ${fmtDate(dia)}?\n\n${lista.map((o) => o.nombre).join("\n")}\n\n(Se puede deshacer con «Volver a ponerlos»)`)) return; const n = { ...fechasPlan }; const en = { ...(cfg.fechasPlanEn || {}) }; const t0 = Date.now(); lista.forEach((o, i) => { n[o.id] = dia; en[o.id] = t0 + i; }); guardarCfg({ fechasPlan: n, fechasPlanEn: en, fechasPlanAnterior: fechasPlan }); };
   return (
@@ -53279,20 +53297,38 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
       {atascadas.length > 0 && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-2">
           <div className="flex flex-wrap items-center gap-3">
-            <p className="font-bold text-amber-900">⏰ {atascadas.length} obra{atascadas.length > 1 ? "s" : ""} en días ya pasados sin terminar</p>
+            <button type="button" onClick={() => setAtasAbierto(!atasAbierto)} className="flex items-center gap-2 text-left">
+              <span className="text-amber-700 w-4">{atasAbierto ? "▼" : "▶"}</span>
+              <p className="font-bold text-amber-900">⏰ {atascadas.length} obra{atascadas.length > 1 ? "s" : ""} en días ya pasados sin terminar</p>
+              <span className="text-[11px] font-semibold text-sky-700 underline">{atasAbierto ? "cerrar" : "abrir"}</span>
+            </button>
             <button onClick={() => pasarObras(atascadas, primerLaborableDesde(hoy))} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700">Pasar todas a hoy</button>
             <span className="text-xs text-amber-800">Ya no saltan solas de día: decide aquí a qué día van.</span>
           </div>
-          <div className="divide-y divide-amber-200">
-            {atascadas.map((o) => (
-              <div key={o.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
+          {atasAbierto && (() => { const lunesA = (f) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); }; const finA = (l) => { const d = new Date(l + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); };
+            const semA = new Map(); atascadas.forEach((o) => { const l = lunesA(plan1.obras[o.id].inicio); if (!semA.has(l)) semA.set(l, []); semA.get(l).push(o); });
+            return [...semA.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([l, obs]) => { const ab = semAtasAbiertas[l] !== false; return (
+          <div key={l} className="rounded-md border border-amber-200 bg-white/60">
+            <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+              <button type="button" onClick={() => setSemAtasAbiertas({ ...semAtasAbiertas, [l]: !ab })} className="flex items-center gap-2 text-left mr-auto">
+                <span className="text-amber-700 w-4">{ab ? "▼" : "▶"}</span>
+                <b className="text-sm text-amber-900 capitalize">Semana del {fmtDia(l)} al {fmtDia(finA(l))}</b>
+                <span className="text-xs font-bold text-amber-800">{obs.length} sin terminar</span>
+              </button>
+              <button onClick={() => pasarObras(obs, primerLaborableDesde(hoy))} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100">→ Pasar esta semana a hoy</button>
+            </div>
+            {ab && <div className="divide-y divide-amber-200 px-2">
+            {obs.map((o) => (
+              <div key={o.id} id={`platas-${o.id}`} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
                 <span className="font-semibold text-slate-800 min-w-[200px]">{o.nombre}</span>
                 <span className="text-xs text-amber-800">estaba el {fmtDia(plan1.obras[o.id].inicio)}{plan1.obras[o.id].fin !== plan1.obras[o.id].inicio ? ` – ${fmtDia(plan1.obras[o.id].fin)}` : ""}</span>
                 <button onClick={() => pasarObras([o], primerLaborableDesde(hoy))} className="px-2 py-1 rounded bg-white border border-amber-400 text-amber-900 text-xs font-semibold hover:bg-amber-100">→ Hoy</button>
                 <input type="date" min={hoy} onChange={(e) => pasarObras([o], e.target.value)} className="border border-amber-300 rounded px-2 py-0.5 text-xs" title="Pasar a otro día" />
               </div>
             ))}
+            </div>}
           </div>
+            ); }); })()}
         </div>
       )}
       {/* Ajustes */}
@@ -53344,7 +53380,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <h3 className="font-display font-bold text-slate-800 mr-auto">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+          <button type="button" onClick={() => setListaPlAbierta(!listaPlAbierta)} title={listaPlAbierta ? "Cerrar la lista" : "Abrir la lista"} className="mr-auto flex items-center gap-2 text-left">
+            <span className="text-slate-500 text-sm w-4">{listaPlAbierta ? "▼" : "▶"}</span>
+            <h3 className="font-display font-bold text-slate-800">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+            <span className="text-[11px] font-semibold text-sky-700 underline">{listaPlAbierta ? "cerrar" : "abrir"}</span>
+          </button>
         </div>
         {onMeterEnPlanning && (() => {
           // BUSCADOR: meter en el planning una obra por nº de presupuesto, nº de obra, nombre o expediente
@@ -53376,7 +53416,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   return (
                     <div key={p.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
                       <button type="button" onClick={() => onVerProyecto && onVerProyecto(p.id)} title="Abrir la ficha de la obra para completar lo que falta (informe de materiales, «Qué lleva la obra»…)" className="flex-1 min-w-[12rem] text-left font-semibold text-slate-800 hover:text-indigo-700 underline decoration-dotted">{presupuestoDeObra(p) ? `${presupuestoDeObra(p)} · ` : ""}#{p.numero} {p.nombre} <span className="text-[11px] font-normal text-indigo-600 no-underline">📂 abrir ficha</span></button>
-                      <span className={`text-[11px] font-semibold ${ya ? "text-sky-700" : listo || p.estadoTrabajo === "En proceso" ? "text-emerald-700" : "text-amber-700"}`}>{ya ? "ya está en el planning" : quitada ? "quitada del planning" : p.estadoTrabajo === "En proceso" ? "en fabricación, sin planning" : listo ? "✓ material listo" : "⚠ material sin completar"}</span>
+                      {ya && (() => { const idP = ids.find((i) => enPlan.has(i)); const ob = plan1.obras[idP]; return (
+                        <button type="button" onClick={() => irAObraPlan(idP)} title="Ir a esta obra en el planning" className="text-[11px] font-bold px-2 py-1 rounded-md bg-sky-600 text-white hover:bg-sky-700">
+                          📍 Ya está en el planning{ob && ob.inicio ? `: ${fmtDia(ob.inicio)}${ob.fin && ob.fin !== ob.inicio ? ` – ${fmtDia(ob.fin)}` : ""}` : " (sin día)"} · ir →
+                        </button>); })()}
+                      <span className={`text-[11px] font-semibold ${ya ? "hidden" : listo || p.estadoTrabajo === "En proceso" ? "text-emerald-700" : "text-amber-700"}`}>{ya ? "" : quitada ? "quitada del planning" : p.estadoTrabajo === "En proceso" ? "en fabricación, sin planning" : listo ? "✓ material listo" : "⚠ material sin completar"}</span>
                       {!ya && <button type="button" disabled={!!anadiendo} onClick={async () => { if (!listo && p.estadoTrabajo !== "En proceso" && !window.confirm(`#${p.numero}: el material no está completo según el CRM.\n\n¿Añadirla al planning igualmente?`)) return; setAnadiendo(p.id); try { const ok = await onMeterEnPlanning(p.id, fechaQ); if (ok) setQPlan(""); } finally { setAnadiendo(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{anadiendo === p.id ? "Añadiendo…" : `➕ Añadir el ${fmtDate(fechaQ)}`}</button>}
                     </div>
                   );
@@ -53386,6 +53430,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             </div>
           );
         })()}
+        {listaPlAbierta && <>
         <div className="flex flex-wrap items-center justify-end gap-2 mb-2">
           <button onClick={() => setQuitadas(listasOrd.map((o) => o.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">Vaciar planning (elegir yo una a una)</button>
           <button onClick={() => setQuitadas([])} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Marcar todas</button>
@@ -53404,6 +53449,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           {listas.length === 0 && <p className="px-4 py-4 text-sm text-slate-400">No hay obras con todo el material ahora mismo.</p>}
           {listasOrd.map((o, i) => filaObra(o, <input type="checkbox" checked={!quitadas.includes(o.id)} onChange={(e) => setQuitadas(e.target.checked ? quitadas.filter((x) => x !== o.id) : [...quitadas, o.id])} />, listasOrd, i))}
         </div>
+        </>}
         {rapidosHechos.length > 0 && (
           <details className="mb-3 text-xs text-slate-500">
             <summary className="cursor-pointer">Rápidos ya hechos ({rapidosHechos.length})</summary>
@@ -53415,12 +53461,42 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             ⚠ Pasan de {LIM_PERS_DIA} ventanas con persiana: {diasVer.filter((f) => persDia(f) > LIM_PERS_DIA).map((f) => `${fmtDia(f)} (${persDia(f)})`).join(" · ")}
           </div>
         )}
-        {obrasConFaltas.length > 0 && (
-          <div className="mb-2 rounded-lg border-2 border-rose-500 bg-rose-50 px-3 py-2 text-xs text-rose-900">
-            <b className="text-sm">⚠ {obrasConFaltas.length} obra{obrasConFaltas.length === 1 ? "" : "s"} del planning con documentación pendiente</b>
-            {obrasConFaltas.map((x, i) => <div key={i} className="mt-0.5">· <b>{x.txt}</b>: falta {x.fl.join(" · ")}</div>)}
+        {pendPorSemana.length > 0 && (() => { const totF = pendPorSemana.reduce((a, w) => a + w.faltan.length, 0); const totDoc = obrasConFaltas.length; const finSem = (l) => { const d = new Date(l + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); }; return (
+          <div className={`mb-2 rounded-lg border-2 ${totDoc ? "border-rose-500 bg-rose-50" : "border-slate-300 bg-white"} text-xs`}>
+            <button type="button" onClick={() => setPendPlAbierto(!pendPlAbierto)} className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left">
+              <span className="text-slate-500 w-4">{pendPlAbierto ? "▼" : "▶"}</span>
+              <b className="text-sm text-slate-800">📋 Lo que falta por terminar, por semana</b>
+              <span className="font-bold text-slate-700">{totF} obra{totF === 1 ? "" : "s"} sin terminar</span>
+              {totDoc > 0 && <span className="font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {totDoc} con documentación pendiente</span>}
+              <span className="ml-auto text-[11px] font-semibold text-sky-700 underline">{pendPlAbierto ? "cerrar" : "abrir"}</span>
+            </button>
+            {pendPlAbierto && <div className="px-3 pb-2 space-y-1.5">
+              {pendPorSemana.map((w) => { const ab = semPlAbiertas[w.l] !== false; const hechas = w.obras.length - w.faltan.length; const hF = w.faltan.reduce((a, o) => a + o.horas, 0); const nDoc = w.obras.filter((o) => o.fl.length).length; return (
+                <div key={w.l} className="rounded-md border border-slate-200 bg-white">
+                  <button type="button" onClick={() => setSemPlAbiertas({ ...semPlAbiertas, [w.l]: !ab })} className="w-full flex flex-wrap items-center gap-2 px-2 py-1.5 text-left">
+                    <span className="text-slate-500 w-4">{ab ? "▼" : "▶"}</span>
+                    <b className="text-slate-800 capitalize">Semana del {fmtDia(w.l)} al {fmtDia(finSem(w.l))}</b>
+                    <span className={`font-bold ${w.faltan.length ? "text-rose-700" : "text-emerald-700"}`}>{w.faltan.length ? `faltan ${w.faltan.length} de ${w.obras.length} obras · ${Math.round(hF * 10) / 10} h` : `✓ todo terminado (${w.obras.length})`}</span>
+                    <span className="text-slate-500">{hechas} terminada{hechas === 1 ? "" : "s"}</span>
+                    {nDoc > 0 && <span className="font-bold text-rose-700">· ⚠ {nDoc} con documentación pendiente</span>}
+                  </button>
+                  {ab && <div className="px-3 pb-1.5">
+                    {w.obras.filter((o) => !o.hecha || o.fl.length).map((o, i) => (
+                      <div key={i} className={`py-0.5 flex flex-wrap items-baseline gap-x-2 ${o.inc ? "text-orange-700" : "text-slate-800"}`}>
+                        <span className="text-slate-500 capitalize w-24 shrink-0">{fmtDia(o.f)}</span>
+                        <b>{o.hecha ? "✓ " : o.inc ? "⚠ " : ""}{o.txt}</b>
+                        {o.ventanas ? <span className="text-slate-500">{o.ventanas} ventanas</span> : null}{o.horas ? <span className="text-slate-500">· {Math.round(o.horas * 10) / 10} h</span> : null}
+                        {o.inc && <span className="font-bold text-orange-700">· incidencia</span>}
+                        {o.fl.length > 0 && <span className="font-bold text-rose-700">· falta {o.fl.join(" · ")}</span>}
+                      </div>
+                    ))}
+                    {!w.obras.some((o) => !o.hecha || o.fl.length) && <div className="text-emerald-700 font-semibold">Todas terminadas y con su documentación.</div>}
+                  </div>}
+                </div>
+              ); })}
+            </div>}
           </div>
-        )}
+        ); })()}
         {diasVer.length > 0 && (
           <div className="mb-2">
             <div className="flex items-center gap-2">
@@ -53452,7 +53528,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {pasaH && <div className="text-[11px] mb-1 rounded px-1.5 py-0.5 bg-rose-600 text-white font-bold">⚠ PASA POR {Math.round((totH - capF) * 10) / 10} h (incluye las metidas a mano)</div>}
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; const idsOrd = [...new Set(d.trozos.filter((x) => ((plan1.obras[x.id] && plan1.obras[x.id].inicio) || f) === f).map((x) => x.id))]; const pos = idsOrd.indexOf(t.id); return (
-                  <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
+                  <div key={i} id={`plcard-${t.id}-${f}`} data-plid={t.id} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : o && obraConIncPl(o) ? "bg-orange-400 !border-orange-700" : o && obraHechaCD(o) ? "bg-emerald-500 !border-emerald-700" : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
                     <label className="float-right ml-1" title="Marcar para moverla con otras" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selPl.includes(t.id)} onChange={(e) => setSelPl(e.target.checked ? [...new Set([...selPl, t.id])] : selPl.filter((x) => x !== t.id))} /></label>
                     {pos >= 0 && idsOrd.length > 1 && <span className="float-right flex gap-0.5 ml-1" onClick={(e) => e.stopPropagation()}>
