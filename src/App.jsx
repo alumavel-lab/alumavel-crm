@@ -47564,7 +47564,7 @@ const ZONAS_POR_PUESTO = {
   soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2"],
   pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas", "puertas"],
   herraje: ["hojas", "hojasHerraje"],
-  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana"],
+  colgado: ["marcosPilastra", "marcos", "puertas", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana", "bancoPuerta"],
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
   lineaPers: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2", "hojasHerraje", "colgadoA", "colgadoB", "persianaA", "persianaB", "bancoPuerta", "sinPersiana", "puertasTerminadas", "solape", "espera", "especiales"],
@@ -50439,8 +50439,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const codCD = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
     if (!zP && ubic && ubic[codCD]) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } // sale de la Línea
     const r = !zP ? null : (ubic && ubic[codCD] && ubic[codCD].zonaId === zonaDest) ? { hueco: ubic[codCD].hueco } : await ocuparHuecoLinea(zP, codCD, quien, ubic, 1, null, 1);
-    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60) }).catch(() => {});
     const base = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
+    if (r) await fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base }).catch(() => {});
     const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`);
     fbSet(ref(fbDb, `marcasPuestoLinea/${puestoId}/${claveM}`), { ts: Date.now(), ventanaId: String(hit.w.id), pos: hit.w.pos || "", base, fecha: hoyISO(), por: quien || "", cod: codCD }).catch(() => {});
     fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${puestoId}/${claveM}`), Date.now()).catch(() => {});
@@ -50483,6 +50483,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     } catch (e) { avisar(false, `No se pudo: ${(e && e.message) || e}`); }
   };
   // MARCOS AGRUPADOS POR PRESUPUESTO: el marco va al hueco libre más cerca de los de su mismo presupuesto; si es un presupuesto nuevo, después del último ocupado
+  // Deshacer Matrimonio: la ventana vuelve a donde estaba (con sus marcas de herraje/pilastra), o sale si no estaba en ningún sitio
+  const deshacerColgado = async (cod) => {
+    try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (!u || !u.porColgado) return;
+      const a = u.antes; const zA = a && zonas.find((q) => q.id === a.zonaId);
+      if (zA) { const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (r) { const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, porColgado: null, antes: null }).catch(() => {}); return; } }
+      await liberarCodigoLinea(cod);
+    } catch (e) { /* nada */ }
+  };
   const colocarAgrupado = async (zona, cod, base, hasta) => {
     let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
     const max = Math.min(hasta || zona.huecos, zona.huecos); const ocup = new Map();
@@ -50512,6 +50520,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), null).catch(() => {});
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
+        if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
         if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
       }
@@ -50532,6 +50541,35 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
           if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codS}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porSoldadora: true }).catch(() => {}); txtAlm = `\n➡ Déjalo en ${zS.nombre} · ESTANTERÍA ${r.hueco}.`; }
           else txtAlm = `\n⚠ ${zS ? `${zS.nombre} está LLENO` : "No encuentro el almacén de marcos"}: no se ha podido meter.`;
         }
+      }
+      // MATRIMONIO (colgado): coge el marco del almacén y lo deja en su siguiente sitio. Con persiana → Banco persiana A o B
+      // (presupuestos completos en el mismo banco; a partir de 5 ventanas del presupuesto en un banco, al otro; y que los DOS tengan siempre trabajo).
+      // Sin persiana → Línea. Puerta → Banco de puerta.
+      if (pE === "colgado") {
+        const codC = limpiaCodL(`cd_${hit.k}__${hit.w.id}`);
+        let u0 = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) u0 = fr; } catch (e) { /* con la que haya */ }
+        const prevC = u0[codC] || null;
+        const esPta = /^P\d/i.test(String(hit.w.pos || "").trim()) && !/oscilo|osc\.?\s*bat/i.test(`${hit.w.desc || ""} ${hit.w.tip || ""}`);
+        const llevaP = toArray(hit.w.ex).includes("PERSIANA") || !!persianaDeVentanaCD(hit.sn, hit.w);
+        let dest = esPta ? "bancoPuerta" : llevaP ? "" : "sinPersiana";
+        if (!dest) {
+          const cuenta = (zs, f) => Object.values(u0).filter((u) => u && zs.includes(u.zonaId) && (!f || f(u))).length;
+          const nA = cuenta(["colgadoA"]); const nB = cuenta(["colgadoB"]);
+          const deA = base ? cuenta(["colgadoA", "persianaA"], (u) => String(u.base || "") === base) : 0; const deB = base ? cuenta(["colgadoB", "persianaB"], (u) => String(u.base || "") === base) : 0;
+          const zA = zonas.find((q) => q.id === "colgadoA"); const zB = zonas.find((q) => q.id === "colgadoB");
+          const llenoA = !zA || nA >= zA.huecos; const llenoB = !zB || nB >= zB.huecos;
+          let pref;
+          if (deA || deB) { pref = deA >= deB ? "A" : "B"; const enEse = pref === "A" ? deA : deB; const otroN = pref === "A" ? nB : nA; const esteN = pref === "A" ? nA : nB;
+            if (enEse >= 5 || (otroN === 0 && esteN >= 2)) pref = pref === "A" ? "B" : "A"; } // más de 5 del presupuesto, o el otro banco sin trabajo → al otro
+          else pref = nA <= nB ? "A" : "B"; // presupuesto nuevo: al banco con menos ventanas esperando
+          if (pref === "A" && llenoA && !llenoB) pref = "B"; if (pref === "B" && llenoB && !llenoA) pref = "A";
+          dest = pref === "A" ? "colgadoA" : "colgadoB";
+        }
+        const zC = zonas.find((q) => q.id === dest);
+        const r = zC ? await colocarAgrupado(zC, codC, base, null) : null;
+        if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codC}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porColgado: true, ...(prevC && prevC.zonaId ? { antes: JSON.parse(JSON.stringify(prevC)) } : {}) }).catch(() => {});
+          txtAlm = `${prevC && prevC.zonaId ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prevC.zonaId) || {}).nombre || prevC.zonaId} · ESTANTERÍA ${prevC.hueco}` : ""}\n➡ Déjala en ${zC.nombre} · ESTANTERÍA ${r.hueco}${llevaP && !esPta ? " (lleva persiana)" : ""}.`; }
+        else txtAlm = `\n⚠ ${zC ? `${zC.nombre} está LLENO` : `No encuentro el almacén «${dest}»`}: no se ha podido colocar.`;
       }
       if (pE === "pilastra") {
         const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const lleva = toArray(hit.w.ex).includes("PILASTRA");
@@ -50566,6 +50604,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const u = ubic && ubic[codCD];
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
+      else if (puestoId === "colgado") await deshacerColgado(codCD);
       else if (esPuestoSimple && u) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
       if (puestoId === "cristales" && hit) bajaCristalesVentana(cristalesDeVentana(hit.sn, hit.w), codCD, false);
       if (esPuestoPers) { const px = toArray(ctx.persianasAlmacen).find((y) => y && y.ventanaId === codCD && y.estanteAnterior); if (px && ctx.savePersianasAlmacen) ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y))); }
