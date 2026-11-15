@@ -48311,6 +48311,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
 
 // Detalle de una estantería: la ventana completa (dibujo, piezas, dónde está cada una, historial) y reimprimir la pegatina de cada pieza
 function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin, control = false, onLiberar, onCerrar }) {
+  const zonasM = useZonasLinea();
   const escaneos = useEscaneosLinea();
   // Ventanas puestas SIN pistola (por la hoja de corte, código «cd_…»): sus datos, su hoja de corte y DEVOLVERLA (deshacer)
   const snapCDh = useObjetoFb("controlDiaVentanasObra"); const hojasCDh = useObjetoFb("controlDiaHojaCorte"); const hojasAuxH = useObjetoFb("auxiliaresHojas");
@@ -48322,11 +48323,28 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
     const hoja = (hojasCDh && hojasCDh[m[1]] && hojasCDh[m[1]].url) || (bases.map((b) => hojasAuxH && hojasAuxH[b] && hojasAuxH[b].url).find(Boolean)) || "";
     return { cod: String(x.cod), k: m[1], wid: m[2], sn, w, hoja };
   }).filter(Boolean);
+  // DEVOLVER = deshacer el último paso: si la movió un puesto desde otro almacén, VUELVE ALLÍ (con sus marcas); si no venía de ningún sitio, sale del almacén
   const devolverCD = async (vc) => {
-    if (!window.confirm(`¿DEVOLVER ${vc.w ? vc.w.pos : "esta ventana"}?\n\nSale de ${zonaNombre} · estantería ${hueco}, se quita de hechas en ${zonaNombre.replace(/ \(salida\)$/, "")} y, si se dio de baja su persiana, vuelve a su sitio del carro.`)) return;
-    try { await liberarCodigoLinea(vc.cod); } catch (e) { /* nada */ }
-    const claveM = vc.cod.replace(/^cd_/, ""); const hoyH = new Date().toISOString().slice(0, 10);
-    ["persianaA", "persianaB", zonaId === "puertasTerminadas" ? "puerta" : zonaId].filter(Boolean).forEach((pu) => { fbSet(ref(fbDb, `marcasPuestoLinea/${pu}/${claveM}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyH}/${pu}/${claveM}`), null).catch(() => {}); });
+    let u = null; try { u = (await fbGet(ref(fbDb, `ubicacionesLinea/${vc.cod}`))).val(); } catch (e) { /* nada */ }
+    const a = u && u.antes && u.antes.zonaId ? u.antes : null; const zA = a && zonasM.find((q) => q.id === a.zonaId);
+    const nomA = zA ? `${zA.nombre} · estantería ${a.hueco}` : "";
+    if (!window.confirm(`¿DEVOLVER ${vc.w ? vc.w.pos : "esta ventana"}?\n\n${zA ? `Vuelve a ${nomA} (como estaba antes).` : `Sale de ${zonaNombre} · estantería ${hueco}.`}${zA ? "" : " Si se dio de baja su persiana, vuelve a su sitio del carro."}`)) return;
+    const puesto = u && u.porHerraje ? "herraje" : u && u.porColgado ? "colgado" : u && u.porPilastra ? "pilastra" : u && u.porSoldadora ? "soldadora" : zonaId === "puertasTerminadas" ? "puerta" : zonaId;
+    const baseCod = vc.cod.replace(/~H\d?$/, "");
+    // las hojas de una ventana van juntas: si las movió Herraje, vuelven todas
+    const cods = u && u.porHerraje ? Object.keys(ubic || {}).filter((c) => c === vc.cod || (c.startsWith(`${baseCod}~H`) && ubic[c] && ubic[c].porHerraje)) : [vc.cod];
+    for (const c of [...new Set(cods)]) {
+      let uc = u; if (c !== vc.cod) { try { uc = (await fbGet(ref(fbDb, `ubicacionesLinea/${c}`))).val(); } catch (e) { uc = null; } }
+      const ac = uc && uc.antes && uc.antes.zonaId ? uc.antes : null; const zc = ac && zonasM.find((q) => q.id === ac.zonaId);
+      let ok = false;
+      if (zc) { const r = await ocuparHuecoLinea(zc, c, "", null, Number(ac.hueco), Number(ac.hueco), zc.cap || 1) || await ocuparHuecoLinea(zc, c, "", null, 1, null, zc.cap || 1);
+        if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = ac; await fbUpdate(ref(fbDb, `ubicacionesLinea/${c}`), { ...resto, antes: null }).catch(() => {}); ok = true; } }
+      if (!ok) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } }
+      // Matrimonio: sus hojas vuelven también a donde estaban
+      if (uc && uc.porColgado && uc.hojasAntes) for (const [ch, x] of Object.entries(uc.hojasAntes)) { const zh = x && zonasM.find((q) => q.id === x.zonaId); if (!zh) continue; const r = await ocuparHuecoLinea(zh, ch, "", null, Number(x.hueco), Number(x.hueco), zh.cap || 2); if (r) { const { zonaId: _z, hueco: _h, slot: _s, ts: _t, ...resto } = x; await fbUpdate(ref(fbDb, `ubicacionesLinea/${ch}`), resto).catch(() => {}); } }
+    }
+    const claveM = (puesto === "herraje" ? baseCod : vc.cod).replace(/^cd_/, ""); const hoyH = new Date().toISOString().slice(0, 10);
+    [...new Set(["persianaA", "persianaB", puesto].filter(Boolean))].forEach((pu) => { if ((pu === "persianaA" || pu === "persianaB") && pu !== puesto) return; fbSet(ref(fbDb, `marcasPuestoLinea/${pu}/${claveM}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${hoyH}/${pu}/${claveM}`), null).catch(() => {}); });
     const px = toArray(ctxH.persianasAlmacen).find((y) => y && y.ventanaId === vc.cod && y.estanteAnterior);
     if (px && ctxH.savePersianasAlmacen) ctxH.savePersianasAlmacen(toArray(ctxH.persianasAlmacen).map((y) => (y.id === px.id ? { ...y, estante: y.estanteAnterior, almacenId: y.almacenAnterior || y.almacenId || "", estanteAnterior: null, almacenAnterior: null, entregada: false, colocadaVentana: false, fechaSalida: "", ventanaId: "", ventanaPos: "", puestaPor: "" } : y)));
     onCerrar();
@@ -48365,7 +48383,7 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
               </div>
               <div className="flex flex-wrap gap-2">
                 {vc.hoja ? <a href={vc.hoja} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-indigo-700 text-white text-sm font-bold">📄 Ver la hoja de corte</a> : <span className="text-xs text-slate-500">Sin PDF de hoja de corte guardado</span>}
-                <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">↩ Devolver (me he equivocado)</button>
+                <button type="button" onClick={() => devolverCD(vc)} className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">{(() => { const uu = ubic && ubic[vc.cod]; const aa = uu && uu.antes; const zz = aa && zonasM.find((q) => q.id === aa.zonaId); return zz ? `↩ Devolver a ${zz.nombre} ${aa.hueco}` : "↩ Devolver (sacar del almacén)"; })()}</button>
               </div>
             </div>
           ))}
