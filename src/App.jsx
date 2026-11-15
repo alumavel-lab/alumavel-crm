@@ -47636,9 +47636,16 @@ const cristalDeObraCD = (c, pz, sn, uxExpedientes, proyectos = []) => {
   const prs = `${pz.presupuesto || ""} ${c.presupuesto || ""}`.split(/[·,;\s/]+/).map((x) => digitosPresu(x)).filter(Boolean);
   return (exN && exs.includes(exN)) || prs.some((p) => bases.some((b) => mismoPresCristal(p, b)));
 };
+// ¿es PANEL (sándwich / panel de puerta) y no vidrio? (lo dice la composición de la hoja de corte: «A-PANEL24BLANCO»…)
+const esPanelCD = (comp) => /panel|s[aá]ndwich|sandwich/i.test(String(comp || ""));
 const cristalesDeVentanaCD = (caballetes, uxExpedientes, sn, w) => {
   if (!sn || !w) return []; const rv = canonRefVC(w.pos); if (!rv) return [];
-  return toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && canonRefVC(pz.ref) === rv && cristalDeObraCD(c, pz, sn, uxExpedientes, proyectosCD));
+  const todos = toArray(caballetes).flatMap((c) => toArray(c && c.piezas).map((pz) => ({ c, pz }))).filter(({ c, pz }) => pz && cristalDeObraCD(c, pz, sn, uxExpedientes, proyectosCD));
+  const porRef = todos.filter(({ pz }) => canonRefVC(pz.ref) === rv); if (porRef.length) return porRef;
+  // sin referencia que case: por las MEDIDAS de sus vidrios en la hoja de corte (±3 mm), dentro de la misma obra
+  const med = toArray(w.cr).filter((x) => x && !esPanelCD(x.comp) && Number(x.ancho) > 0 && Number(x.alto) > 0);
+  const casa = (pz, x) => { const a = Number(pz.ancho), h = Number(pz.alto), A = Number(x.ancho), H = Number(x.alto); return (Math.abs(a - A) <= 3 && Math.abs(h - H) <= 3) || (Math.abs(a - H) <= 3 && Math.abs(h - A) <= 3); };
+  return todos.filter(({ pz }) => med.some((x) => casa(pz, x))).map((o) => ({ ...o, porMedida: true }));
 };
 // si no se encuentran por ventana: los CABALLETES con cristales de esta obra (para saber al menos dónde buscar)
 const caballetesDeObraCD = (caballetes, uxExpedientes, sn) => toArray(caballetes).filter((c) => c && toArray(c.piezas).some((pz) => pz && !pz.puesto && cristalDeObraCD(c, pz, sn, uxExpedientes, proyectosCD)));
@@ -48429,9 +48436,13 @@ function HuecoLineaModal({ zonaId = "", zonaNombre, hueco, piezas, indice, admin
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
+                {vc.w && !vc.pieza && toArray(vc.w.cr).length > 0 && <div className="w-full rounded-md bg-slate-50 border border-slate-300 px-3 py-1.5 text-sm text-slate-800">
+                  <b>📋 Hoja de corte:</b> {toArray(vc.w.cr).map((x, i) => <span key={i} className={`inline-block mr-3 font-bold ${esPanelCD(x.comp) ? "px-1.5 rounded bg-orange-500 text-white" : ""}`}>{esPanelCD(x.comp) ? "🟫 PANEL SÁNDWICH" : "🪟 vidrio"} {x.ancho}×{x.alto}{Number(x.uds) > 1 ? ` ×${x.uds}` : ""}{x.comp ? ` · ${x.comp}` : ""}</span>)}
+                </div>}
                 {vc.w && !vc.pieza && (() => { const crs = cristalesDeVentanaCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn, vc.w); return (
                   <div className="w-full rounded-md bg-amber-50 border border-amber-300 px-3 py-1.5 text-sm text-amber-950">
-                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => { const fnB = accionPieza && accionPieza.bajaCristal; return <span key={ci} className={`inline-flex flex-wrap items-center gap-1 mr-3 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}
+                    <b>🪟 Cristales:</b> {crs.length ? crs.map(({ c, pz }, ci) => { const fnB = accionPieza && accionPieza.bajaCristal; return <span key={ci} className={`inline-flex flex-wrap items-center gap-1 mr-3 font-bold ${pz.puesto ? "line-through text-slate-400" : ""}`}>{pz.ancho}×{pz.alto} · caballete {c.lote || c.numero || "—"} · {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar"}{pz.puesto ? " (ya puesto)" : ""}{pz.ref ? "" : ""}
+                      {crs.some((x) => x.porMedida) && ci === 0 ? <span className="text-[11px] font-normal text-slate-600">(encontrado por la MEDIDA: el cristal no lleva la referencia de la ventana)</span> : null}
                       {fnB && <button type="button" onClick={() => fnB(c, pz, !pz.puesto)} className={`no-underline px-2 py-0.5 rounded text-xs font-extrabold ${pz.puesto ? "border border-slate-400 bg-white text-slate-700" : "bg-rose-600 text-white"}`}>{pz.puesto ? "↩ Volver a poner" : "Dar de baja este cristal"}</button>}</span>; }) : (() => { const cs = caballetesDeObraCD(ctxH.cristalesCaballetes, ctxH.uxExpedientes, vc.sn); return cs.length ? <span className="font-bold">de esta obra hay cristales en: {cs.map((c) => `caballete ${c.lote || c.numero || "—"}${c.ubicacion ? ` (${ubicacionTexto(c.ubicacion)})` : ""}`).join(" · ")} <span className="font-normal text-slate-500">(no sé cuál es el de esta ventana: su referencia no coincide)</span></span> : <span className="text-slate-500">no encuentro cristales de esta obra en los caballetes</span>; })()}
                   </div>); })()}
                 {(() => { const ac = accionPieza && vc.w ? accionPieza({ cod: vc.cod, w: vc.w, sn: vc.sn, zonaId }) : null; return ac ? <>{ac.info ? <div className="w-full rounded-md bg-sky-50 border-2 border-sky-400 px-3 py-2 text-base font-bold text-sky-900 whitespace-pre-line">{ac.info}</div> : null}<button type="button" onClick={async () => { onCerrar(); await ac.fn(); }} className="px-4 py-2 rounded-md bg-emerald-600 text-white text-base font-extrabold">{ac.t}</button></> : null; })()}
@@ -49132,9 +49143,9 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
   }, [abierto, tv, planFab, manual, snapCD, extras, dia, indice, leidas, ctxPD.persianasAlmacen, ctxPD.uxExpedientes, hojasCDpd, hojasVentP]);
   // Si una obra del día tiene HOJA DE CORTE subida (donde sea) pero nadie la ha leído aún, la lee ESTE puesto (una vez; candado para no repetirla en varios ordenadores)
   const hojaLeyendoPd = useRef(false); const hojaProbadaPd = useRef({});
-  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || puestoId !== "soldadora" && puestoId !== "herraje" && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
+  const pendHojaPd = cols.map((c) => { const b = [...(c.bases || [])][0] || basePresuDia(c.num); if (!b || b.length < 3 || !c.vs.length || !["soldadora", "herraje", "cristales", "lineaPers"].includes(puestoId) && c.vs.some((w) => w.dib)) return null; const hn = hojaNuevaCol(c); const u = hn && hn.url; if (!u || hojaProbadaPd.current[u]) return null;
     // ya leída esa misma hoja, o ya falló con ella, o hay una leída del presupuesto DESPUÉS de subirse esta: no se repite. Si se sube otra más nueva, se vuelve a leer
-    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV >= 2 || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV >= 2 && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
+    const ya = Object.values(hojasCDpd || {}).some((h) => h && ((h.url === u && (h.hjV >= 3 || h.error)) || toArray(h.probadas).includes(u) || (toArray(h.modelos).length && h.hjV >= 3 && h.pres && basePresuDia(String(h.pres).split("-")[0]) === b && (Number(h.leidoEn) || 0) >= hn.ms))); return ya ? null : { b, u }; }).filter(Boolean);
   const clavePendHojaPd = pendHojaPd.map((x) => x.u).join("|");
   useEffect(() => {
     if (!pendHojaPd.length || hojaLeyendoPd.current) return;
@@ -49156,7 +49167,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
             if (suyo && suyo !== b) throw new Error(`la hoja es del presupuesto ${r.pres}`);
             const ks = Object.keys(r.dibs || {});
             for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 2 })));
+            await fbSet(ref(fbDb, `controlDiaHojaCorte/${kH}`), JSON.parse(JSON.stringify({ pres: r.pres || b, archivo: "", url: u, leidoEn: Date.now(), modelos: r.modelos, desde: puestoId, hjV: 3 })));
           } catch (e) { await runTransaction(ref(fbDb, `controlDiaHojaCorte/${kH}`), (act) => (act && toArray(act.modelos).length ? undefined : { error: e.message || String(e), url: u, probadas: [u], leidoEn: Date.now(), v: 3, pres: b })).catch(() => {}); } // un fallo NUNCA borra una hoja ya leída bien por otro ordenador
         }
       } finally { hojaLeyendoPd.current = false; }
@@ -61119,6 +61130,18 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
     md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
     // MARCOS Y HOJAS: cuántas hojas lleva cada ventana y si es puerta / fijo (lo mismo que se usa para las etiquetas)
     try { const an = analizarBloqueCorte(String(md.texto || ""), md.pos, md.uds); if (an.hojas != null && an.hojas >= 0 && an.hojas <= 4) md.hojas = an.hojas; if (an.tipo) md.tipo = an.tipo; } catch (e) { /* sin dato */ }
+    // SUPERFICIES: cada vidrio y cada PANEL (sándwich…) con su medida — Referencia · Descripción · Ud · ToT · [Color] · Ancho · Alto. El compacto de persiana no cuenta.
+    try {
+      const txt = String(md.texto || ""); const i0 = txt.search(/SUPERFICIES/i); if (i0 >= 0) {
+        const tramo = txt.slice(i0).split(/ACCESORIOS/i)[0]; const num = (t) => { const x = String(t || "").trim(); return x.includes(",") ? parseFloat(x.replace(/\./g, "").replace(",", ".")) : parseFloat(x); };
+        const out = [];
+        tramo.split("\n").forEach((l) => { const m = l.match(/^\s*(\S+)\s+(.*?)\s+(\d+)\s+(\d+)\s+(?:(\S+)\s+)?(\d[\d.]*(?:,\d+)?)\s+(\d[\d.]*(?:,\d+)?)\s*$/); if (!m) return; const ref = m[1]; const desc = m[2];
+          if (/^referencia$/i.test(ref) || /compacto|gu[ií]a|caj[oó]n|persiana|^CJ_/i.test(`${ref} ${desc}`)) return;
+          const ancho = num(m[6]), alto = num(m[7]); if (!(ancho > 0 && alto > 0)) return;
+          out.push({ comp: `${ref} · ${desc}`.slice(0, 80), uds: parseInt(m[4], 10) || parseInt(m[3], 10) || 1, ancho: Math.round(ancho), alto: Math.round(alto), ...(/panel|s[aá]ndwich|sandwich/i.test(`${ref} ${desc}`) ? { panel: true } : {}) }); });
+        if (out.length) md.cristales = out;
+      }
+    } catch (e) { /* sin superficies */ }
     delete md.texto;
   });
   return { pres, modelos, dibs };
@@ -62070,7 +62093,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       }
       const ks = Object.keys(r.dibs);
       for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
-      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 2 })));
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos, hjV: 3 })));
       return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
     } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
     finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
@@ -62242,7 +62265,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Documentos que aún no se han probado: si una lectura falló, se vuelve a intentar sola cuando aparece OTRO documento (Uxcar, Auxiliares, ficha…);
   // los fallos antiguos (antes de probar todos los documentos) se reintentan una vez
   // ya leída, pero después se ha subido OTRA hoja más nueva (corregida): se vuelve a leer con la nueva
-  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !(h.hjV >= 2) && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
+  const hayHojaMasNueva = (o) => { const h = hojaDeObra(o); const d = docsHojaDe(o)[0]; if (h && d && !(h.hjV >= 3) && !hojaReleidaHj.current[o.d.key]) return true; return !!(h && d && d.url !== h.url && d.ms > (Number(h.leidoEn) || 0)); }; // las leídas antes de contar hojas se releen una vez
   const hojaReleidaHj = useRef({});
   const docsPorProbar = (o) => { const er = hojasCD && hojasCD[limpia(o.d.key)]; const docs = hayHojaMasNueva(o) ? docsHojaDe(o).slice(0, 1) : docsHojaDe(o); if (!er || !er.error || !(er.v >= 3)) return docs; const prob = new Set(toArray(er.probadas)); return docs.filter((d) => !prob.has(d.url)); };
   const hoyHoja = new Date().toISOString().slice(0, 10);
