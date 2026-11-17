@@ -25554,6 +25554,16 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
                 </div>
               </button>
+              {/* ALBARÁN FIRMADO EN PAPEL: el cliente lo firmó a mano → se da por entregado y pasa a facturar, sin firmar en el móvil */}
+              {!a.firmaCliente && onGuardarAlbaranEntrega && (
+                <div className="px-4 pb-2">
+                  <button type="button" onClick={() => {
+                    if (!window.confirm(`¿El cliente ha firmado el albarán EN PAPEL?\n\n#${p.numero} — ${p.nombre}\n\nSe da por ENTREGADA y pasa a FACTURAR. Guarda el papel firmado.`)) return;
+                    const yo = nombreYo || (currentUser && currentUser.email) || "—"; const ahora = new Date().toISOString();
+                    onGuardarAlbaranEntrega(p.id, { ...(p.albaranEntrega || {}), firmaCliente: { nombre: "Firmado en papel", fecha: ahora, enPapel: true }, enPapel: { por: yo, fecha: ahora }, requiereRevision: true, revisado: { por: yo, fecha: ahora, enPapel: true } }, !p.llevaInstalacion);
+                  }} className="w-full sm:w-auto px-4 py-2 rounded-lg border-2 border-indigo-500 bg-indigo-50 text-indigo-900 text-sm font-extrabold hover:bg-indigo-100">📄 Albarán firmado en papel → entregada y a facturar</button>
+                </div>
+              )}
               {/* FECHA DESDE LA LISTA: se pone o se cambia sin entrar; al cambiarla hay que volver a llamar */}
               <div className="flex flex-wrap items-center gap-2 px-4 pb-3 text-xs">
                 <input type="checkbox" checked={!!selCita[p.id]} onChange={(e) => setSelCita({ ...selCita, [p.id]: e.target.checked })} title="Marcar para poner fecha de golpe" />
