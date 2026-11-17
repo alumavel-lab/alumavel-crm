@@ -52221,6 +52221,31 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
           📷 Ubicar compactos con foto de la carga (te dice cuántos van y los coloca en un carro)
         </button>
       )}
+      {(vistaAct === "persianas" || vistaAct === "cristales") && (() => { const tipoV = vistaAct === "persianas" ? "persianas" : "cristal"; const lst = sinPlanificar.filter((x) => tipoMatPrep(x.pd) === tipoV).sort((a, b) => String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999"))); const hoyP = new Date().toISOString().slice(0, 10); const tard = lst.filter((x) => x.pd.fechaEntregaPrevista && x.pd.fechaEntregaPrevista < hoyP).length; return (
+        <details className="w-full rounded-lg border-2 border-amber-500 bg-amber-50">
+          <summary className="cursor-pointer flex items-center justify-center gap-2 text-sm font-semibold px-4 py-3 text-amber-900">📦 Pedidos de {tipoV === "persianas" ? "compactos" : "cristales"} PENDIENTES DE LLEGAR ({lst.length}){tard ? <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-xs font-bold">{tard} con la fecha pasada</span> : null}</summary>
+          <div className="px-3 pb-3">
+            {lst.length === 0 ? <p className="text-sm text-slate-500">Ninguno pendiente.</p> : (
+              <div className="overflow-x-auto bg-white border border-amber-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-amber-100/60"><tr><th className="px-3 py-2 text-left text-xs">Pedido</th><th className="px-3 py-2 text-left text-xs">Proveedor</th><th className="px-3 py-2 text-left text-xs">Obra</th><th className="px-3 py-2 text-left text-xs">Uds pendientes</th><th className="px-3 py-2 text-left text-xs">Estado</th><th className="px-3 py-2 text-left text-xs">Llega</th><th className="px-3 py-2 text-left text-xs">Planificada</th></tr></thead>
+                  <tbody className="divide-y divide-amber-100">
+                    {lst.map(({ pd, pr, dia }) => { const pend = toArray(pd.lineas).filter((l) => l && l.estado !== "Recibido").reduce((t, l) => t + (parseFloat(l.cantidad) || 1), 0); const pasada = pd.fechaEntregaPrevista && pd.fechaEntregaPrevista < hoyP; return (
+                      <tr key={pd.id}>
+                        <td className="px-3 py-1.5 font-semibold text-slate-800">#{pd.numero}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{pd.proveedorExterno || ((toArray(ctx.proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || (pd.tipoUxcar ? "Uxcar" : "—")}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{pr ? `#${pr.numero} ${pr.nombre || ""}` : "sin obra enlazada"}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{pend}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{pd.estado}</td>
+                        <td className={`px-3 py-1.5 ${pasada ? "bg-rose-50 text-rose-700 font-bold" : "text-slate-700"}`}>{pd.fechaEntregaPrevista ? fmtDia(pd.fechaEntregaPrevista) : "—"}{pasada ? " ⚠" : ""}</td>
+                        <td className={`px-3 py-1.5 ${dia ? "text-slate-700" : "text-amber-800 font-bold"}`}>{dia ? fmtDia(dia) : "No"}</td>
+                      </tr>); })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </details>); })()}
       {ctx.puedeGestionarPrep && abiertasPrep.length > 0 && (
         <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-4">
           <h4 className="font-bold text-rose-800 text-sm mb-2">🚨 Avisos urgentes de falta de material ({abiertasPrep.length})</h4>
