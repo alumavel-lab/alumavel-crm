@@ -25422,6 +25422,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button onClick={() => { if (!a.firmaCarga) { alert(esRecogidaFabrica(abierto) ? "Primero: foto de la carga y firma de quien entrega (paso 1)." : "Primero el chófer: foto de la carga y su firma al cargar (paso 1)."); return; } setFirmando("cliente"); }} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
           </div>
         </div>
+        {a.firmaCliente && a.firmaCliente.enPapel && <div className="rounded-lg border-2 border-indigo-400 bg-indigo-50 px-4 py-2 text-sm text-indigo-900"><b>📄 Albarán firmado EN PAPEL</b>{a.enPapel ? ` · marcado por ${a.enPapel.por || "—"} el ${new Date(a.enPapel.fecha).toLocaleString("es-ES")}` : ""}
+          {toArray(a.fotosPapel).length ? <div className="flex flex-wrap gap-2 mt-1">{toArray(a.fotosPapel).map((f, i) => <a key={i} href={f.url} target="_blank" rel="noreferrer" className="underline font-semibold">📷 Ver foto del papel{toArray(a.fotosPapel).length > 1 ? ` ${i + 1}` : ""}</a>)}</div> : <div className="text-xs text-amber-800 font-semibold mt-1">Sin foto del papel en el CRM.</div>}</div>}
         {a.firmaCliente && a.requiereRevision && (
           a.revisado
             ? <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">✓ Dada por buena por {a.revisado.por || "—"} el {new Date(a.revisado.fecha).toLocaleString("es-ES")} · pasa a facturar</div>
@@ -25554,16 +25556,22 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
                 </div>
               </button>
-              {/* ALBARÁN FIRMADO EN PAPEL: el cliente lo firmó a mano → se da por entregado y pasa a facturar, sin firmar en el móvil */}
-              {!a.firmaCliente && onGuardarAlbaranEntrega && (
-                <div className="px-4 pb-2">
-                  <button type="button" onClick={() => {
-                    if (!window.confirm(`¿El cliente ha firmado el albarán EN PAPEL?\n\n#${p.numero} — ${p.nombre}\n\nSe da por ENTREGADA y pasa a FACTURAR. Guarda el papel firmado.`)) return;
-                    const yo = nombreYo || (currentUser && currentUser.email) || "—"; const ahora = new Date().toISOString();
-                    onGuardarAlbaranEntrega(p.id, { ...(p.albaranEntrega || {}), firmaCliente: { nombre: "Firmado en papel", fecha: ahora, enPapel: true }, enPapel: { por: yo, fecha: ahora }, requiereRevision: true, revisado: { por: yo, fecha: ahora, enPapel: true } }, !p.llevaInstalacion);
-                  }} className="w-full sm:w-auto px-4 py-2 rounded-lg border-2 border-indigo-500 bg-indigo-50 text-indigo-900 text-sm font-extrabold hover:bg-indigo-100">📄 Albarán firmado en papel → entregada y a facturar</button>
-                </div>
-              )}
+              {/* ALBARÁN FIRMADO EN PAPEL: el cliente lo firmó a mano → foto del papel (o sin foto) y se da por entregada y pasa a facturar */}
+              {!a.firmaCliente && onGuardarAlbaranEntrega && (() => {
+                const marcarPapel = async (file) => {
+                  if (!window.confirm(`¿El cliente ha firmado el albarán EN PAPEL?\n\n#${p.numero} — ${p.nombre}\n\nSe da por ENTREGADA y pasa a FACTURAR.${file ? "" : "\n\nOJO: sin foto del papel. Guarda el papel firmado."}`)) return;
+                  const yo = nombreYo || (currentUser && currentUser.email) || "—"; const ahora = new Date().toISOString();
+                  let foto = null; if (file) { try { foto = { url: await subirArchivoAStorage(file, `albaranes-papel/${p.id}`), nombre: file.name, fecha: ahora }; } catch (e) { if (!window.confirm("No se pudo subir la foto: " + e.message + "\n\n¿Darla por entregada igualmente, sin foto?")) return; } }
+                  onGuardarAlbaranEntrega(p.id, { ...(p.albaranEntrega || {}), firmaCliente: { nombre: "Firmado en papel", fecha: ahora, enPapel: true }, enPapel: { por: yo, fecha: ahora, ...(foto ? { foto } : {}) }, ...(foto ? { fotosPapel: [...toArray((p.albaranEntrega || {}).fotosPapel), foto] } : {}), requiereRevision: true, revisado: { por: yo, fecha: ahora, enPapel: true } }, !p.llevaInstalacion);
+                };
+                return (
+                <div className="px-4 pb-2 flex flex-wrap items-center gap-2">
+                  <label className="cursor-pointer px-4 py-2 rounded-lg border-2 border-indigo-500 bg-indigo-50 text-indigo-900 text-sm font-extrabold hover:bg-indigo-100">
+                    📷 Albarán firmado en PAPEL: hacer foto → entregada y a facturar
+                    <input type="file" accept="image/*,application/pdf" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) marcarPapel(f); }} />
+                  </label>
+                  <button type="button" onClick={() => marcarPapel(null)} className="text-xs font-semibold text-indigo-800 underline">sin foto</button>
+                </div>); })()}
               {/* FECHA DESDE LA LISTA: se pone o se cambia sin entrar; al cambiarla hay que volver a llamar */}
               <div className="flex flex-wrap items-center gap-2 px-4 pb-3 text-xs">
                 <input type="checkbox" checked={!!selCita[p.id]} onChange={(e) => setSelCita({ ...selCita, [p.id]: e.target.checked })} title="Marcar para poner fecha de golpe" />
