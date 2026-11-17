@@ -61992,7 +61992,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const obraDeKo = new Map(); [...obras.values()].forEach((x) => { const kx = limpia(x.d.key); if (!obraDeKo.has(kx)) obraDeKo.set(kx, x); });
   const basesDeObraCD = (ob) => { try { return [...presCrmDe(ob)].map((c) => basePresuDia(String(c).split("-")[0])).filter((b) => b.length >= 3); } catch (e) { return []; } };
   const planBasesCD = new Set(); enFabrica.forEach((ko) => { const ob = obraDeKo.get(ko); if (ob) basesDeObraCD(ob).forEach((b) => planBasesCD.add(b)); });
-  const esDupPlan = (ko) => { if (enFabrica.has(ko)) return false; const ob = obraDeKo.get(ko); return !!ob && basesDeObraCD(ob).some((b) => planBasesCD.has(b)); };
+  // (DESACTIVADO: quitaba obras con ventanas cuando la copia del planning no tenía la hoja de corte leída → desaparecían obras de los días)
+  const esDupPlan = (ko) => { void ko; return false; };
   const claveDupPlan = [...planBasesCD].sort().join(",");
   const asignTodas = {};
   Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko) && !esDupPlan(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
