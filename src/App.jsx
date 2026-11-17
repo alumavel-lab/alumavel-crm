@@ -8791,6 +8791,10 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   const claveDup = (p) => claveDupNombreObra(p);
   const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
   // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
+  // COBROS por obra: lo apuntado con «Meter dinero» (entradas de dinero del proyecto) y lo que queda por cobrar
+  const cobradoPorProy = useMemo(() => { const m = new Map(); toArray(ingresos).forEach((i) => { if (i && i.proyectoId) m.set(i.proyectoId, (m.get(i.proyectoId) || 0) + (parseFloat(i.importe) || 0)); }); return m; }, [ingresos]);
+  const cobroDe = (p) => { const imp = parseFloat(p.importePresupuesto) || 0; const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
+  const sumaCobros = (lista) => lista.reduce((a, p) => { const c = cobroDe(p); return { imp: a.imp + c.imp, cob: a.cob + c.cob, debe: a.debe + Math.max(0, c.debe), n: a.n + 1 }; }, { imp: 0, cob: 0, debe: 0, n: 0 });
   const filasLista = useMemo(() => {
     const base = soloDup ? filtered.filter(esDup) : filtered;
     const out = [], hechos = new Set();
@@ -9143,7 +9147,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     })()}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : p.estadoLogistica ? p.estadoLogistica : <span className="text-[11px] font-semibold text-rose-600" title="Falta elegir la salida (reparto, recogida o instalación): ábrelo y elige">⚠ Sin salida</span>)}</td>
-                  <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
+                  <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
                   <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : (["Entregado", "Cancelado"].includes(p.estadoTrabajo) ? "—" : <span className="text-[11px] font-semibold text-rose-600" title="Pon una fecha prevista (luego se puede cambiar)">⚠ Sin fecha</span>)}</td>
                   <td className="px-4 py-3">
                     {diff === null ? <span className="text-slate-300">—</span> : diff === 0 ? (
@@ -9168,6 +9172,21 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               );
             })}
           </tbody>
+          {(() => { const enLista = filasLista.filter((p) => p && p.estadoTrabajo !== "Cancelado"); const t = sumaCobros(enLista);
+            const todos = toArray(proyectos).filter((p) => p && p.estadoPresupuesto === "Presupuesto aceptado" && p.estadoTrabajo !== "Cancelado");
+            const enMarcha = sumaCobros(todos.filter((p) => p.estadoTrabajo !== "Entregado")); const entregadosDeben = sumaCobros(todos.filter((p) => p.estadoTrabajo === "Entregado" && cobroDe(p).debe > 0.009));
+            const fila = (titulo, x, cls) => (
+              <tr className={cls}>
+                <td colSpan={9} className="px-4 py-2 text-right font-semibold">{titulo} <span className="font-normal text-slate-500">({x.n} obra{x.n === 1 ? "" : "s"})</span></td>
+                <td className="px-4 py-2 text-right font-mono-num whitespace-nowrap"><div className="font-bold">{money(x.imp)}</div><div className="text-[11px] text-slate-600">cobrado {money(x.cob)}</div><div className={`text-[11px] font-bold ${x.debe > 0.009 ? "text-rose-600" : "text-emerald-700"}`}>debe {money(x.debe)}</div></td>
+                <td colSpan={3} />
+              </tr>);
+            return (
+              <tfoot className="border-t-2 border-slate-300 text-sm">
+                {fila(clienteFiltro ? `Total de ${clienteNombre(clienteFiltro) || "este cliente"}` : "Total de lo que se ve en la lista", t, "bg-slate-50")}
+                {fila("Todas las obras EN MARCHA (aceptadas, sin entregar)", enMarcha, "bg-amber-50")}
+                {fila("Entregadas que aún deben dinero", entregadosDeben, "bg-rose-50")}
+              </tfoot>); })()}
         </table>
       </div>
     </div>
