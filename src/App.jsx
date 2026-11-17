@@ -13691,7 +13691,10 @@ function PedidosModulo({ tarifasAluminio, clientes, onActualizarPedido, onRecibi
       if (!estado && !q && p.estado === "Recibido") return false;
       if (estado === "__atrasados") { if (!esAtrasado(p)) return false; }
       else if (estado && p.estado !== estado) return false;
-      if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
+      // proveedor: los del CRM (por id) y también los pedidos de Uxcar / proveedores escritos a mano («Tvitec (de Uxcar)»)
+      if (proveedorFiltro === "__uxcar") { if (!/\(de Uxcar\)/i.test(p.proveedorExterno || "")) return false; }
+      else if (proveedorFiltro.startsWith("ext:")) { if (p.proveedorId || String(p.proveedorExterno || "").trim() !== proveedorFiltro.slice(4)) return false; }
+      else if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
       // También se busca por el proyecto del pedido (nº, nombre, cliente) y por su descripción/comentarios.
       const proy = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null;
@@ -14007,9 +14010,13 @@ function PedidosModulo({ tarifasAluminio, clientes, onActualizarPedido, onRecibi
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nº, proveedor, material…"
             className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
         </div>
-        <Select value={proveedorFiltro} onChange={(e) => setProveedorFiltro(e.target.value)} className="max-w-[200px]">
+        <Select value={proveedorFiltro} onChange={(e) => setProveedorFiltro(e.target.value)} className="max-w-[220px]">
           <option value="">Todos los proveedores</option>
           {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          {(() => { const ext = [...new Set(pedidos.filter((p) => !p.proveedorId && p.proveedorExterno).map((p) => String(p.proveedorExterno).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es")); return ext.length ? <optgroup label="De Uxcar / sin ficha de proveedor">
+            {ext.some((x) => /\(de Uxcar\)/i.test(x)) && <option value="__uxcar">Todos los de Uxcar</option>}
+            {ext.map((x) => <option key={x} value={`ext:${x}`}>{x}</option>)}
+          </optgroup> : null; })()}
         </Select>
         <Select value={estado} onChange={(e) => setEstado(e.target.value)} className="max-w-[180px]">
           <option value="">Todos los estados</option>
