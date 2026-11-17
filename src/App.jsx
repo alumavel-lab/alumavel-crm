@@ -7461,7 +7461,9 @@ export default function App() {
         {/* Planning de Fábrica en segundo plano (no se ve): así se recalcula y avisa a Control del día aunque nadie tenga abierta la pantalla del planning */}
         {/* Control del día en segundo plano: en cuanto una obra está en el planning, lee sola su hoja de corte (y el resto de automatismos) sin entrar en Control del día */}
         {currentUser && (isAdmin || (veFabrica && !soloOperario)) && <ControlDelDia soloFondo proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={isAdmin} />}
-        {currentUser && <Planning soloPublicar proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={[]}
+        {/* SOLO publica un ordenador de oficina/fábrica con TODOS los datos ya cargados: antes lo hacía cualquiera (operarios, tele) y,
+            si cargaba sin las obras, publicaba un planning vacío encima del bueno → desaparecían las obras de Control del día */}
+        {currentUser && !loading && uxCargado && proyectos.length > 0 && (isAdmin || (veFabrica && !soloOperario)) && <Planning soloPublicar proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={[]}
           materiales={materiales} proveedores={proveedores} config={configVentanas.planning} onSaveConfig={() => {}} onGuardarHoras={() => {}} lotesSinObra={etiquetasSinObra} puestos={[]} />}
         {modulo === "informes" && (
           <InformesModulo
@@ -53684,11 +53686,21 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const atrasadas = {}; atascadas.forEach((o) => { const r = plan1.obras[o.id]; atrasadas[claveRefFb(o)] = { nombre: o.nombre, inicio: r.inicio, fin: r.fin, pres: presFab(o) }; });
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub, atrasadas, publicadoHasta });
   })();
-  const ultimoPublicadoFb = useRef("");
-  useEffect(() => { if (!soloPublicar || !planPrevioListo) return; if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
+  const ultimoPublicadoFb = useRef(""); const ultimoPubEn = useRef(0);
+  // huella de lo publicado (qué obras, qué días): si en Firebase hay otra cosa (otro ordenador lo pisó) se vuelve a publicar
+  const huellaPlanFb = (p) => { const d = (p && p.dias) || {}, o = (p && p.obras) || {}; return JSON.stringify([Object.keys(d).sort().map((f) => f + ":" + Object.keys(d[f] || {}).sort().join(",")), Object.keys(o).sort().map((k) => k + ":" + ((o[k] && o[k].inicio) || ""))]); };
+  const huellaFbActual = huellaPlanFb(planPrevio);
+  useEffect(() => { if (!soloPublicar || !planPrevioListo) return;
+    const nuevoPF = JSON.parse(publicadoFb);
+    const pisado = huellaPlanFb(nuevoPF) !== huellaFbActual;
+    if (publicadoFb === ultimoPublicadoFb.current && !(pisado && Date.now() - ultimoPubEn.current > 60000)) return;
+    // SEGURO: si de golpe desaparecen más de la mitad de las obras publicadas (mín. 4), no se publica (casi seguro faltan datos en este ordenador)
+    const obrasAntes = Object.keys((planPrevio && planPrevio.obras) || {}); const perdidasPF = obrasAntes.filter((k) => !(nuevoPF.obras || {})[k]).length;
+    if (obrasAntes.length >= 4 && perdidasPF >= 4 && perdidasPF > obrasAntes.length / 2) { console.warn(`Planning: no se publica (se perderían ${perdidasPF} de ${obrasAntes.length} obras)`); return; }
+    ultimoPublicadoFb.current = publicadoFb; ultimoPubEn.current = Date.now(); fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
     // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
     (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length && f <= publicadoHasta) diasPP[f] = d.trozos.filter((t) => { const r = plan1.obras[t.id]; return !r || !r.inicio || r.inicio <= publicadoHasta; }).map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
-  }, [publicadoFb, planPrevioListo]);
+  }, [publicadoFb, planPrevioListo, huellaFbActual]);
   // Semanas del planning virtual
   const semanas = {};
   Object.entries(plan2.dias).forEach(([f, d]) => {
