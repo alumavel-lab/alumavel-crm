@@ -7490,7 +7490,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, confirmarLineaPrep: confirmarLineaFabrica, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             abrirProyecto: (id) => { if (!id) return; setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); },
             encolarEntradaCrm: (items) => { toArray(items).forEach((x) => colaUxStock.current.push(x)); setTickColaUx((t) => t + 1); },
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
@@ -52094,8 +52094,45 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
   };
   const th = "px-3 py-2 text-left text-xs uppercase text-slate-500";
   // Pestaña «Control de pedidos»: lo que viene (próximas obras, material pedido por obra y lista de pedidos abiertos)
+  // LO QUE TIENE QUE LLEGAR: cada pedido abierto de cristales y compactos con su nº de PRESUPUESTO y sus líneas; «Llegado» = entrada desde fábrica (va a su caballete / carro)
+  const [filtroLlega, setFiltroLlega] = useState(""); const [abiertoLlega, setAbiertoLlega] = useState({});
+  const presDePedido = (pd, pr) => { const ex = pd.uxcarExpedienteId ? toArray(ctx.uxExpedientes).find((u) => u && u.id === pd.uxcarExpedienteId) : pr && pr.uxcarExpedienteId ? toArray(ctx.uxExpedientes).find((u) => u && u.id === pr.uxcarExpedienteId) : null; const t = (pr && (presupuestoDeObra(pr) || pr.presupuestoNumero)) || (ex && (ex.presupuesto || ex.presupuestoNumero)) || pd.presupuesto || ""; const d = digitosPresu(String(t).split(/[·,;\s]+/)[0]); return d ? pptoBonito(d) : ""; };
+  const nomLineaPed = (l) => (l.modo === "libre" || !l.materialId ? (l.referencia || l.descripcion || "—") : ((toArray(ctx.materialesPrep).find((m) => m.id === l.materialId) || {}).descripcion || l.referencia || "—"));
+  const bloqueLlegadas = (() => { const hoyL = new Date().toISOString().slice(0, 10); const q = digitosPresu(filtroLlega); const lst = sinPlanificar.map((x) => ({ ...x, pres: presDePedido(x.pd, x.pr) })).filter((x) => !q || x.pres.replace(/\D/g, "").includes(q) || String(x.pd.numero).includes(q));
+    return (
+    <div className="bg-white border-2 border-amber-400 rounded-xl p-4">
+      <div className="flex flex-wrap items-center gap-2 mb-2"><h4 className="font-semibold text-slate-800 text-base">📦 Lo que tiene que llegar <span className="text-slate-400 font-normal text-sm">({lst.length} pedidos de cristales y compactos)</span></h4>
+        <input value={filtroLlega} onChange={(e) => setFiltroLlega(e.target.value)} placeholder="Buscar presupuesto o nº de pedido" className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-sm w-60" /></div>
+      <p className="text-xs text-slate-500 mb-2">Toca un pedido para ver lo que trae. Cuando llega una línea, pulsa <b>Llegado</b>: entra en su caballete o carro (oficina lo cierra después).</p>
+      {lst.length === 0 ? <p className="text-sm text-slate-400">No hay nada pendiente de llegar.</p> : <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+        {lst.map(({ pd, pr, pres }) => { const pend = toArray(pd.lineas).filter((l) => l && l.estado !== "Recibido" && !l.confirmadoFabrica); const pasada = pd.fechaEntregaPrevista && pd.fechaEntregaPrevista < hoyL; const ab = !!abiertoLlega[pd.id]; return (
+          <div key={pd.id}>
+            <button type="button" onClick={() => setAbiertoLlega({ ...abiertoLlega, [pd.id]: !ab })} className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left text-sm hover:bg-slate-50">
+              <span className="w-4 text-slate-400">{ab ? "▼" : "▶"}</span>
+              <b className="text-lg text-slate-900">{pres ? `Ppto ${pres}` : "sin presupuesto"}</b>
+              <span className="text-slate-600">#{pd.numero} · {pd.proveedorExterno || ((toArray(ctx.proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || (pd.tipoUxcar ? "Uxcar" : "—")}</span>
+              <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{tipoMatPrep(pd) === "cristal" ? "Cristales" : "Compactos"}</span>
+              <span className="text-slate-600">{pr ? `#${pr.numero} ${pr.nombre || ""}` : "sin obra"}</span>
+              <span className={`ml-auto font-bold ${pend.length ? "text-amber-800" : "text-emerald-700"}`}>{pend.length ? `faltan ${pend.length} línea${pend.length === 1 ? "" : "s"}` : "✓ todo llegado (falta cerrar en oficina)"}</span>
+              <span className={pasada ? "font-bold text-rose-700" : "text-slate-500"}>{pd.fechaEntregaPrevista ? `llega ${fmtDia(pd.fechaEntregaPrevista)}${pasada ? " ⚠" : ""}` : "sin fecha"}</span>
+            </button>
+            {ab && <div className="px-3 pb-2">
+              <table className="w-full text-sm"><tbody className="divide-y divide-slate-100">
+                {toArray(pd.lineas).filter(Boolean).map((l) => { const ok = l.estado === "Recibido" || l.confirmadoFabrica; return (
+                  <tr key={l.id || nomLineaPed(l)} className={ok ? "text-slate-400" : ""}>
+                    <td className="py-1 pr-2">{ok ? "✓ " : ""}{nomLineaPed(l)}</td>
+                    <td className="py-1 pr-2">{l.ancho && l.alto ? `${l.ancho}×${l.alto}` : ""}</td>
+                    <td className="py-1 pr-2">{l.cantidad || 1} ud{Number(l.cantidad) === 1 ? "" : "s"}</td>
+                    <td className="py-1 text-right">{ok ? <span className="text-xs">{l.confirmadoFabrica ? `llegado ${l.fechaConfirmadoFabrica ? fmtDia(l.fechaConfirmadoFabrica) : ""}` : "recibido"}</span> : ctx.confirmarLineaPrep && <button type="button" onClick={() => { if (window.confirm(`¿Ha llegado «${nomLineaPed(l)}» (${l.cantidad || 1} uds) del pedido #${pd.numero}?`)) ctx.confirmarLineaPrep(pd.id, l.id, true); }} className="px-2.5 py-1 rounded bg-emerald-600 text-white text-xs font-bold">✓ Llegado</button>}</td>
+                  </tr>); })}
+              </tbody></table>
+            </div>}
+          </div>); })}
+      </div>}
+    </div>); })();
   const bloquesPedidos = (
     <>
+      {bloqueLlegadas}
           <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
             <h4 className="font-semibold text-slate-800 text-sm mb-1">Próximas obras por preparar <span className="text-slate-400 font-normal text-xs">({filasProx.length} en las próximas 3 semanas)</span></h4>
             <p className="text-xs text-slate-500 mb-2">Obras del planning de después de este periodo, con lo que ya ha llegado de compactos y cristales.</p>
