@@ -23375,11 +23375,12 @@ function AvisoSoloFaltaPanel({ pedidos, proveedorNombre, nombreLinea, onDarPorRe
 }
 // Fábrica → Materiales pendientes: «📥 Llegado hoy» (o el día que se elija). Al darse por llegado el pedido desaparece de la lista de
 // pendientes; aquí se sigue viendo lo que entró ese día (albarán leído, «Dar de baja», confirmado línea a línea o dado por recibido en oficina)
-function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
+function LlegadosDelDia({ modo = "ecowin", pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
   const hoyLD = new Date().toLocaleDateString("sv-SE");
   const [dia, setDia] = useState(hoyLD); const [abierto, setAbierto] = useState(true); const [abiertoId, setAbiertoId] = useState(null);
   const d10 = (x) => String(x || "").slice(0, 10);
-  const lista = toArray(pedidos).filter((p) => p && p.estado !== "Cancelado" && (
+  // cada pestaña lo suyo: «Entradas Ecowin PVC» los pedidos propios; «Entradas Uxcar» los de Uxcar (portal o con su expediente)
+  const lista = toArray(pedidos).filter((p) => p && (modo === "uxcar" ? esPedidoUxcar(p, proyectos) : !esPedidoUxcar(p, proyectos)) && p.estado !== "Cancelado" && (
     d10(p.fechaRecibido) === dia || d10(p.fechaRecepcion) === dia || d10(p.fabricaDaPorLlegado) === dia
     || toArray(p.recepciones).some((r) => r && d10(r.fecha) === dia)
     || toArray(p.lineas).some((l) => l && d10(l.fechaConfirmadoFabrica) === dia)))
@@ -23394,7 +23395,7 @@ function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, no
   return (
     <div className="mb-3 rounded-lg border-2 border-emerald-300 bg-emerald-50 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-emerald-900 text-left">{abierto ? "▼" : "▶"} 📥 Llegado {dia === hoyLD ? "hoy" : `el ${fmtDate(dia)}`} <span className="font-normal text-sm">({lista.length} pedido{lista.length === 1 ? "" : "s"})</span></button>
+        <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-emerald-900 text-left">{abierto ? "▼" : "▶"} 📥 Llegado {dia === hoyLD ? "hoy" : `el ${fmtDate(dia)}`}{modo === "uxcar" ? " · Uxcar" : " · Ecowin"} <span className="font-normal text-sm">({lista.length} pedido{lista.length === 1 ? "" : "s"})</span></button>
         <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoyLD)} className="ml-auto border rounded px-2 py-1 text-sm" />
         {dia !== hoyLD && <button type="button" onClick={() => setDia(hoyLD)} className="text-xs px-2 py-1 rounded bg-emerald-600 text-white">Hoy</button>}
       </div>
@@ -23496,8 +23497,6 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
             <AvisoSoloFaltaPanel pedidos={pedidos} proveedorNombre={proveedorNombre} onDarPorRecibido={onConfirmarPedidoEntero}
-              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
-            <LlegadosDelDia pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           </>);
   const subTabsMateriales = (
@@ -23823,6 +23822,8 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
         <>
         {subTabsMateriales}
         {bloqueAlbaran}
+        <LlegadosDelDia modo="uxcar" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+          nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
         <UxEntradasFabrica pedidos={uxPedidos} onGuardarRecepcion={onGuardarRecepcionUx} quien={nombreUsuario || "Fábrica"} />
         </>
       )}
@@ -24054,6 +24055,8 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
           </div>
 
           {bloqueAlbaran}
+          <LlegadosDelDia modo="ecowin" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+            nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           <div className="relative mb-4 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por proveedor, material, referencia..." className={inputCls + " pl-9"} />
