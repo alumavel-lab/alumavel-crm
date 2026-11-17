@@ -48420,6 +48420,11 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 {admin && <button type="button" onClick={() => fbSet(ref(fbDb, "configSentidoLinea/sinPersiana"), izq ? "der" : "izq").catch(() => {})} className="ml-2 text-[10px] font-semibold underline text-slate-500">↔ cambiar sentido</button>}
               </div>
             ); })()}
+            {(() => { const fuera = Object.entries(oc).filter(([h]) => !(Number(h) >= 1 && Number(h) <= z.huecos)).flatMap(([, xs]) => xs); return fuera.length ? (
+              <div className="mb-2 rounded-md border-2 border-rose-400 bg-rose-50 px-3 py-2 text-xs text-rose-900 flex flex-wrap items-center gap-2">
+                <b>⚠ {fuera.length} pieza{fuera.length === 1 ? "" : "s"} apuntada{fuera.length === 1 ? "" : "s"} FUERA de las estanterías</b><span>({fuera.slice(0, 6).map((x) => etiquetaDe(x.cod)).join(", ")}{fuera.length > 6 ? "…" : ""}) · ocupan sitio y no se ven</span>
+                <button type="button" onClick={async () => { if (!window.confirm(`¿Quitar del CRM estas ${fuera.length} pieza(s) que están apuntadas fuera de las estanterías de «${z.nombre}»?`)) return; for (const x of fuera) { try { await liberarCodigoLinea(x.cod); } catch (e) { /* nada */ } } }} className="ml-auto px-2 py-1 rounded bg-rose-600 text-white font-bold">Quitarlas</button>
+              </div>) : null; })()}
             <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
               {(z.id === "sinPersiana" && sentidoLin && sentidoLin.sinPersiana === "izq" ? Array.from({ length: z.huecos }, (_, i) => z.huecos - i) : Array.from({ length: z.huecos }, (_, i) => i + 1)).map((hu) => {
                 const piezas = oc[hu] || [];
@@ -50789,6 +50794,12 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (!window.confirm(`${hit.w.pos} ya está HECHA en ${nombrePuestoLinea(pE)}.\n\n¿Quitarla?`)) return;
         await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`), null).catch(() => {});
         fbSet(ref(fbDb, `ticksLinea/${hoyISO()}/${pE}/${claveM}`), null).catch(() => {});
+        // la MISMA ventana apuntada con otro código (su obra está dos veces: obra del CRM y expediente de Uxcar): se quita también, si no sigue saliendo ✓
+        try { const baseQ = toArray(hit.sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || ""; const posQ = String(hit.w.pos || "").toUpperCase().replace(/\s+/g, ""); const sufQ = (/~H\d$/.exec(claveM) || [""])[0];
+          const todas = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}`))).val() || {};
+          for (const [km, mm] of Object.entries(todas)) { if (km === claveM || !mm || !baseQ || basePresuDia(mm.base) !== baseQ || String(mm.pos || "").toUpperCase().replace(/\s+/g, "") !== posQ || (/~H\d$/.exec(km) || [""])[0] !== sufQ) continue;
+            await fbSet(ref(fbDb, `marcasPuestoLinea/${pE}/${km}`), null).catch(() => {}); fbSet(ref(fbDb, `ticksLinea/${mm.fecha || hoyISO()}/${pE}/${km}`), null).catch(() => {});
+            if (pE === "lineaPers") { const mk = /^(.+)__(.+)$/.exec(km); if (mk) await quitarVerdeCD(mk[1], mk[2]); } } } catch (e) { /* nada */ }
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
