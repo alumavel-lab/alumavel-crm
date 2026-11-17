@@ -49297,9 +49297,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
           <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
           <span className="text-sm text-slate-400">Toca una ventana para ticarla.</span>
           <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-            <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
+            <input value={qPresDia} onChange={(e) => { setQPresDia(e.target.value); setGrande(null); }} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
             {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="px-3 py-2 rounded-lg bg-slate-700 text-white font-bold">✕</button>}
           </span>
+          {(grande || qPresDia) && <button type="button" onClick={(e) => { e.stopPropagation(); setGrande(null); setQPresDia(""); }} className="px-4 py-2 rounded-lg bg-amber-400 text-slate-900 font-extrabold text-lg">← Ver todas las obras</button>}
           <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
         </div>
         {ultimo && (
