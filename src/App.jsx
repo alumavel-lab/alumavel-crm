@@ -47804,8 +47804,20 @@ async function ocuparEstantePorAncho(zona, cod, por, ubicLocal, desde = 1, hasta
   }
   return null;
 }
+// Huecos «fantasma»: la ocupación dice que hay una pieza pero esa pieza ya no está ahí (se movió o se borró) → se liberan.
+// Si no, la estantería sale VACÍA en el mapa pero dice «LLENA» al meter algo.
+const _limpiezaOcup = {};
+async function limpiarOcupacionZona(zonaId, forzar = false) {
+  if (!zonaId) return 0; if (!forzar && _limpiezaOcup[zonaId] && Date.now() - _limpiezaOcup[zonaId] < 30000) return 0; _limpiezaOcup[zonaId] = Date.now();
+  try {
+    const oc = (await fbGet(ref(fbDb, `ocupacionLinea/${zonaId}`))).val() || {}; const upd = {}; let n = 0;
+    for (const [k, cod] of Object.entries(oc)) { if (!cod) continue; const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); const [h, sl] = k.split("_"); if (!u || u.zonaId !== zonaId || String(u.hueco) !== String(h) || String(u.slot || 1) !== String(sl || 1)) { upd[`ocupacionLinea/${zonaId}/${k}`] = null; n++; } }
+    if (n) await fbUpdate(ref(fbDb), upd); return n;
+  } catch (e) { return 0; }
+}
 async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = null, cap = 1) {
   if (zona && ZONAS_POR_ANCHO.has(zona.id)) return ocuparEstantePorAncho(zona, cod, por, ubicLocal, desde, hasta);
+  if (zona) await limpiarOcupacionZona(zona.id);
   const max = Math.min(hasta || zona.huecos, zona.huecos);
   const ocupados = new Set(Object.values(ubicLocal || {}).filter((u) => u && u.zonaId === zona.id).map((u) => `${u.hueco}_${u.slot || 1}`));
   const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
@@ -48405,6 +48417,8 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
             <div className="flex items-center gap-2 mb-2">
               <span className="text-sm font-semibold text-slate-800 mr-auto">{z.nombre}</span>
               <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
+              <button type="button" title="Arreglar: libera los huecos que dicen estar ocupados pero no tienen nada (si sale vacío y dice LLENO)" onClick={async () => { const k = await limpiarOcupacionZona(z.id, true); alert(k ? `Liberados ${k} hueco(s) fantasma en ${z.nombre}.` : `${z.nombre}: no había huecos fantasma.`); }} className="text-[11px] font-semibold text-sky-700 border border-sky-200 px-2 py-0.5 rounded-md hover:bg-sky-50">🔧 Arreglar huecos</button>
+              {n > 0 && <button type="button" onClick={async () => { const t = window.prompt(`¿VACIAR «${z.nombre}»? Quita del CRM las ${n} estanterías ocupadas (las piezas no se borran: solo dejan de estar apuntadas en este almacén).\n\nEscribe VACIAR para confirmar:`); if (!t || t.trim().toUpperCase() !== "VACIAR") return; const cods = Object.values(oc).flat().map((x) => x.cod); for (const c of cods) { try { await liberarCodigoLinea(c); } catch (e) { /* nada */ } } await fbSet(ref(fbDb, `ocupacionLinea/${z.id}`), null).catch(() => {}); }} className="text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded-md hover:bg-rose-50">🗑 Vaciar</button>}
               {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
             </div>
             {z.id === "sinPersiana" && (() => { const izq = sentidoLin && sentidoLin.sinPersiana === "izq"; return (
