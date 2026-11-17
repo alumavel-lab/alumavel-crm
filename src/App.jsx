@@ -42608,7 +42608,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. BLOQUES DE PEDIDO (Dealux y otros): una línea «Pedido Nº 26012778 Fecha … Ref/Obra: VALENCIA - EXP. 633 P12» es la CABECERA de un bloque: ese Ref/Obra es el "expediente" de las líneas que van DEBAJO de ella (hasta la siguiente cabecera), NUNCA de las de encima. Las líneas que hay al principio de una página ANTES de cualquier cabecera son la continuación del bloque de la página anterior: déjales "expediente" vacío "" (yo lo relleno). La línea «Obra: VALENCIA - EXP 633 P1|VALENCIA - EXP 633 P2|…» de arriba de cada página es la lista de todas las obras del albarán: NO la uses como expediente de ninguna línea. "codigo" = la columna Ref. de la línea (la ventana: V07.317, P02.316, V13.312), tal cual. Si la cantidad es negativa (abono, -1,0), ponla negativa. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
   // 1º lectura rápida. Un PACKING LIST con muchos cristales tarda más de lo que deja Netlify (error 504/502):
   // entonces se lee EN SEGUNDO PLANO (sin límite de tiempo, el CRM va preguntando hasta que está)
   let texto = "";
@@ -54741,7 +54741,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
-        lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+        lineas = lineas.concat(toArray(info.lineas).map((l, i) => ({ ...l, _pag: info.pagina || 0, _ord: lineas.length + i }))); proveedor = proveedor || info.proveedor || ""; docs.push(file);
         if (info.sinIA) avisosLect.push(`📄 ${file.name}: leído exacto, sin IA — ${info.resumen}${info.aviso ? ` ${info.aviso}` : ""}`);
         // un PDF se lee entero (todas sus páginas de una vez); solo en fotos sueltas se cuentan las páginas que faltan
         if (mediaType === "application/pdf" && info.paginasTotal) { for (let pg = 1; pg <= info.paginasTotal; pg++) paginas.push(pg); }
@@ -54749,6 +54749,11 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
+      // LAS PÁGINAS EN ORDEN (las fotos pueden subirse desordenadas) y la obra de cada bloque baja a las líneas siguientes, también a las de
+      // la página siguiente: «Ref/Obra: … P12» al final de la página 9 es de los compactos que salen arriba de la página 10
+      if (lineas.every((l) => (l._pag || 0) > 0)) lineas = [...lineas].sort((x, y) => (x._pag - y._pag) || ((x._ord || 0) - (y._ord || 0)));
+      lineas = lineas.map((l) => (l.expHeredado ? { ...l, expediente: "", expHeredado: false } : l)); // se recalcula con todas las páginas juntas
+      { let ultExp = ""; lineas = lineas.map((l) => { const ex = String(l.expediente || "").trim(); if (ex) { ultExp = ex; return l; } return ultExp && (l.ancho || l.alto || l.codigo) ? { ...l, expediente: ultExp, expHeredado: true } : l; }); }
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
       const r0 = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const rc = repartirEnPedidosCrm(r0.sobran);
