@@ -49215,7 +49215,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                 ); })()}
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const fsT = faltanSold(v); const parcial = !!fsT && fsT.length > 0 && leidas.piezasS.has(`${v.sk}__${v.id}`.replace(/[.#$\[\]\/|\s]/g, "_")); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : parcial ? "bg-amber-300 border-amber-600 text-slate-900" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                  <div key={v.id} onClick={(e) => { if (onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : parcial ? "bg-amber-300 border-amber-600 text-slate-900" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
                     <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}{conIncP(c, v) ? " ⚠" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
@@ -50710,6 +50710,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
+        if (pE === "lineaPers") { fbUpdate(ref(fbDb, `controlDia/${hoyISO()}/${hit.k}`), { [String(hit.w.id)]: 0 }).catch(() => {}); await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), "porLinea"); }
         if (pE === "herraje") { if (hojaT) await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH, "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
         if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
@@ -50720,6 +50721,16 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       // PILASTRA (sin pistola, de momento): se mira si el marco está en el almacén de MARCOS SOLDADOS. Si está, se marca ahí «herraje puesto»
       // (y «pilastra puesta» si la lleva). Si no está, se mete en el almacén de marcos (las puertas, en su almacén de puertas, huecos 1-6) ya marcado.
       let txtAlm = "";
+      // CONTROL DE LÍNEA: ticar aquí = la ventana en VERDE en Control del día (hoy) y a la LÍNEA (si no está ya en Línea, Solape o Ventanas terminadas)
+      if (pE === "lineaPers") {
+        fbUpdate(ref(fbDb, `controlDia/${hoyISO()}/${hit.k}`), { [String(hit.w.id)]: 1 }).catch(() => {});
+        const codL = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ }
+        const uL = uF[codL];
+        if (uL && ["sinPersiana", "solape", "espera"].includes(uL.zonaId)) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uL.zonaId) || {}).nombre || uL.zonaId} · ${uL.hueco}.`;
+        else { const zL = zonas.find((q) => q.id === "sinPersiana"); const prev = uL && uL.zonaId ? JSON.parse(JSON.stringify(uL)) : null; const r = zL ? await colocarAgrupado(zL, codL, base, null) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codL}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porLinea: true, ...(prev ? { antes: prev } : {}) }).catch(() => {}); txtAlm = `${prev ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prev.zonaId) || {}).nombre || prev.zonaId} · ${prev.hueco}` : ""}\n➡ A la LÍNEA · ESTANTERÍA ${r.hueco}.`; }
+          else txtAlm = "\n⚠ La Línea está LLENA."; }
+      }
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
       if (pE === "soldadora") {
         const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS];
@@ -50888,6 +50899,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
+      else if (puestoId === "lineaPers") { const mL = /^(.+)__(.+)$/.exec(claveM); if (mL) fbUpdate(ref(fbDb, `controlDia/${(m && m.fecha) || hoyISO()}/${mL[1]}`), { [mL[2]]: 0 }).catch(() => {}); await deshacerMovido(codCD, "porLinea"); }
       else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
       else if (puestoId === "cristales") await devolverALaLinea(codCD, hit);
       else if (esPuestoSimple && u) { if (u.hojasAntes) for (const [ch, x] of Object.entries(u.hojasAntes)) await volverA(ch, x); try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
@@ -61476,7 +61488,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const cod = limpiaId(`cd_${k}__${id}`); if (enLineaHechas.current.has(cod)) return;
       const u = ubicLocal[cod];
       const vieneDeAntes = u && ["persianaA", "persianaB", "puertasTerminadas"].includes(u.zonaId);
-      const nueva = false; // (quitado) una ventana marcada en Control del día que NO está en ningún almacén ya no se mete sola en la Línea: solo pasan las que ya están en Persiana salida o Puertas terminadas
+      // marcada HOY en Control del día y sin estar en ningún almacén (no la ticó ningún puesto): entra en la LÍNEA, donde la coge Cristales
+      const nueva = !u && x.ts && new Date(x.ts).toLocaleDateString("sv-SE") === hoyL && !(marcasCrCD && marcasCrCD[cod.slice(3)]);
       if (!vieneDeAntes && !nueva) return;
       const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
       enLineaHechas.current.add(cod);
