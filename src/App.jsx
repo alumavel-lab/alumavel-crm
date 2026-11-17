@@ -63891,6 +63891,66 @@ function MapaMesControlDia() {
     </div>
   );
 }
+// CONTROL DE VENTANAS: todas las ventanas hechas (marcadas en Control del día / Control de línea) por día o por mes, con por dónde ha pasado cada una.
+// Solo el ADMINISTRADOR puede corregir (cambiar el estado, pasarla a otro día o quitarla); los demás solo miran.
+function ControlVentanasHechas({ admin = false }) {
+  const hoyCV = new Date().toISOString().slice(0, 10);
+  const hace30 = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+  const [modo, setModo] = useState("mes"); const [mes, setMes] = useState(hoyCV.slice(0, 7)); const [diaV, setDiaV] = useState(hoyCV); const [q, setQ] = useState("");
+  const marcasCV = useObjetoFb("controlDia"); const horasCV = useObjetoFb("controlDiaHoras"); const snapCV = useObjetoFb("controlDiaVentanasObra"); const pasosCV = useObjetoFb("marcasPuestoLinea");
+  const limpiaV = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  const enRango = (f) => (modo === "dia" ? f === diaV : modo === "mes" ? f.slice(0, 7) === mes : f >= hace30 && f <= hoyCV);
+  const filas = useMemo(() => { const out = [];
+    Object.entries(marcasCV || {}).forEach(([f, obras]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f) || !enRango(f)) return; Object.entries(obras || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([id, v]) => { if (v !== 1 && v !== 2) return;
+      const sn = (snapCV && snapCV[ko]) || {}; const w = toArray(sn.ventanas).find((x) => String(x.id) === String(id) || limpiaV(x.id) === id) || null; const b = toArray(sn.codigos).map((c) => basePresuDia(c)).find((x) => x.length >= 3) || "";
+      const ts = ((horasCV || {})[f] || {})[ko] ? horasCV[f][ko][id] : 0; const kM = limpiaV(`${ko}__${id}`);
+      const pasos = Object.entries(pasosCV || {}).map(([pu, ms]) => { const m = ms && (ms[kM] || ms[`${kM}~H1`]); return m ? { pu, ts: m.ts, por: m.por } : null; }).filter(Boolean).sort((a, b2) => (a.ts || 0) - (b2.ts || 0));
+      out.push({ f, ko, id, v, ts, pos: (w && w.pos) || id, obra: sn.nombre || ko, b, pasos }); })); });
+    return out.sort((a, b) => b.f.localeCompare(a.f) || String(a.b).localeCompare(String(b.b)) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true }));
+  }, [marcasCV, horasCV, snapCV, pasosCV, modo, mes, diaV]);
+  const qn = String(q || "").toLowerCase().replace(/\./g, "").trim();
+  const vis = qn ? filas.filter((r) => `${r.b} ${r.obra} ${r.pos}`.toLowerCase().replace(/\./g, "").includes(qn)) : filas;
+  const porDia = new Map(); vis.forEach((r) => { if (!porDia.has(r.f)) porDia.set(r.f, []); porDia.get(r.f).push(r); });
+  const fmtH = (ts) => (ts ? new Date(Number(ts)).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "");
+  const cambiarEstado = async (r, v) => { if (!admin) return; if (v === 0 && !window.confirm(`¿Quitar ${r.pos} (${r.b ? `Ppto ${pptoBonito(r.b)}` : r.obra}) del día ${fmtDia(r.f)}?`)) return; await fbUpdate(ref(fbDb, `controlDia/${r.f}/${r.ko}`), { [r.id]: v }).catch((e) => alert("No se pudo: " + e.message)); };
+  const moverDia = async (r, f2) => { if (!admin || !f2 || f2 === r.f) return; try { await fbUpdate(ref(fbDb), { [`controlDia/${f2}/${r.ko}/${r.id}`]: r.v, [`controlDia/${r.f}/${r.ko}/${r.id}`]: null, ...(r.ts ? { [`controlDiaHoras/${f2}/${r.ko}/${r.id}`]: r.ts, [`controlDiaHoras/${r.f}/${r.ko}/${r.id}`]: null } : {}) }); } catch (e) { alert("No se pudo: " + e.message); } };
+  const nHechas = vis.filter((r) => r.v === 1).length; const nProb = vis.filter((r) => r.v === 2).length;
+  return (
+    <div className="space-y-3">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-2">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Control de ventanas hechas</h3>
+        {[["30", "Último mes"], ["mes", "Por mes"], ["dia", "Por día"]].map(([k, t]) => <button key={k} type="button" onClick={() => setModo(k)} className={`px-3 py-1.5 rounded-md text-sm font-semibold border ${modo === k ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{t}</button>)}
+        {modo === "mes" && <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-sm" />}
+        {modo === "dia" && <input type="date" value={diaV} onChange={(e) => setDiaV(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-sm" />}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar presupuesto, obra o ventana" className="border border-slate-300 rounded-md px-2 py-1 text-sm w-60" />
+        <div className="w-full text-sm text-slate-600"><b className="text-emerald-700">{nHechas} hechas</b>{nProb ? <> · <b className="text-orange-700">{nProb} con problema</b></> : null}{admin ? <span className="text-slate-400"> · eres administrador: puedes corregir el estado o el día de cada ventana</span> : <span className="text-slate-400"> · solo lectura</span>}</div>
+      </div>
+      {!vis.length ? <p className="text-sm text-slate-400 px-1">No hay ventanas hechas en este periodo.</p> : [...porDia.entries()].map(([f, rs]) => (
+        <details key={f} open={porDia.size <= 3} className="bg-white border border-slate-200 rounded-xl">
+          <summary className="cursor-pointer px-4 py-2 font-semibold text-slate-800 capitalize">{fmtDia(f)} <span className="font-normal text-slate-500 normal-case">· {rs.filter((r) => r.v === 1).length} hechas{rs.some((r) => r.v === 2) ? ` · ${rs.filter((r) => r.v === 2).length} con problema` : ""}</span></summary>
+          <div className="overflow-x-auto px-2 pb-2">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-slate-500"><th className="px-2 py-1">Hora</th><th className="px-2 py-1">Ppto</th><th className="px-2 py-1">Ventana</th><th className="px-2 py-1">Estado</th><th className="px-2 py-1">Por dónde ha pasado</th>{admin && <th className="px-2 py-1">Corregir</th>}</tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {rs.map((r) => (
+                  <tr key={`${r.ko}_${r.id}`}>
+                    <td className="px-2 py-1 text-slate-500">{fmtH(r.ts)}</td>
+                    <td className="px-2 py-1 font-semibold text-slate-800" title={r.obra}>{r.b ? pptoBonito(r.b) : r.obra}</td>
+                    <td className="px-2 py-1 font-semibold">{r.pos}</td>
+                    <td className="px-2 py-1">{r.v === 1 ? <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white text-xs font-bold">✓ Hecha</span> : <span className="px-1.5 py-0.5 rounded bg-orange-500 text-white text-xs font-bold">⚠ Problema</span>}</td>
+                    <td className="px-2 py-1 text-xs text-slate-600">{r.pasos.length ? r.pasos.map((x) => `${nombrePuestoLinea(x.pu)} ${fmtH(x.ts)}`).join(" · ") : "—"}</td>
+                    {admin && <td className="px-2 py-1 whitespace-nowrap">
+                      <select value={r.v} onChange={(e) => cambiarEstado(r, Number(e.target.value))} className="border border-slate-300 rounded px-1 py-0.5 text-xs"><option value={1}>Hecha</option><option value={2}>Problema</option><option value={0}>Quitar</option></select>
+                      <input type="date" defaultValue={r.f} onChange={(e) => { if (e.target.value && window.confirm(`¿Pasar ${r.pos} al ${fmtDia(e.target.value)}?`)) moverDia(r, e.target.value); else e.target.value = r.f; }} className="ml-1 border border-slate-300 rounded px-1 py-0.5 text-xs" title="Pasarla a otro día" />
+                    </td>}
+                  </tr>))}
+              </tbody>
+            </table>
+          </div>
+        </details>))}
+    </div>
+  );
+}
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -63919,8 +63979,9 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       { id: "cargas", t: "5 · Cargas de hoy", aviso: "" },
       ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
       ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
+      { id: "controlVentanas", t: "Control de ventanas", aviso: "" },
       ...(almacenOk("estanterias") ? [{ id: "estanterias", t: "Estanterías e informes", aviso: "" }] : []),
-    ].filter((x) => x.id === "parte" || x.id === "incidencias" || verTab(x.id));
+    ].filter((x) => x.id === "parte" || x.id === "incidencias" || x.id === "controlVentanas" || verTab(x.id));
   })();
   const actual = tabs.find((x) => x.id === tab) || tabs[0];
   return (
@@ -63947,6 +64008,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
+      {actual.id === "controlVentanas" && <ControlVentanasHechas admin={admin} />}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "mosqpost" && <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div>}
       {actual.id === "almacen" && (
