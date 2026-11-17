@@ -8709,6 +8709,7 @@ function faseObra(p, pedidos, uxExpedientes = []) {
 }
 function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
+  const [qExp, setQExp] = useState(""); const [qPres, setQPres] = useState(""); // buscadores aparte: nº de expediente y nº de presupuesto
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
   const [ciudadFiltro, setCiudadFiltro] = useState("");
@@ -8754,7 +8755,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
       // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
-      if (!estadoTrabajo && !q && p.estadoTrabajo === "Cancelado") return false;
+      if (!estadoTrabajo && !q && !qExp.trim() && !qPres.trim() && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
@@ -8764,8 +8765,13 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         const f = String(p.fechaAceptado || "").slice(0, 10);
         if (r && (!f || f < r[0] || f > r[1])) return false;
       }
-      if (!q) return true;
       const no = numerosObra[p.id] || { exps: [], pptos: [] };
+      // «6897» = «6.897» = «6.897-1»: se comparan solo las cifras (y también tal cual)
+      const casaNum = (lista, t) => { const tt = String(t || "").trim().toLowerCase(); if (!tt) return true; const td = tt.replace(/\D/g, "");
+        return lista.some((x) => { const xs = String(x || "").toLowerCase(); return xs.includes(tt) || (td.length >= 2 && xs.replace(/\D/g, "").includes(td)); }); };
+      if (qExp.trim() && !casaNum([...no.exps, p.expediente, p.referencia], qExp)) return false;
+      if (qPres.trim() && !casaNum([...no.pptos, p.presupuestoNumero, presupuestoDeObra(p)], qPres)) return false;
+      if (!q) return true;
       // Portal / vivienda / escalera: se busca también en la descripción de la obra y en los datos de su expediente de Uxcar (incluidas las líneas del recuento)
       let extraTxt = "";
       try {
@@ -8778,7 +8784,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       const qd = q.replace(/[^\d]/g, "");
       return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
-  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
+  }, [proyectos, q, qExp, qPres, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
   const [dupAbierto, setDupAbierto] = useState(""); // nombre del grupo de duplicados abierto para elegir cuál se queda
   const [dupQuedar, setDupQuedar] = useState("");
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
@@ -8949,6 +8955,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             placeholder="Buscar por nº, nombre, cliente, ubicación…"
             className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]"
           />
+        </div>
+        <div className="relative w-44">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={qExp} onChange={(e) => setQExp(e.target.value)} placeholder="Nº expediente"
+            className="w-full pl-9 pr-7 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
+          {qExp && <button type="button" onClick={() => setQExp("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">✕</button>}
+        </div>
+        <div className="relative w-44">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={qPres} onChange={(e) => setQPres(e.target.value)} placeholder="Nº presupuesto"
+            className="w-full pl-9 pr-7 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
+          {qPres && <button type="button" onClick={() => setQPres("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">✕</button>}
         </div>
         <Select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} className="max-w-[200px]">
           <option value="">Todos los clientes</option>
@@ -23375,11 +23393,12 @@ function AvisoSoloFaltaPanel({ pedidos, proveedorNombre, nombreLinea, onDarPorRe
 }
 // Fábrica → Materiales pendientes: «📥 Llegado hoy» (o el día que se elija). Al darse por llegado el pedido desaparece de la lista de
 // pendientes; aquí se sigue viendo lo que entró ese día (albarán leído, «Dar de baja», confirmado línea a línea o dado por recibido en oficina)
-function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
+function LlegadosDelDia({ modo = "ecowin", pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
   const hoyLD = new Date().toLocaleDateString("sv-SE");
   const [dia, setDia] = useState(hoyLD); const [abierto, setAbierto] = useState(true); const [abiertoId, setAbiertoId] = useState(null);
   const d10 = (x) => String(x || "").slice(0, 10);
-  const lista = toArray(pedidos).filter((p) => p && p.estado !== "Cancelado" && (
+  // cada pestaña lo suyo: «Entradas Ecowin PVC» los pedidos propios; «Entradas Uxcar» los de Uxcar (portal o con su expediente)
+  const lista = toArray(pedidos).filter((p) => p && (modo === "uxcar" ? esPedidoUxcar(p, proyectos) : !esPedidoUxcar(p, proyectos)) && p.estado !== "Cancelado" && (
     d10(p.fechaRecibido) === dia || d10(p.fechaRecepcion) === dia || d10(p.fabricaDaPorLlegado) === dia
     || toArray(p.recepciones).some((r) => r && d10(r.fecha) === dia)
     || toArray(p.lineas).some((l) => l && d10(l.fechaConfirmadoFabrica) === dia)))
@@ -23394,7 +23413,7 @@ function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, no
   return (
     <div className="mb-3 rounded-lg border-2 border-emerald-300 bg-emerald-50 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-emerald-900 text-left">{abierto ? "▼" : "▶"} 📥 Llegado {dia === hoyLD ? "hoy" : `el ${fmtDate(dia)}`} <span className="font-normal text-sm">({lista.length} pedido{lista.length === 1 ? "" : "s"})</span></button>
+        <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-emerald-900 text-left">{abierto ? "▼" : "▶"} 📥 Llegado {dia === hoyLD ? "hoy" : `el ${fmtDate(dia)}`}{modo === "uxcar" ? " · Uxcar" : " · Ecowin"} <span className="font-normal text-sm">({lista.length} pedido{lista.length === 1 ? "" : "s"})</span></button>
         <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoyLD)} className="ml-auto border rounded px-2 py-1 text-sm" />
         {dia !== hoyLD && <button type="button" onClick={() => setDia(hoyLD)} className="text-xs px-2 py-1 rounded bg-emerald-600 text-white">Hoy</button>}
       </div>
@@ -23496,8 +23515,6 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
             <AvisoSoloFaltaPanel pedidos={pedidos} proveedorNombre={proveedorNombre} onDarPorRecibido={onConfirmarPedidoEntero}
-              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
-            <LlegadosDelDia pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           </>);
   const subTabsMateriales = (
@@ -23823,6 +23840,8 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
         <>
         {subTabsMateriales}
         {bloqueAlbaran}
+        <LlegadosDelDia modo="uxcar" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+          nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
         <UxEntradasFabrica pedidos={uxPedidos} onGuardarRecepcion={onGuardarRecepcionUx} quien={nombreUsuario || "Fábrica"} />
         </>
       )}
@@ -24054,6 +24073,8 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
           </div>
 
           {bloqueAlbaran}
+          <LlegadosDelDia modo="ecowin" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+            nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           <div className="relative mb-4 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por proveedor, material, referencia..." className={inputCls + " pl-9"} />
@@ -54548,7 +54569,9 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   // el pedido está unido a su expediente de Uxcar, que tiene su nº de expediente y su presupuesto (6.833-3 → 6833)
   const numsDe = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
   // TEXTO DE LA OBRA de cada grupo del pedido: expediente de Uxcar + su obra en el CRM (referencia «EXP 823 JOAN M PARETS PORTAL 12 ESC 10 1K», nombre…)
-  const textoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const pr = toArray(proyectos).find((y) => y && (y.id === e.proyectoId || y.id === p.proyectoId)) || {};
+  // la OBRA del CRM: por el expediente de Uxcar; si el pedido no lo tiene («Exp. sin dato»), por su nº de presupuesto (igual que «Ir a la obra»)
+  const obraPorPpto = (p) => { try { const pp = uxDesglosaExp(p, exps).ppto.map((t) => String(t).split("-")[0].replace(/\D/g, "")).filter(Boolean); return pp.length ? toArray(proyectos).find((q) => q && pp.includes(String(presupuestoDeObra(q) || q.presupuestoNumero || "").split("-")[0].replace(/\D/g, ""))) : null; } catch (er) { return null; } };
+  const textoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const pr = toArray(proyectos).find((y) => y && (y.id === e.proyectoId || y.id === p.proyectoId || (e.id && y.uxcarExpedienteId === e.id))) || obraPorPpto(p) || {};
     return [x.numero, x.presupuesto, x.vivienda, x.referencia, e.numero, e.expediente, e.presupuesto, e.presupuestoNumero, e.referencia, e.descripcion, e.nombre, e.obra, e.vivienda, pr.referencia, pr.nombre, pr.descripcion, pr.expediente, pr.presupuestoNumero, p.referencia, p.obra].filter((v) => typeof v === "string" || typeof v === "number").join(" · "); };
   const numsPedidoGrupo = (p, gi) => numsDe(textoGrupo(p, gi));
   // palabras que distinguen la obra (PARETS, MONTSERRAT…): no cuentan las genéricas
