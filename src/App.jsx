@@ -25190,7 +25190,9 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
   const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
   const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
-  const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
+  // si el filtro de cita elegido no tiene ninguna (p. ej. «Sin fecha 0») pero hay obras, se enseñan TODAS: que no parezca que ha desaparecido
+  const fCitaEf = fCita !== "todas" && repartosTipo.length > 0 && !repartosTipo.some((p) => estCita(p) === fCita) ? "todas" : fCita;
+  const repartos = repartosTipo.filter((p) => fCitaEf === "todas" || estCita(p) === fCitaEf)
     .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
   // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
   const fijarFechaObra = (p, fecha, hora, confirmar, extraCita = {}) => {
@@ -25515,7 +25517,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           ); })()}
           <div className="flex items-center gap-2 text-sm">
             {[["todas", "Todas", repartosTipo.length, "slate"], ["llamar", "📞 Carga terminada: llamar", nCita("llamar"), "rose"], ["sinfecha", "Sin fecha", nCita("sinfecha"), "rose"], ["aprox", "Fecha aproximada", nCita("aprox"), "amber"], ["ok", "✓ Confirmadas", nCita("ok"), "emerald"]].map(([k, l, n, c]) => (
-              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCita === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
+              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCitaEf === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
