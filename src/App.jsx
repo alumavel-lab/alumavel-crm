@@ -14725,6 +14725,8 @@ const DESTINO_RECEPCION = { stock: "Stock", cristal: "Fábrica → Cristales", p
 const tipoLineaRecepcion = (l, pedido) => {
   const s = l.seccionListado || "";
   const txt = `${l.referencia || ""} ${l.codigoListado || ""}`.toLowerCase();
+  // PANEL SÁNDWICH: no es un cristal (no viene en el albarán del vidrio ni va a un caballete): va a «Paneles pendientes de cortar»
+  if (/panel|s[aá]ndwich/i.test(`${txt} ${l.descripcion || ""}`)) return "otro";
   const medidas = parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0;
   if (s === "cristal" || (medidas && (pedido.tipoUxcar === "Cristales" || /cristal|vidrio|c[aá]mara|laminar|templad|\d+\s*\/\s*\d+\s*\/\s*\d+/.test(txt)))) return "cristal";
   if (s === "persianas" || (medidas && (pedido.tipoUxcar === "Persianas" || /persian|caj[oó]n|compacto|lama|monoblo/.test(txt)))) return "persiana";
@@ -23339,6 +23341,93 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
+// OBLIGATORIO: pedido al que ya le ha llegado todo menos el PANEL SÁNDWICH (el panel no viene en el albarán del vidrio: va a
+// «Paneles pendientes de cortar»). Salta una ventana para darlo por recibido; «Todavía no» solo la aplaza 15 minutos.
+const lineaPendienteRec = (l) => !l.confirmadoFabrica && l.estado !== "Recibido" && (parseFloat(l.recibidoBien) || 0) < (parseFloat(l.cantidad) || 0);
+const esPanelLineaRec = (l, nombre) => /panel|s[aá]ndwich/i.test(`${nombre || ""} ${l.referencia || ""} ${l.descripcion || ""}`);
+function AvisoSoloFaltaPanel({ pedidos, proveedorNombre, nombreLinea, onDarPorRecibido }) {
+  const [aplazados, setAplazados] = useState({}); const [, setTic] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTic((x) => x + 1), 60000); return () => clearInterval(t); }, []);
+  const lista = toArray(pedidos).filter((p) => p && !["Recibido", "Cancelado"].includes(p.estado) && !p.fabricaDaPorLlegado && !p.uxcarPedidoId).map((p) => {
+    const ls = toArray(p.lineas).filter(Boolean); const pend = ls.filter(lineaPendienteRec);
+    const panelesP = pend.filter((l) => esPanelLineaRec(l, nombreLinea(l)));
+    const otras = ls.filter((l) => !esPanelLineaRec(l, nombreLinea(l)));
+    const ok = panelesP.length > 0 && panelesP.length === pend.length && otras.length > 0 && (toArray(p.recepciones).length > 0 || otras.some((l) => l.confirmadoFabrica));
+    return ok ? { p, panelesP } : null;
+  }).filter(Boolean).filter((x) => !(aplazados[x.p.id] && Date.now() < aplazados[x.p.id]));
+  if (!lista.length) return null;
+  const { p, panelesP } = lista[0];
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-lg border-4 border-amber-500 p-5">
+        <h3 className="font-bold text-amber-800 text-lg">⚠ Pedido #{p.numero} · {p.proveedorExterno || proveedorNombre(p.proveedorId)}: solo falta el panel</h3>
+        <p className="text-sm text-slate-700 mt-2">Ha llegado todo lo demás. Lo que queda es panel sándwich, que no viene en el albarán del vidrio y va a <b>«Paneles pendientes de cortar»</b>:</p>
+        <ul className="mt-2 ml-4 list-disc text-sm text-slate-800">{panelesP.map((l, i) => <li key={i}>{nombreLinea(l)}{l.ancho && l.alto ? ` (${l.ancho} × ${l.alto})` : ""} — {parseFloat(l.cantidad) || 0} ud.</li>)}</ul>
+        <p className="text-sm font-semibold text-slate-800 mt-3">Hay que dar el pedido por recibido para que salga de Materiales pendientes.</p>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button type="button" onClick={() => onDarPorRecibido(p.id)} className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm">✓ Dar el pedido por recibido</button>
+          <button type="button" onClick={() => setAplazados({ ...aplazados, [p.id]: Date.now() + 15 * 60000 })} className="px-4 py-2 rounded-md border border-slate-300 text-slate-600 text-sm">Todavía no (avisar en 15 min)</button>
+        </div>
+        {lista.length > 1 && <p className="text-xs text-slate-500 mt-2">Hay {lista.length - 1} pedido{lista.length === 2 ? "" : "s"} más igual.</p>}
+      </div>
+    </div>
+  );
+}
+// Fábrica → Materiales pendientes: «📥 Llegado hoy» (o el día que se elija). Al darse por llegado el pedido desaparece de la lista de
+// pendientes; aquí se sigue viendo lo que entró ese día (albarán leído, «Dar de baja», confirmado línea a línea o dado por recibido en oficina)
+function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
+  const hoyLD = new Date().toLocaleDateString("sv-SE");
+  const [dia, setDia] = useState(hoyLD); const [abierto, setAbierto] = useState(true); const [abiertoId, setAbiertoId] = useState(null);
+  const d10 = (x) => String(x || "").slice(0, 10);
+  const lista = toArray(pedidos).filter((p) => p && p.estado !== "Cancelado" && (
+    d10(p.fechaRecibido) === dia || d10(p.fechaRecepcion) === dia || d10(p.fabricaDaPorLlegado) === dia
+    || toArray(p.recepciones).some((r) => r && d10(r.fecha) === dia)
+    || toArray(p.lineas).some((l) => l && d10(l.fechaConfirmadoFabrica) === dia)))
+    .map((p) => {
+      const recs = toArray(p.recepciones).filter((r) => r && d10(r.fecha) === dia);
+      const prov = p.proveedorExterno || proveedorNombre(p.proveedorId);
+      let ob = {}; try { ob = datosObraPedido(p, p.proyectoId ? toArray(proyectos).find((x) => x.id === p.proyectoId) : null, uxExpedientes) || {}; } catch (e) { ob = {}; }
+      const completo = p.estado === "Recibido" || !!p.fabricaDaPorLlegado || recs.some((r) => r.completo) || (toArray(p.lineas).length > 0 && toArray(p.lineas).every((l) => l.confirmadoFabrica || l.estado === "Recibido"));
+      return { p, recs, prov: prov || "—", ob, completo };
+    }).sort((a, b) => a.prov.localeCompare(b.prov) || String(a.p.numero).localeCompare(String(b.p.numero)));
+  const porProv = {}; lista.forEach((x) => { (porProv[x.prov] = porProv[x.prov] || []).push(x); });
+  return (
+    <div className="mb-3 rounded-lg border-2 border-emerald-300 bg-emerald-50 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-emerald-900 text-left">{abierto ? "▼" : "▶"} 📥 Llegado {dia === hoyLD ? "hoy" : `el ${fmtDate(dia)}`} <span className="font-normal text-sm">({lista.length} pedido{lista.length === 1 ? "" : "s"})</span></button>
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoyLD)} className="ml-auto border rounded px-2 py-1 text-sm" />
+        {dia !== hoyLD && <button type="button" onClick={() => setDia(hoyLD)} className="text-xs px-2 py-1 rounded bg-emerald-600 text-white">Hoy</button>}
+      </div>
+      {abierto && (lista.length === 0 ? <p className="text-sm text-slate-500 mt-2">No se ha dado por llegado ningún pedido este día.</p> : (
+        <div className="mt-2 space-y-2">
+          {Object.entries(porProv).map(([prov, xs]) => (
+            <div key={prov} className="rounded border border-emerald-200 bg-white">
+              <div className="px-2 py-1 font-semibold text-sm text-slate-800 bg-emerald-100">{prov} <span className="font-normal text-slate-500">· {xs.length}</span></div>
+              {xs.map(({ p, recs, ob, completo }) => (
+                <div key={p.id} className="px-2 py-1 border-t border-slate-100 text-sm">
+                  <button type="button" onClick={() => setAbiertoId(abiertoId === p.id ? null : p.id)} className="w-full text-left flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">#{p.numero}</span>
+                    {(ob.ppto || ob.obra) && <span className="text-slate-600">{ob.ppto ? `Ppto ${ob.ppto}` : ""}{ob.obra ? ` · ${ob.obra}` : ""}</span>}
+                    <span className={`text-xs px-1.5 rounded ${completo ? "bg-emerald-600 text-white" : "bg-amber-300 text-amber-900"}`}>{completo ? "completo" : "parcial"}</span>
+                    {recs.map((r, i) => <span key={i} className="text-xs text-slate-500">{r.numeroAlbaran ? `albarán ${r.numeroAlbaran}` : "albarán"}{r.por ? ` · ${r.por}` : ""}{r.rotos ? ` · ⚠ ${r.rotos} rotos` : ""}</span>)}
+                    {!recs.length && p.recibidoDesdeOficina && <span className="text-xs text-slate-500">dado por recibido en oficina</span>}
+                    <span className="ml-auto text-xs text-slate-400">{abiertoId === p.id ? "▲" : "▼ ver líneas"}</span>
+                  </button>
+                  {abiertoId === p.id && (
+                    <ul className="mt-1 ml-3 text-xs text-slate-700 list-disc">
+                      {toArray(p.lineas).map((l, i) => { const bien = parseFloat(l.recibidoBien) || 0, cant = parseFloat(l.cantidad) || 0; const ok = l.confirmadoFabrica || l.estado === "Recibido" || (cant > 0 && bien >= cant);
+                        return <li key={i} className={ok ? "" : "text-amber-700 font-semibold"}>{nombreLinea(l)} — {bien || (ok ? cant : 0)} de {cant}{ok ? " ✓" : " · falta"}</li>; })}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
@@ -23402,11 +23491,15 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
   const [abiertoEcoId, setAbiertoEcoId] = useState(null);
   const ecoAbierto = abiertoEcoId && filtered.some((p) => p.id === abiertoEcoId) ? abiertoEcoId : null; // si el pedido ya no está pendiente (se dio por llegado), vuelve a la lista
   const nEntUx = toArray(uxPedidos).filter((p) => !p.recibido && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual)).length;
-  const bloqueAlbaran = onRecibirConAlbaran && (
+  const bloqueAlbaran = onRecibirConAlbaran && (<>
             <AlbaranFabrica pedidos={pedidos.filter((p) => !p.uxcarPedidoId)} materiales={materiales} proveedores={proveedores}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
-          );
+            <AvisoSoloFaltaPanel pedidos={pedidos} proveedorNombre={proveedorNombre} onDarPorRecibido={onConfirmarPedidoEntero}
+              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
+            <LlegadosDelDia pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
+          </>);
   const subTabsMateriales = (
     <div className="flex flex-wrap gap-2 mb-5">
       <button onClick={() => setTab("materiales")} className={`px-4 py-2 rounded-lg text-sm font-bold border-2 transition ${tab === "materiales" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"}`}>
