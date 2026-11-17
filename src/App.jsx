@@ -49295,7 +49295,11 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       <div className="fixed inset-0 z-[95] bg-slate-950 text-white overflow-y-auto p-3" onClick={() => onFoco && onFoco()}>
         <div className="flex flex-wrap items-center gap-3 mb-2">
           <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
-          <span className="text-sm text-slate-400">Lee con la pistola: se sigue registrando aunque estés en esta pantalla.</span>
+          <span className="text-sm text-slate-400">Toca una ventana para ticarla.</span>
+          <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
+            {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="px-3 py-2 rounded-lg bg-slate-700 text-white font-bold">✕</button>}
+          </span>
           <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
         </div>
         {ultimo && (
@@ -50848,6 +50852,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
     const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
     // CONTROL DE LÍNEA: obra COMPLETA (todas sus ventanas al final de la línea) → avisar a CRISTALES (las ventanas se quedan aquí hasta que Cristales las tique)
+    // CONTROL DE LÍNEA desde el hueco: si la ventana aún no está en la Línea (está en Persiana salida, Puertas terminadas, Marcos…) → ticarla = verde en Control del día y a la Línea
+    if (puestoId === "lineaPers" && !/~H/.test(String(cod)) && !["sinPersiana", "solape", "espera"].includes(zId)) return { t: "✓ Control de línea: verde y a la LÍNEA", fn: () => marcarHechaPuesto(req) };
     if (puestoId === "lineaPers" && !/~H/.test(String(cod))) { const mk = /^cd_(.+)__(.+?)$/.exec(String(cod)); const kO = mk && mk[1]; const snO = kO && snapCDLin && snapCDLin[kO];
       const FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"]; const vsO = toArray(snO && snO.ventanas);
       const completa = vsO.length > 0 && vsO.every((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; return u && FIN.includes(u.zonaId); });
