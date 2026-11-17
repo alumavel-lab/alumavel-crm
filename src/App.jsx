@@ -8791,6 +8791,10 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   const claveDup = (p) => claveDupNombreObra(p);
   const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
   // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
+  // COBROS por obra: lo apuntado con «Meter dinero» (entradas de dinero del proyecto) y lo que queda por cobrar
+  const cobradoPorProy = useMemo(() => { const m = new Map(); toArray(ingresos).forEach((i) => { if (i && i.proyectoId) m.set(i.proyectoId, (m.get(i.proyectoId) || 0) + (parseFloat(i.importe) || 0)); }); return m; }, [ingresos]);
+  const cobroDe = (p) => { const imp = parseFloat(p.importePresupuesto) || 0; const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
+  const sumaCobros = (lista) => lista.reduce((a, p) => { const c = cobroDe(p); return { imp: a.imp + c.imp, cob: a.cob + c.cob, debe: a.debe + Math.max(0, c.debe), n: a.n + 1 }; }, { imp: 0, cob: 0, debe: 0, n: 0 });
   const filasLista = useMemo(() => {
     const base = soloDup ? filtered.filter(esDup) : filtered;
     const out = [], hechos = new Set();
@@ -9143,7 +9147,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     })()}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : p.estadoLogistica ? p.estadoLogistica : <span className="text-[11px] font-semibold text-rose-600" title="Falta elegir la salida (reparto, recogida o instalación): ábrelo y elige">⚠ Sin salida</span>)}</td>
-                  <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
+                  <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
                   <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : (["Entregado", "Cancelado"].includes(p.estadoTrabajo) ? "—" : <span className="text-[11px] font-semibold text-rose-600" title="Pon una fecha prevista (luego se puede cambiar)">⚠ Sin fecha</span>)}</td>
                   <td className="px-4 py-3">
                     {diff === null ? <span className="text-slate-300">—</span> : diff === 0 ? (
@@ -9168,6 +9172,21 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               );
             })}
           </tbody>
+          {(() => { const enLista = filasLista.filter((p) => p && p.estadoTrabajo !== "Cancelado"); const t = sumaCobros(enLista);
+            const todos = toArray(proyectos).filter((p) => p && p.estadoPresupuesto === "Presupuesto aceptado" && p.estadoTrabajo !== "Cancelado");
+            const enMarcha = sumaCobros(todos.filter((p) => p.estadoTrabajo !== "Entregado")); const entregadosDeben = sumaCobros(todos.filter((p) => p.estadoTrabajo === "Entregado" && cobroDe(p).debe > 0.009));
+            const fila = (titulo, x, cls) => (
+              <tr className={cls}>
+                <td colSpan={9} className="px-4 py-2 text-right font-semibold">{titulo} <span className="font-normal text-slate-500">({x.n} obra{x.n === 1 ? "" : "s"})</span></td>
+                <td className="px-4 py-2 text-right font-mono-num whitespace-nowrap"><div className="font-bold">{money(x.imp)}</div><div className="text-[11px] text-slate-600">cobrado {money(x.cob)}</div><div className={`text-[11px] font-bold ${x.debe > 0.009 ? "text-rose-600" : "text-emerald-700"}`}>debe {money(x.debe)}</div></td>
+                <td colSpan={3} />
+              </tr>);
+            return (
+              <tfoot className="border-t-2 border-slate-300 text-sm">
+                {fila(clienteFiltro ? `Total de ${clienteNombre(clienteFiltro) || "este cliente"}` : "Total de lo que se ve en la lista", t, "bg-slate-50")}
+                {fila("Todas las obras EN MARCHA (aceptadas, sin entregar)", enMarcha, "bg-amber-50")}
+                {fila("Entregadas que aún deben dinero", entregadosDeben, "bg-rose-50")}
+              </tfoot>); })()}
         </table>
       </div>
     </div>
@@ -25171,7 +25190,9 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
   const repartosTipo = repartosBase.filter((p) => (fTipo === "todos" || tipoSalida(p) === fTipo) && (fOrigen === "todos" || (fOrigen === "uxcar") === esDeUxcar(p)));
   const nCita = (k) => repartosTipo.filter((p) => estCita(p) === k).length;
   const ordenCita = { llamar: 0, sinfecha: 1, aprox: 2, ok: 3 };
-  const repartos = repartosTipo.filter((p) => fCita === "todas" || estCita(p) === fCita)
+  // si el filtro de cita elegido no tiene ninguna (p. ej. «Sin fecha 0») pero hay obras, se enseñan TODAS: que no parezca que ha desaparecido
+  const fCitaEf = fCita !== "todas" && repartosTipo.length > 0 && !repartosTipo.some((p) => estCita(p) === fCita) ? "todas" : fCita;
+  const repartos = repartosTipo.filter((p) => fCitaEf === "todas" || estCita(p) === fCitaEf)
     .sort((a, b) => ordenCita[estCita(a)] - ordenCita[estCita(b)] || (fechaCitaDe(a) || "9999").localeCompare(fechaCitaDe(b) || "9999"));
   // Poner / cambiar la fecha DESDE LA LISTA (sin entrar). Cambiar la fecha quita la confirmación: hay que volver a llamar
   const fijarFechaObra = (p, fecha, hora, confirmar, extraCita = {}) => {
@@ -25401,6 +25422,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button onClick={() => { if (!a.firmaCarga) { alert(esRecogidaFabrica(abierto) ? "Primero: foto de la carga y firma de quien entrega (paso 1)." : "Primero el chófer: foto de la carga y su firma al cargar (paso 1)."); return; } setFirmando("cliente"); }} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
           </div>
         </div>
+        {a.firmaCliente && a.firmaCliente.enPapel && <div className="rounded-lg border-2 border-indigo-400 bg-indigo-50 px-4 py-2 text-sm text-indigo-900"><b>📄 Albarán firmado EN PAPEL</b>{a.enPapel ? ` · marcado por ${a.enPapel.por || "—"} el ${new Date(a.enPapel.fecha).toLocaleString("es-ES")}` : ""}
+          {toArray(a.fotosPapel).length ? <div className="flex flex-wrap gap-2 mt-1">{toArray(a.fotosPapel).map((f, i) => <a key={i} href={f.url} target="_blank" rel="noreferrer" className="underline font-semibold">📷 Ver foto del papel{toArray(a.fotosPapel).length > 1 ? ` ${i + 1}` : ""}</a>)}</div> : <div className="text-xs text-amber-800 font-semibold mt-1">Sin foto del papel en el CRM.</div>}</div>}
         {a.firmaCliente && a.requiereRevision && (
           a.revisado
             ? <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">✓ Dada por buena por {a.revisado.por || "—"} el {new Date(a.revisado.fecha).toLocaleString("es-ES")} · pasa a facturar</div>
@@ -25496,7 +25519,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
           ); })()}
           <div className="flex items-center gap-2 text-sm">
             {[["todas", "Todas", repartosTipo.length, "slate"], ["llamar", "📞 Carga terminada: llamar", nCita("llamar"), "rose"], ["sinfecha", "Sin fecha", nCita("sinfecha"), "rose"], ["aprox", "Fecha aproximada", nCita("aprox"), "amber"], ["ok", "✓ Confirmadas", nCita("ok"), "emerald"]].map(([k, l, n, c]) => (
-              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCita === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
+              <button key={k} type="button" onClick={() => setFCita(k)} className={`px-3 py-1.5 rounded-lg border font-semibold ${fCitaEf === k ? "bg-slate-800 text-white border-slate-800" : n && c !== "slate" ? { rose: "bg-rose-50 text-rose-700 border-rose-300", amber: "bg-amber-50 text-amber-700 border-amber-300", emerald: "bg-emerald-50 text-emerald-700 border-emerald-300" }[c] : "bg-white text-slate-600 border-slate-200"}`}>{l} {n}</button>
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -25533,6 +25556,22 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                   {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
                 </div>
               </button>
+              {/* ALBARÁN FIRMADO EN PAPEL: el cliente lo firmó a mano → foto del papel (o sin foto) y se da por entregada y pasa a facturar */}
+              {!a.firmaCliente && onGuardarAlbaranEntrega && (() => {
+                const marcarPapel = async (file) => {
+                  if (!window.confirm(`¿El cliente ha firmado el albarán EN PAPEL?\n\n#${p.numero} — ${p.nombre}\n\nSe da por ENTREGADA y pasa a FACTURAR.${file ? "" : "\n\nOJO: sin foto del papel. Guarda el papel firmado."}`)) return;
+                  const yo = nombreYo || (currentUser && currentUser.email) || "—"; const ahora = new Date().toISOString();
+                  let foto = null; if (file) { try { foto = { url: await subirArchivoAStorage(file, `albaranes-papel/${p.id}`), nombre: file.name, fecha: ahora }; } catch (e) { if (!window.confirm("No se pudo subir la foto: " + e.message + "\n\n¿Darla por entregada igualmente, sin foto?")) return; } }
+                  onGuardarAlbaranEntrega(p.id, { ...(p.albaranEntrega || {}), firmaCliente: { nombre: "Firmado en papel", fecha: ahora, enPapel: true }, enPapel: { por: yo, fecha: ahora, ...(foto ? { foto } : {}) }, ...(foto ? { fotosPapel: [...toArray((p.albaranEntrega || {}).fotosPapel), foto] } : {}), requiereRevision: true, revisado: { por: yo, fecha: ahora, enPapel: true } }, !p.llevaInstalacion);
+                };
+                return (
+                <div className="px-4 pb-2 flex flex-wrap items-center gap-2">
+                  <label className="cursor-pointer px-4 py-2 rounded-lg border-2 border-indigo-500 bg-indigo-50 text-indigo-900 text-sm font-extrabold hover:bg-indigo-100">
+                    📷 Albarán firmado en PAPEL: hacer foto → entregada y a facturar
+                    <input type="file" accept="image/*,application/pdf" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) marcarPapel(f); }} />
+                  </label>
+                  <button type="button" onClick={() => marcarPapel(null)} className="text-xs font-semibold text-indigo-800 underline">sin foto</button>
+                </div>); })()}
               {/* FECHA DESDE LA LISTA: se pone o se cambia sin entrar; al cambiarla hay que volver a llamar */}
               <div className="flex flex-wrap items-center gap-2 px-4 pb-3 text-xs">
                 <input type="checkbox" checked={!!selCita[p.id]} onChange={(e) => setSelCita({ ...selCita, [p.id]: e.target.checked })} title="Marcar para poner fecha de golpe" />
@@ -49297,9 +49336,10 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
           <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
           <span className="text-sm text-slate-400">Toca una ventana para ticarla.</span>
           <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-            <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
+            <input value={qPresDia} onChange={(e) => { setQPresDia(e.target.value); setGrande(null); }} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
             {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="px-3 py-2 rounded-lg bg-slate-700 text-white font-bold">✕</button>}
           </span>
+          {(grande || qPresDia) && <button type="button" onClick={(e) => { e.stopPropagation(); setGrande(null); setQPresDia(""); }} className="px-4 py-2 rounded-lg bg-amber-400 text-slate-900 font-extrabold text-lg">← Ver todas las obras</button>}
           <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
         </div>
         {ultimo && (
