@@ -32751,21 +32751,26 @@ function JuntarProformas({ facturas, clientes, onJuntar }) {
   const vivas = facturas.filter((f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada);
   const [sel, setSel] = useState({});
   const [fechaFac, setFechaFac] = useState(() => new Date().toISOString().slice(0, 10));
+  const [qPf, setQPf] = useState(""); const [abiertoPf, setAbiertoPf] = useEstadoLocal("crm_fac_pf_abierto", true); const [cliAb, setCliAb] = useState({});
   if (!vivas.length) return null;
+  const normFq = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/(\d)\.(?=\d)/g, "$1");
+  const nqPf = normFq(qPf.trim());
   const porCliente = {};
-  vivas.forEach((f) => { (porCliente[f.clienteId || ""] = porCliente[f.clienteId || ""] || []).push(f); });
+  vivas.filter((f) => { if (!nqPf) return true; const cl = clientes.find((c) => c.id === f.clienteId); return normFq(`${f.numero} ${f.observaciones || ""} ${cl ? cl.nombre : ""} ${f.total}`).includes(nqPf); }).forEach((f) => { (porCliente[f.clienteId || ""] = porCliente[f.clienteId || ""] || []).push(f); });
   const mesDe = (f) => String(f.fecha || "").slice(0, 7);
   const nombreMes = (m) => (m ? new Date(m + "-15T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" }) : "sin fecha");
   return (
     <div className="mb-6 border-2 border-sky-300 bg-sky-50 rounded-lg p-4 space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="mr-auto">
-          <div className="font-bold text-sky-900">Proformas pendientes de juntar ({vivas.length})</div>
+        <button type="button" onClick={() => setAbiertoPf(!abiertoPf)} className="mr-auto text-left">
+          <div className="font-bold text-sky-900">{abiertoPf ? "▼" : "▶"} Proformas pendientes de juntar ({vivas.length})</div>
           <p className="text-xs text-sky-800">Se crean solas al entregar cada obra. A final de mes marca las de cada cliente y crea una sola factura con todas.</p>
-        </div>
+        </button>
         <Field label="Fecha de la factura"><TextInput type="date" value={fechaFac} onChange={(e) => setFechaFac(e.target.value)} className="!w-40" /></Field>
       </div>
-      {Object.entries(porCliente).map(([cid, lista]) => {
+      {abiertoPf && <input value={qPf} onChange={(e) => setQPf(e.target.value)} placeholder="🔍 Buscar cliente, nº de proforma, obra o presupuesto…" className="w-full border border-sky-300 rounded-md px-3 py-2 text-sm bg-white" />}
+      {abiertoPf && nqPf && !Object.keys(porCliente).length && <p className="text-sm text-slate-500">Ninguna proforma con esa búsqueda.</p>}
+      {abiertoPf && Object.entries(porCliente).map(([cid, lista]) => {
         const cl = clientes.find((c) => c.id === cid);
         const meses = [...new Set(lista.map(mesDe))].sort();
         const marcadas = lista.filter((f) => sel[f.id]);
@@ -32773,10 +32778,11 @@ function JuntarProformas({ facturas, clientes, onJuntar }) {
         return (
           <div key={cid} className="bg-white border border-sky-200 rounded-md p-3">
             <div className="flex flex-wrap items-center gap-2 mb-2">
-              <span className="font-semibold text-slate-800 mr-auto">{cl ? cl.nombre : "Sin cliente"} <span className="text-xs font-normal text-slate-500">· {lista.length} proforma{lista.length === 1 ? "" : "s"} · {money(lista.reduce((a, f) => a + (parseFloat(f.total) || 0), 0))}</span></span>
+              <button type="button" onClick={() => setCliAb({ ...cliAb, [cid]: !(cliAb[cid] ?? (!!nqPf || Object.keys(porCliente).length <= 2)) })} className="text-slate-500 w-4">{(cliAb[cid] ?? (!!nqPf || Object.keys(porCliente).length <= 2)) ? "▼" : "▶"}</button>
+              <span className="font-semibold text-slate-800 mr-auto cursor-pointer" onClick={() => setCliAb({ ...cliAb, [cid]: !(cliAb[cid] ?? (!!nqPf || Object.keys(porCliente).length <= 2)) })}>{cl ? cl.nombre : "Sin cliente"} <span className="text-xs font-normal text-slate-500">· {lista.length} proforma{lista.length === 1 ? "" : "s"} · {money(lista.reduce((a, f) => a + (parseFloat(f.total) || 0), 0))}</span></span>
               {meses.map((m) => <button key={m} type="button" onClick={() => setSel((x) => { const n = { ...x }; lista.forEach((f) => { n[f.id] = mesDe(f) === m; }); return n; })} className="text-xs font-semibold px-2 py-1 rounded border border-sky-300 text-sky-800 hover:bg-sky-100 capitalize">Marcar {nombreMes(m)}</button>)}
             </div>
-            <div className="divide-y divide-slate-100">
+            {(cliAb[cid] ?? (!!nqPf || Object.keys(porCliente).length <= 2)) && <div className="divide-y divide-slate-100">
               {lista.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))).map((f) => (
                 <label key={f.id} className="flex items-center gap-2 py-1.5 text-sm cursor-pointer">
                   <input type="checkbox" checked={!!sel[f.id]} onChange={(e) => setSel((x) => ({ ...x, [f.id]: e.target.checked }))} />
@@ -32786,7 +32792,7 @@ function JuntarProformas({ facturas, clientes, onJuntar }) {
                   <span className="font-semibold">{money(f.total)}</span>
                 </label>
               ))}
-            </div>
+            </div>}
             {marcadas.length > 0 && (
               <button type="button" onClick={() => { if (confirm(`¿Crear una factura a ${cl ? cl.nombre : "este cliente"} con ${marcadas.length} proforma(s) por ${money(total)} (sin IVA)?`)) { onJuntar(marcadas.map((f) => f.id), fechaFac); setSel({}); } }}
                 style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-2 text-sm font-semibold px-4 py-2 rounded-md">Crear factura con {marcadas.length} proforma{marcadas.length === 1 ? "" : "s"} · {money(total)}</button>
@@ -32799,16 +32805,32 @@ function JuntarProformas({ facturas, clientes, onJuntar }) {
 }
 
 function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescartar }) {
-  const lista = pendientesDeFacturar(proyectos, facturas);
+  const lista0 = pendientesDeFacturar(proyectos, facturas);
   const [importes, setImportes] = useState({});
-  if (lista.length === 0) return null;
+  const [qPe, setQPe] = useState(""); const [abiertoPe, setAbiertoPe] = useEstadoLocal("crm_fac_pe_abierto", true); const [cliAbPe, setCliAbPe] = useState({});
+  if (lista0.length === 0) return null;
   const clienteDe = (p) => clientes.find((c) => c.id === p.clienteId);
+  const normFq = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/(\d)\.(?=\d)/g, "$1");
+  const nqPe = normFq(qPe.trim());
+  const lista = nqPe ? lista0.filter((p) => normFq(`${p.numero} ${p.nombre} ${(clienteDe(p) || {}).nombre || ""} ${presupuestoDeObra(p)} ${p.presupuestoNumero || ""}`).includes(nqPe)) : lista0;
+  const gruposPe = []; lista.forEach((p) => { const k = p.clienteId || ""; let g = gruposPe.find((x) => x.k === k); if (!g) { g = { k, nombre: (clienteDe(p) || {}).nombre || "Sin cliente", ps: [] }; gruposPe.push(g); } g.ps.push(p); });
+  const abG = (k) => cliAbPe[k] ?? (!!nqPe || gruposPe.length <= 2);
   return (
     <div className="mb-6 border-2 border-amber-300 bg-amber-50 rounded-lg p-4">
-      <div className="font-bold text-amber-900 mb-1">Pendiente de facturar ({lista.length})</div>
-      <p className="text-xs text-amber-800 mb-3">Obras ya entregadas (el cliente ha firmado el albarán) con importe sin facturar. Revisa el importe y pulsa "Emitir factura".</p>
-      <div className="space-y-2">
-        {lista.map((p) => {
+      <button type="button" onClick={() => setAbiertoPe(!abiertoPe)} className="w-full text-left">
+        <div className="font-bold text-amber-900 mb-1">{abiertoPe ? "▼" : "▶"} Pendiente de facturar ({lista0.length})</div>
+        <p className="text-xs text-amber-800 mb-3">Obras ya entregadas (el cliente ha firmado el albarán) con importe sin facturar. Revisa el importe y pulsa "Emitir factura".</p>
+      </button>
+      {abiertoPe && <input value={qPe} onChange={(e) => setQPe(e.target.value)} placeholder="🔍 Buscar cliente, obra o presupuesto…" className="w-full border border-amber-300 rounded-md px-3 py-2 text-sm bg-white mb-2" />}
+      {abiertoPe && nqPe && !lista.length && <p className="text-sm text-slate-500">Ninguna obra con esa búsqueda.</p>}
+      {abiertoPe && <div className="space-y-2">
+        {gruposPe.map((g) => (<div key={g.k} className="rounded-md border border-amber-200 bg-amber-50/50">
+          <button type="button" onClick={() => setCliAbPe({ ...cliAbPe, [g.k]: !abG(g.k) })} className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left">
+            <span className="text-slate-500 w-4">{abG(g.k) ? "▼" : "▶"}</span><b className="text-slate-800">{g.nombre}</b>
+            <span className="text-xs text-slate-500">· {g.ps.length} obra{g.ps.length === 1 ? "" : "s"} · falta {money(g.ps.reduce((t, p) => t + Math.max(0, (parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas)), 0))}</span>
+          </button>
+          {abG(g.k) && <div className="space-y-2 px-2 pb-2">
+        {g.ps.map((p) => {
           const presu = parseFloat(p.importePresupuesto) || 0;
           const ya = facturadoProyecto(p, facturas);
           const pend = Math.round((presu - ya) * 100) / 100;
@@ -32831,7 +32853,9 @@ function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescart
             </div>
           );
         })}
-      </div>
+          </div>}
+        </div>))}
+      </div>}
     </div>
   );
 }
