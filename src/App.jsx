@@ -49215,7 +49215,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
                 ); })()}
               <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
                 {c.vs.map((v) => { const ok = esLeida(c, v); const fsT = faltanSold(v); const parcial = !!fsT && fsT.length > 0 && leidas.piezasS.has(`${v.sk}__${v.id}`.replace(/[.#$\[\]\/|\s]/g, "_")); const alm = enAlmacen.ids.get(String(v.id)) || [...c.bases].map((b) => enAlmacen.pp.get(`${b}|${normP(v.pos)}`)).find(Boolean) || ""; const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
-                  <div key={v.id} onClick={(e) => { if (!enTv && onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${!enTv && onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : parcial ? "bg-amber-300 border-amber-600 text-slate-900" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                  <div key={v.id} onClick={(e) => { if (onAbrir) { e.stopPropagation(); onAbrir({ q: basePresuDia(c.num) || [...c.bases][0] || "", id: v.id, t: Date.now() }); } }} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${onAbrir ? "cursor-pointer hover:brightness-95" : ""} ${esUlt ? "ring-4 ring-amber-400" : ""} ${conIncP(c, v) ? "bg-orange-500 border-orange-700 text-white" : alm ? "bg-sky-600 border-sky-800 text-white" : ok ? "bg-emerald-600 border-emerald-700 text-white" : parcial ? "bg-amber-300 border-amber-600 text-slate-900" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
                     {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
                     <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}{conIncP(c, v) ? " ⚠" : ""}</div>
                     {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
@@ -49295,7 +49295,11 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco, onAbrir = 
       <div className="fixed inset-0 z-[95] bg-slate-950 text-white overflow-y-auto p-3" onClick={() => onFoco && onFoco()}>
         <div className="flex flex-wrap items-center gap-3 mb-2">
           <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
-          <span className="text-sm text-slate-400">Lee con la pistola: se sigue registrando aunque estés en esta pantalla.</span>
+          <span className="text-sm text-slate-400">Toca una ventana para ticarla.</span>
+          <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <input value={qPresDia} onChange={(e) => setQPresDia(e.target.value)} inputMode="numeric" placeholder="🔍 Presupuesto…" className="rounded-lg px-3 py-2 text-lg font-bold text-slate-900 w-48" />
+            {qPresDia && <button type="button" onClick={() => setQPresDia("")} className="px-3 py-2 rounded-lg bg-slate-700 text-white font-bold">✕</button>}
+          </span>
           <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
         </div>
         {ultimo && (
@@ -50710,6 +50714,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
+        if (pE === "lineaPers") { fbUpdate(ref(fbDb, `controlDia/${hoyISO()}/${hit.k}`), { [String(hit.w.id)]: 0 }).catch(() => {}); await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), "porLinea"); }
         if (pE === "herraje") { if (hojaT) await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH, "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
         if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
@@ -50720,6 +50725,16 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       // PILASTRA (sin pistola, de momento): se mira si el marco está en el almacén de MARCOS SOLDADOS. Si está, se marca ahí «herraje puesto»
       // (y «pilastra puesta» si la lleva). Si no está, se mete en el almacén de marcos (las puertas, en su almacén de puertas, huecos 1-6) ya marcado.
       let txtAlm = "";
+      // CONTROL DE LÍNEA: ticar aquí = la ventana en VERDE en Control del día (hoy) y a la LÍNEA (si no está ya en Línea, Solape o Ventanas terminadas)
+      if (pE === "lineaPers") {
+        fbUpdate(ref(fbDb, `controlDia/${hoyISO()}/${hit.k}`), { [String(hit.w.id)]: 1 }).catch(() => {});
+        const codL = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); let uF = ubic || {}; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val(); if (fr) uF = fr; } catch (e) { /* con la que haya */ }
+        const uL = uF[codL];
+        if (uL && ["sinPersiana", "solape", "espera"].includes(uL.zonaId)) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uL.zonaId) || {}).nombre || uL.zonaId} · ${uL.hueco}.`;
+        else { const zL = zonas.find((q) => q.id === "sinPersiana"); const prev = uL && uL.zonaId ? JSON.parse(JSON.stringify(uL)) : null; const r = zL ? await colocarAgrupado(zL, codL, base, null) : null;
+          if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codL}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porLinea: true, ...(prev ? { antes: prev } : {}) }).catch(() => {}); txtAlm = `${prev ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prev.zonaId) || {}).nombre || prev.zonaId} · ${prev.hueco}` : ""}\n➡ A la LÍNEA · ESTANTERÍA ${r.hueco}.`; }
+          else txtAlm = "\n⚠ La Línea está LLENA."; }
+      }
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
       if (pE === "soldadora") {
         const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS];
@@ -50837,6 +50852,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
   const accionPiezaPuesto = ({ cod, w, sn, zonaId: zId }) => {
     const base = toArray(sn && sn.codigos).map((c) => basePresuDia(c)).find((b) => b.length >= 3) || "";
     // CONTROL DE LÍNEA: obra COMPLETA (todas sus ventanas al final de la línea) → avisar a CRISTALES (las ventanas se quedan aquí hasta que Cristales las tique)
+    // CONTROL DE LÍNEA desde el hueco: si la ventana aún no está en la Línea (está en Persiana salida, Puertas terminadas, Marcos…) → ticarla = verde en Control del día y a la Línea
+    if (puestoId === "lineaPers" && !/~H/.test(String(cod)) && !["sinPersiana", "solape", "espera"].includes(zId)) return { t: "✓ Control de línea: verde y a la LÍNEA", fn: () => marcarHechaPuesto(req) };
     if (puestoId === "lineaPers" && !/~H/.test(String(cod))) { const mk = /^cd_(.+)__(.+?)$/.exec(String(cod)); const kO = mk && mk[1]; const snO = kO && snapCDLin && snapCDLin[kO];
       const FIN = ["persianaA", "persianaB", "puertasTerminadas", "sinPersiana", "solape"]; const vsO = toArray(snO && snO.ventanas);
       const completa = vsO.length > 0 && vsO.every((x) => { const u = ubic && ubic[limpiaCodL(`cd_${kO}__${x.id}`)]; return u && FIN.includes(u.zonaId); });
@@ -50888,6 +50905,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
+      else if (puestoId === "lineaPers") { const mL = /^(.+)__(.+)$/.exec(claveM); if (mL) fbUpdate(ref(fbDb, `controlDia/${(m && m.fecha) || hoyISO()}/${mL[1]}`), { [mL[2]]: 0 }).catch(() => {}); await deshacerMovido(codCD, "porLinea"); }
       else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
       else if (puestoId === "cristales") await devolverALaLinea(codCD, hit);
       else if (esPuestoSimple && u) { if (u.hojasAntes) for (const [ch, x] of Object.entries(u.hojasAntes)) await volverA(ch, x); try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
@@ -61476,7 +61494,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const cod = limpiaId(`cd_${k}__${id}`); if (enLineaHechas.current.has(cod)) return;
       const u = ubicLocal[cod];
       const vieneDeAntes = u && ["persianaA", "persianaB", "puertasTerminadas"].includes(u.zonaId);
-      const nueva = false; // (quitado) una ventana marcada en Control del día que NO está en ningún almacén ya no se mete sola en la Línea: solo pasan las que ya están en Persiana salida o Puertas terminadas
+      // marcada HOY en Control del día y sin estar en ningún almacén (no la ticó ningún puesto): entra en la LÍNEA, donde la coge Cristales
+      const nueva = !u && x.ts && new Date(x.ts).toLocaleDateString("sv-SE") === hoyL && !(marcasCrCD && marcasCrCD[cod.slice(3)]);
       if (!vieneDeAntes && !nueva) return;
       const sn = snapCDL2 && snapCDL2[k]; const w = sn ? toArray(sn.ventanas).find((q) => limpiaId(q.id) === limpiaId(id)) : null; if (!w) return;
       enLineaHechas.current.add(cod);
@@ -63872,6 +63891,66 @@ function MapaMesControlDia() {
     </div>
   );
 }
+// CONTROL DE VENTANAS: todas las ventanas hechas (marcadas en Control del día / Control de línea) por día o por mes, con por dónde ha pasado cada una.
+// Solo el ADMINISTRADOR puede corregir (cambiar el estado, pasarla a otro día o quitarla); los demás solo miran.
+function ControlVentanasHechas({ admin = false }) {
+  const hoyCV = new Date().toISOString().slice(0, 10);
+  const hace30 = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+  const [modo, setModo] = useState("mes"); const [mes, setMes] = useState(hoyCV.slice(0, 7)); const [diaV, setDiaV] = useState(hoyCV); const [q, setQ] = useState("");
+  const marcasCV = useObjetoFb("controlDia"); const horasCV = useObjetoFb("controlDiaHoras"); const snapCV = useObjetoFb("controlDiaVentanasObra"); const pasosCV = useObjetoFb("marcasPuestoLinea");
+  const limpiaV = (t) => String(t || "").replace(/[.#$\[\]\/|\s]/g, "_");
+  const enRango = (f) => (modo === "dia" ? f === diaV : modo === "mes" ? f.slice(0, 7) === mes : f >= hace30 && f <= hoyCV);
+  const filas = useMemo(() => { const out = [];
+    Object.entries(marcasCV || {}).forEach(([f, obras]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f) || !enRango(f)) return; Object.entries(obras || {}).forEach(([ko, ids]) => Object.entries(ids || {}).forEach(([id, v]) => { if (v !== 1 && v !== 2) return;
+      const sn = (snapCV && snapCV[ko]) || {}; const w = toArray(sn.ventanas).find((x) => String(x.id) === String(id) || limpiaV(x.id) === id) || null; const b = toArray(sn.codigos).map((c) => basePresuDia(c)).find((x) => x.length >= 3) || "";
+      const ts = ((horasCV || {})[f] || {})[ko] ? horasCV[f][ko][id] : 0; const kM = limpiaV(`${ko}__${id}`);
+      const pasos = Object.entries(pasosCV || {}).map(([pu, ms]) => { const m = ms && (ms[kM] || ms[`${kM}~H1`]); return m ? { pu, ts: m.ts, por: m.por } : null; }).filter(Boolean).sort((a, b2) => (a.ts || 0) - (b2.ts || 0));
+      out.push({ f, ko, id, v, ts, pos: (w && w.pos) || id, obra: sn.nombre || ko, b, pasos }); })); });
+    return out.sort((a, b) => b.f.localeCompare(a.f) || String(a.b).localeCompare(String(b.b)) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true }));
+  }, [marcasCV, horasCV, snapCV, pasosCV, modo, mes, diaV]);
+  const qn = String(q || "").toLowerCase().replace(/\./g, "").trim();
+  const vis = qn ? filas.filter((r) => `${r.b} ${r.obra} ${r.pos}`.toLowerCase().replace(/\./g, "").includes(qn)) : filas;
+  const porDia = new Map(); vis.forEach((r) => { if (!porDia.has(r.f)) porDia.set(r.f, []); porDia.get(r.f).push(r); });
+  const fmtH = (ts) => (ts ? new Date(Number(ts)).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "");
+  const cambiarEstado = async (r, v) => { if (!admin) return; if (v === 0 && !window.confirm(`¿Quitar ${r.pos} (${r.b ? `Ppto ${pptoBonito(r.b)}` : r.obra}) del día ${fmtDia(r.f)}?`)) return; await fbUpdate(ref(fbDb, `controlDia/${r.f}/${r.ko}`), { [r.id]: v }).catch((e) => alert("No se pudo: " + e.message)); };
+  const moverDia = async (r, f2) => { if (!admin || !f2 || f2 === r.f) return; try { await fbUpdate(ref(fbDb), { [`controlDia/${f2}/${r.ko}/${r.id}`]: r.v, [`controlDia/${r.f}/${r.ko}/${r.id}`]: null, ...(r.ts ? { [`controlDiaHoras/${f2}/${r.ko}/${r.id}`]: r.ts, [`controlDiaHoras/${r.f}/${r.ko}/${r.id}`]: null } : {}) }); } catch (e) { alert("No se pudo: " + e.message); } };
+  const nHechas = vis.filter((r) => r.v === 1).length; const nProb = vis.filter((r) => r.v === 2).length;
+  return (
+    <div className="space-y-3">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-2">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Control de ventanas hechas</h3>
+        {[["30", "Último mes"], ["mes", "Por mes"], ["dia", "Por día"]].map(([k, t]) => <button key={k} type="button" onClick={() => setModo(k)} className={`px-3 py-1.5 rounded-md text-sm font-semibold border ${modo === k ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{t}</button>)}
+        {modo === "mes" && <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-sm" />}
+        {modo === "dia" && <input type="date" value={diaV} onChange={(e) => setDiaV(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-sm" />}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar presupuesto, obra o ventana" className="border border-slate-300 rounded-md px-2 py-1 text-sm w-60" />
+        <div className="w-full text-sm text-slate-600"><b className="text-emerald-700">{nHechas} hechas</b>{nProb ? <> · <b className="text-orange-700">{nProb} con problema</b></> : null}{admin ? <span className="text-slate-400"> · eres administrador: puedes corregir el estado o el día de cada ventana</span> : <span className="text-slate-400"> · solo lectura</span>}</div>
+      </div>
+      {!vis.length ? <p className="text-sm text-slate-400 px-1">No hay ventanas hechas en este periodo.</p> : [...porDia.entries()].map(([f, rs]) => (
+        <details key={f} open={porDia.size <= 3} className="bg-white border border-slate-200 rounded-xl">
+          <summary className="cursor-pointer px-4 py-2 font-semibold text-slate-800 capitalize">{fmtDia(f)} <span className="font-normal text-slate-500 normal-case">· {rs.filter((r) => r.v === 1).length} hechas{rs.some((r) => r.v === 2) ? ` · ${rs.filter((r) => r.v === 2).length} con problema` : ""}</span></summary>
+          <div className="overflow-x-auto px-2 pb-2">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-slate-500"><th className="px-2 py-1">Hora</th><th className="px-2 py-1">Ppto</th><th className="px-2 py-1">Ventana</th><th className="px-2 py-1">Estado</th><th className="px-2 py-1">Por dónde ha pasado</th>{admin && <th className="px-2 py-1">Corregir</th>}</tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {rs.map((r) => (
+                  <tr key={`${r.ko}_${r.id}`}>
+                    <td className="px-2 py-1 text-slate-500">{fmtH(r.ts)}</td>
+                    <td className="px-2 py-1 font-semibold text-slate-800" title={r.obra}>{r.b ? pptoBonito(r.b) : r.obra}</td>
+                    <td className="px-2 py-1 font-semibold">{r.pos}</td>
+                    <td className="px-2 py-1">{r.v === 1 ? <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white text-xs font-bold">✓ Hecha</span> : <span className="px-1.5 py-0.5 rounded bg-orange-500 text-white text-xs font-bold">⚠ Problema</span>}</td>
+                    <td className="px-2 py-1 text-xs text-slate-600">{r.pasos.length ? r.pasos.map((x) => `${nombrePuestoLinea(x.pu)} ${fmtH(x.ts)}`).join(" · ") : "—"}</td>
+                    {admin && <td className="px-2 py-1 whitespace-nowrap">
+                      <select value={r.v} onChange={(e) => cambiarEstado(r, Number(e.target.value))} className="border border-slate-300 rounded px-1 py-0.5 text-xs"><option value={1}>Hecha</option><option value={2}>Problema</option><option value={0}>Quitar</option></select>
+                      <input type="date" defaultValue={r.f} onChange={(e) => { if (e.target.value && window.confirm(`¿Pasar ${r.pos} al ${fmtDia(e.target.value)}?`)) moverDia(r, e.target.value); else e.target.value = r.f; }} className="ml-1 border border-slate-300 rounded px-1 py-0.5 text-xs" title="Pasarla a otro día" />
+                    </td>}
+                  </tr>))}
+              </tbody>
+            </table>
+          </div>
+        </details>))}
+    </div>
+  );
+}
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -63900,8 +63979,9 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       { id: "cargas", t: "5 · Cargas de hoy", aviso: "" },
       ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
       ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
+      { id: "controlVentanas", t: "Control de ventanas", aviso: "" },
       ...(almacenOk("estanterias") ? [{ id: "estanterias", t: "Estanterías e informes", aviso: "" }] : []),
-    ].filter((x) => x.id === "parte" || x.id === "incidencias" || verTab(x.id));
+    ].filter((x) => x.id === "parte" || x.id === "incidencias" || x.id === "controlVentanas" || verTab(x.id));
   })();
   const actual = tabs.find((x) => x.id === tab) || tabs[0];
   return (
@@ -63928,6 +64008,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
+      {actual.id === "controlVentanas" && <ControlVentanasHechas admin={admin} />}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "mosqpost" && <div><div className="mb-2 rounded-lg bg-violet-50 border border-violet-300 px-3 py-2 text-sm font-bold text-violet-900">✂ Puesto MOSQUITERAS Y POSTIGOS: aquí solo salen sus perfiles ({AUX_REFS_MOSQ_POSTIGO.join(" · ")} y los que en la configuración digan «Se corta en: Mosquiteras y postigos»).</div><AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} puestoCorte="mosqpost" /></div>}
       {actual.id === "almacen" && (
