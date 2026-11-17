@@ -50812,7 +50812,11 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         if (uL && ["sinPersiana", "solape", "espera"].includes(uL.zonaId)) txtAlm = `\n📍 Ya está en ${(zonas.find((q) => q.id === uL.zonaId) || {}).nombre || uL.zonaId} · ${uL.hueco}.`;
         else { const zL = zonas.find((q) => q.id === "sinPersiana"); const prev = uL && uL.zonaId ? JSON.parse(JSON.stringify(uL)) : null; const r = zL ? await colocarAgrupado(zL, codL, base, null) : null;
           if (r) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codL}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porLinea: true, ...(prev ? { antes: prev } : {}) }).catch(() => {}); txtAlm = `${prev ? `\n⬅ Cógela de ${(zonas.find((q) => q.id === prev.zonaId) || {}).nombre || prev.zonaId} · ${prev.hueco}` : ""}\n➡ A la LÍNEA · ESTANTERÍA ${r.hueco}.`; }
-          else txtAlm = "\n⚠ La Línea está LLENA."; }
+          else { // diagnóstico: cuántas piezas dice el CRM que hay en la Línea y cuántos huecos tiene
+            let n = 0, nOc = 0; try { const fr = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {}; n = Object.values(fr).filter((u) => u && u.zonaId === "sinPersiana").length; const oc = (await fbGet(ref(fbDb, "ocupacionLinea/sinPersiana"))).val() || {}; nOc = Object.keys(oc).length; } catch (e) { /* nada */ }
+            const r2 = zL ? await ocuparHuecoLinea(zL, codL, quien, null, 1, null, 1) : null; // segundo intento, sin agrupar
+            if (r2) { await fbUpdate(ref(fbDb, `ubicacionesLinea/${codL}`), { et: `${hit.w.pos || ""}`.slice(0, 30), obra: String(hit.sn.nombre || "").slice(0, 60), base, porLinea: true, ...(prev ? { antes: prev } : {}) }).catch(() => {}); txtAlm = `\n➡ A la LÍNEA · ESTANTERÍA ${r2.hueco}.`; }
+            else txtAlm = `\n⚠ No cabe en la Línea: el CRM tiene ${n} pieza(s) apuntadas en ella de ${zL ? zL.huecos : "?"} huecos (candados: ${nOc}). Manda foto de este aviso.`; } }
       }
       // SOLDADORA (sin pistola): el marco soldado se mete en «Marcos (soldadora)» (las puertas en Puertas 1-6) y sale en VERDE FLOJO hasta que Pilastra le pone el herraje
       if (pE === "soldadora") {
