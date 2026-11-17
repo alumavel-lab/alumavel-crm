@@ -14725,6 +14725,8 @@ const DESTINO_RECEPCION = { stock: "Stock", cristal: "Fábrica → Cristales", p
 const tipoLineaRecepcion = (l, pedido) => {
   const s = l.seccionListado || "";
   const txt = `${l.referencia || ""} ${l.codigoListado || ""}`.toLowerCase();
+  // PANEL SÁNDWICH: no es un cristal (no viene en el albarán del vidrio ni va a un caballete): va a «Paneles pendientes de cortar»
+  if (/panel|s[aá]ndwich/i.test(`${txt} ${l.descripcion || ""}`)) return "otro";
   const medidas = parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0;
   if (s === "cristal" || (medidas && (pedido.tipoUxcar === "Cristales" || /cristal|vidrio|c[aá]mara|laminar|templad|\d+\s*\/\s*\d+\s*\/\s*\d+/.test(txt)))) return "cristal";
   if (s === "persianas" || (medidas && (pedido.tipoUxcar === "Persianas" || /persian|caj[oó]n|compacto|lama|monoblo/.test(txt)))) return "persiana";
@@ -23339,6 +23341,38 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
+// OBLIGATORIO: pedido al que ya le ha llegado todo menos el PANEL SÁNDWICH (el panel no viene en el albarán del vidrio: va a
+// «Paneles pendientes de cortar»). Salta una ventana para darlo por recibido; «Todavía no» solo la aplaza 15 minutos.
+const lineaPendienteRec = (l) => !l.confirmadoFabrica && l.estado !== "Recibido" && (parseFloat(l.recibidoBien) || 0) < (parseFloat(l.cantidad) || 0);
+const esPanelLineaRec = (l, nombre) => /panel|s[aá]ndwich/i.test(`${nombre || ""} ${l.referencia || ""} ${l.descripcion || ""}`);
+function AvisoSoloFaltaPanel({ pedidos, proveedorNombre, nombreLinea, onDarPorRecibido }) {
+  const [aplazados, setAplazados] = useState({}); const [, setTic] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTic((x) => x + 1), 60000); return () => clearInterval(t); }, []);
+  const lista = toArray(pedidos).filter((p) => p && !["Recibido", "Cancelado"].includes(p.estado) && !p.fabricaDaPorLlegado && !p.uxcarPedidoId).map((p) => {
+    const ls = toArray(p.lineas).filter(Boolean); const pend = ls.filter(lineaPendienteRec);
+    const panelesP = pend.filter((l) => esPanelLineaRec(l, nombreLinea(l)));
+    const otras = ls.filter((l) => !esPanelLineaRec(l, nombreLinea(l)));
+    const ok = panelesP.length > 0 && panelesP.length === pend.length && otras.length > 0 && (toArray(p.recepciones).length > 0 || otras.some((l) => l.confirmadoFabrica));
+    return ok ? { p, panelesP } : null;
+  }).filter(Boolean).filter((x) => !(aplazados[x.p.id] && Date.now() < aplazados[x.p.id]));
+  if (!lista.length) return null;
+  const { p, panelesP } = lista[0];
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-lg border-4 border-amber-500 p-5">
+        <h3 className="font-bold text-amber-800 text-lg">⚠ Pedido #{p.numero} · {p.proveedorExterno || proveedorNombre(p.proveedorId)}: solo falta el panel</h3>
+        <p className="text-sm text-slate-700 mt-2">Ha llegado todo lo demás. Lo que queda es panel sándwich, que no viene en el albarán del vidrio y va a <b>«Paneles pendientes de cortar»</b>:</p>
+        <ul className="mt-2 ml-4 list-disc text-sm text-slate-800">{panelesP.map((l, i) => <li key={i}>{nombreLinea(l)}{l.ancho && l.alto ? ` (${l.ancho} × ${l.alto})` : ""} — {parseFloat(l.cantidad) || 0} ud.</li>)}</ul>
+        <p className="text-sm font-semibold text-slate-800 mt-3">Hay que dar el pedido por recibido para que salga de Materiales pendientes.</p>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button type="button" onClick={() => onDarPorRecibido(p.id)} className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm">✓ Dar el pedido por recibido</button>
+          <button type="button" onClick={() => setAplazados({ ...aplazados, [p.id]: Date.now() + 15 * 60000 })} className="px-4 py-2 rounded-md border border-slate-300 text-slate-600 text-sm">Todavía no (avisar en 15 min)</button>
+        </div>
+        {lista.length > 1 && <p className="text-xs text-slate-500 mt-2">Hay {lista.length - 1} pedido{lista.length === 2 ? "" : "s"} más igual.</p>}
+      </div>
+    </div>
+  );
+}
 // Fábrica → Materiales pendientes: «📥 Llegado hoy» (o el día que se elija). Al darse por llegado el pedido desaparece de la lista de
 // pendientes; aquí se sigue viendo lo que entró ese día (albarán leído, «Dar de baja», confirmado línea a línea o dado por recibido en oficina)
 function LlegadosDelDia({ pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
@@ -23461,6 +23495,8 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
             <AlbaranFabrica pedidos={pedidos.filter((p) => !p.uxcarPedidoId)} materiales={materiales} proveedores={proveedores}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
+            <AvisoSoloFaltaPanel pedidos={pedidos} proveedorNombre={proveedorNombre} onDarPorRecibido={onConfirmarPedidoEntero}
+              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
             <LlegadosDelDia pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           </>);
