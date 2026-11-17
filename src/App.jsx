@@ -8709,6 +8709,7 @@ function faseObra(p, pedidos, uxExpedientes = []) {
 }
 function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
+  const [qExp, setQExp] = useState(""); const [qPres, setQPres] = useState(""); // buscadores aparte: nº de expediente y nº de presupuesto
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
   const [ciudadFiltro, setCiudadFiltro] = useState("");
@@ -8754,7 +8755,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
       // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
-      if (!estadoTrabajo && !q && p.estadoTrabajo === "Cancelado") return false;
+      if (!estadoTrabajo && !q && !qExp.trim() && !qPres.trim() && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
@@ -8764,8 +8765,13 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         const f = String(p.fechaAceptado || "").slice(0, 10);
         if (r && (!f || f < r[0] || f > r[1])) return false;
       }
-      if (!q) return true;
       const no = numerosObra[p.id] || { exps: [], pptos: [] };
+      // «6897» = «6.897» = «6.897-1»: se comparan solo las cifras (y también tal cual)
+      const casaNum = (lista, t) => { const tt = String(t || "").trim().toLowerCase(); if (!tt) return true; const td = tt.replace(/\D/g, "");
+        return lista.some((x) => { const xs = String(x || "").toLowerCase(); return xs.includes(tt) || (td.length >= 2 && xs.replace(/\D/g, "").includes(td)); }); };
+      if (qExp.trim() && !casaNum([...no.exps, p.expediente, p.referencia], qExp)) return false;
+      if (qPres.trim() && !casaNum([...no.pptos, p.presupuestoNumero, presupuestoDeObra(p)], qPres)) return false;
+      if (!q) return true;
       // Portal / vivienda / escalera: se busca también en la descripción de la obra y en los datos de su expediente de Uxcar (incluidas las líneas del recuento)
       let extraTxt = "";
       try {
@@ -8778,7 +8784,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       const qd = q.replace(/[^\d]/g, "");
       return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
-  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
+  }, [proyectos, q, qExp, qPres, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
   const [dupAbierto, setDupAbierto] = useState(""); // nombre del grupo de duplicados abierto para elegir cuál se queda
   const [dupQuedar, setDupQuedar] = useState("");
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
@@ -8949,6 +8955,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             placeholder="Buscar por nº, nombre, cliente, ubicación…"
             className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]"
           />
+        </div>
+        <div className="relative w-44">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={qExp} onChange={(e) => setQExp(e.target.value)} placeholder="Nº expediente"
+            className="w-full pl-9 pr-7 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
+          {qExp && <button type="button" onClick={() => setQExp("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">✕</button>}
+        </div>
+        <div className="relative w-44">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={qPres} onChange={(e) => setQPres(e.target.value)} placeholder="Nº presupuesto"
+            className="w-full pl-9 pr-7 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
+          {qPres && <button type="button" onClick={() => setQPres("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">✕</button>}
         </div>
         <Select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} className="max-w-[200px]">
           <option value="">Todos los clientes</option>
