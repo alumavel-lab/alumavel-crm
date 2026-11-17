@@ -50700,6 +50700,14 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
     const r = await ocuparHuecoLinea(zA, cod, quien, ubic, Number(a.hueco), Number(a.hueco), 1) || await colocarAgrupado(zA, cod, a.base || "", null); if (!r) return false;
     const { zonaId, hueco, slot, ts, ...resto } = a; await fbUpdate(ref(fbDb, `ubicacionesLinea/${cod}`), { ...resto, antes: null }).catch(() => {}); return true;
   };
+  // QUITAR EL VERDE de Control del día de una ventana: en TODOS los días recientes donde esté verde (no solo hoy), apuntando la hora en que se quita
+  const recienQuitadas = useRef({});
+  const quitarVerdeCD = async (k, id) => {
+    try { const ahora = Date.now(); const upd = {};
+      for (let i = 0; i < 21; i++) { const d = new Date(); d.setDate(d.getDate() - i); const f = d.toISOString().slice(0, 10); const v = (await fbGet(ref(fbDb, `controlDia/${f}/${k}/${id}`))).val(); if (v === 1 || v === 2 || i === 0) { upd[`controlDia/${f}/${k}/${id}`] = 0; upd[`controlDiaBorradas/${f}/${k}/${id}`] = ahora; upd[`controlDiaHoras/${f}/${k}/${id}`] = null; } }
+      await fbUpdate(ref(fbDb), upd);
+    } catch (e) { /* nada */ }
+  };
   // CRISTALES deshecho: la ventana vuelve a donde estaba antes (la Línea); si no se sabe (las de antes del cambio), a la LÍNEA
   const devolverALaLinea = async (cod, hit) => {
     try { const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val(); if (u && u.zonaId === "sinPersiana") return; // ya está en la Línea
@@ -50766,6 +50774,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       const nHojaT = (pE === "soldadora" || pE === "herraje") && req && /^h\d$/.test(String(req.tipo || "")) ? Number(String(req.tipo).slice(1)) : 0; const hojaT = nHojaT > 0;
       const sufH = hojaT ? `~H${nHojaT}` : "";
       const claveM = limpiaCodL(`${hit.k}__${hit.w.id}`) + sufH;
+      if (recienQuitadas.current[claveM] && Date.now() - recienQuitadas.current[claveM] < 4000) return; // acaba de quitarse: no se vuelve a ticar por un doble toque
       const yaM0 = (await fbGet(ref(fbDb, `marcasPuestoLinea/${pE}/${claveM}`))).val();
       // SOLDADORA: si la pieza estaba ticada pero YA NO ESTÁ en ningún almacén (se quitó, se perdió), al tocarla se vuelve a meter, sin preguntar «¿quitarla?»
       const codPiezaS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; let sinSitio = false;
@@ -50778,7 +50787,8 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
         // PILASTRA: si la metió este puesto en el almacén de marcos, sale; si ya estaba, solo se le quita la marca de herraje/pilastra
         if (pE === "pilastra") { const codP = limpiaCodL(`cd_${hit.k}__${hit.w.id}`); const uP = ubic && ubic[codP]; if (uP && uP.porPilastra) { try { await liberarCodigoLinea(codP); } catch (e) { /* nada */ } } else if (uP) fbUpdate(ref(fbDb, `ubicacionesLinea/${codP}`), { herraje: null, pilas: null }).catch(() => {}); }
         if (pE === "colgado") await deshacerColgado(limpiaCodL(`cd_${hit.k}__${hit.w.id}`));
-        if (pE === "lineaPers") { fbUpdate(ref(fbDb, `controlDia/${hoyISO()}/${hit.k}`), { [String(hit.w.id)]: 0 }).catch(() => {}); await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), "porLinea"); }
+        if (pE === "lineaPers") { await quitarVerdeCD(hit.k, String(hit.w.id)); await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), "porLinea"); }
+        recienQuitadas.current[claveM] = Date.now(); // un segundo toque seguido (doble clic) no la vuelve a ticar
         if (pE === "herraje") { if (hojaT) await deshacerMovido(limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH, "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${hit.k}__${hit.w.id}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
         if (pE === "soldadora") { const codS = limpiaCodL(`cd_${hit.k}__${hit.w.id}`) + sufH; const uS = ubic && ubic[codS]; if (uS && uS.porSoldadora && !uS.herraje) { try { await liberarCodigoLinea(codS); } catch (e) { /* nada */ } } }
         avisar(true, `${hit.w.pos}: quitada de hechas.`, false); return;
@@ -50969,7 +50979,7 @@ function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxEx
       if (puestoId === "pilastra") { if (u && u.porPilastra) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } else if (u) fbUpdate(ref(fbDb, `ubicacionesLinea/${codCD}`), { herraje: null, pilas: null }).catch(() => {}); }
       else if (puestoId === "soldadora") { if (u && u.porSoldadora && !u.herraje) { try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } } }
       else if (puestoId === "colgado") await deshacerColgado(codCD);
-      else if (puestoId === "lineaPers") { const mL = /^(.+)__(.+)$/.exec(claveM); if (mL) fbUpdate(ref(fbDb, `controlDia/${(m && m.fecha) || hoyISO()}/${mL[1]}`), { [mL[2]]: 0 }).catch(() => {}); await deshacerMovido(codCD, "porLinea"); }
+      else if (puestoId === "lineaPers") { const mL = /^(.+)__(.+)$/.exec(claveM); if (mL) await quitarVerdeCD(mL[1], mL[2]); await deshacerMovido(codCD, "porLinea"); }
       else if (puestoId === "herraje") { if (/~H\d$/.test(claveM)) await deshacerMovido(limpiaCodL(`cd_${claveM}`), "porHerraje"); else for (const ch of codsHojas(limpiaCodL(`cd_${claveM}`), ubic)) await deshacerMovido(ch, "porHerraje"); }
       else if (puestoId === "cristales") await devolverALaLinea(codCD, hit);
       else if (esPuestoSimple && u) { if (u.hojasAntes) for (const [ch, x] of Object.entries(u.hojasAntes)) await volverA(ch, x); try { await liberarCodigoLinea(codCD); } catch (e) { /* nada */ } }
