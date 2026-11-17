@@ -54690,9 +54690,21 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const deObra = nums.length ? todos.filter((p) => { const d = pptoDigs(p); return nums.some((n) => d.has(n)); }) : [];
       const pend = deObra.filter((p) => !p.recibido), rec = deObra.filter((p) => p.recibido);
       const pptoTxt = nums.map((x) => x.replace(/^(\d)(\d{3})$/, "$1.$2")).join(" / ");
-      const tipo = !nums.length ? "sinppto" : !deObra.length ? "sinpedido" : !pend.length ? "recibido" : "medidas";
+      let tipo = !nums.length ? "sinppto" : !deObra.length ? "sinpedido" : !pend.length ? "recibido" : "medidas";
+      // DÓNDE ESTÁN ESAS MEDIDAS: se buscan (±3 mm) en TODOS los pedidos (de Uxcar, recibidos o no, y las copias del CRM). La referencia que lee
+      // el lector a veces se descoloca (líneas de un portal con la referencia de otro); las medidas no.
+      const med3 = (a, x, y) => { const A = parseFloat(a.ancho), H = parseFloat(a.alto), X = uxMedidaMm(x), Y = uxMedidaMm(y); return A > 0 && H > 0 && X > 0 && Y > 0 && ((Math.abs(A - X) <= 3 && Math.abs(H - Y) <= 3) || (Math.abs(A - Y) <= 3 && Math.abs(H - X) <= 3)); };
+      const conMed = xs.filter((a) => a.ancho && a.alto);
+      const hits = new Map();
+      todos.forEach((p) => { let n = 0; conMed.forEach((a) => { if (uxLineasPedidas(p).some((l) => med3(a, l.ancho, l.alto))) n++; }); if (n) hits.set(`ux:${p.id}`, { num: p.numero, rec: !!p.recibido, n }); });
+      toArray(ctxUxAlb.pedidosCrm).forEach((p) => { if (!p || p.estado === "Cancelado") return; let n = 0; conMed.forEach((a) => { if (toArray(p.lineas).some((l) => l && med3(a, l.ancho, l.alto))) n++; }); if (n) hits.set(`crm:${p.id}`, { num: `#${p.numero}`, rec: p.estado === "Recibido" || toArray(p.lineas).every((l) => !l || l.confirmadoFabrica), n }); });
+      const hs = [...hits.values()].sort((x, y) => y.n - x.n).slice(0, 3);
+      let donde = "";
+      if (conMed.length && !hs.length) { tipo = "sinpedido"; donde = "NINGÚN pedido del CRM tiene estas medidas: falta subir el pedido de esta obra/portal"; }
+      else if (hs.length && hs.every((h) => h.rec)) { tipo = "recibido"; donde = `Sus medidas están en ${hs.map((h) => `${h.num} (${h.n})`).join(", ")}, que ya está RECIBIDO`; }
+      else if (hs.length) donde = `Sus medidas están en ${hs.map((h) => `${h.num}${h.rec ? " (recibido)" : ""} (${h.n} de ${conMed.length})`).join(", ")}: revisa que sea su obra y su proveedor`;
       const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
-      return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo };
+      return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo: donde || motivo };
     });
   };
   const imprimirSinPedido = (info) => {
