@@ -564,7 +564,9 @@ const esPedidoCristalOCompacto = (pd) => !!tipoPedidoMaterial(pd);
 
 // Una obra (vuestra) sin informe de materiales tiene que tener "Qué lleva la obra"
 // contestado a mano: si no, no se pueden hacer pedidos ni pasarla a fabricación.
-const faltaQueLlevaObra = (p) => !!p && p.origen !== "portalUxcar"
+// ANULADO (lo pidió Miguel): «Qué lleva la obra» sin contestar ya no impide pasar a fabricación ni crear pedidos. Para volver a exigirlo: true
+const EXIGIR_QUE_LLEVA_OBRA = false;
+const faltaQueLlevaObra = (p) => EXIGIR_QUE_LLEVA_OBRA && !!p && p.origen !== "portalUxcar"
   && !toArray(p.listadoMateriales && p.listadoMateriales.lineas).length
   && normalizarChecklist(p.checklistMateriales).some((c) => !c.estado);
 const AVISO_QUE_LLEVA = 'Esta obra no tiene informe de materiales: súbelo, o contesta a mano "Qué lleva la obra" en la ficha del proyecto (Sí/No en todo).';
