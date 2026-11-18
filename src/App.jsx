@@ -62313,6 +62313,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     Object.keys(asignTodas).filter((f) => f < dia).sort().forEach((f) => Object.keys(asignTodas[f]).forEach((ko) => {
       if ((asignTodas[dia] || {})[ko] || arrastradas[ko]) return;
       const t = terminadaEn(ko); if (t && t < dia) return; // terminada antes de este día: ya no sale
+      // TODA EN VERDE (todas sus ventanas marcadas) antes de este día: vuelve a SU día y ya no se arrastra. Si se terminó HOY, hoy sigue saliendo.
+      { const ob = [...obras.values()].find((x) => limpia(x.d.key) === ko); if (ob) { const ids0 = [...ob.viv.values()].flat().map((v) => v.id); const ids = ids0.length ? ids0 : ["_obra"]; const ms = ids.map((i) => (idxMarcasCD[ko] || {})[i]);
+        if (ms.every((m) => m && m.v === 1)) { const ult = ms.map((m) => m.d || "").sort().pop(); if (ult && ult < dia) return; } } }
       arrastradas[ko] = f;
     }));
   }
