@@ -53809,8 +53809,13 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const pisado = huellaPlanFb(nuevoPF) !== huellaFbActual;
     if (publicadoFb === ultimoPublicadoFb.current && !(pisado && Date.now() - ultimoPubEn.current > 60000)) return;
     // SEGURO: si de golpe desaparecen más de la mitad de las obras publicadas (mín. 4), no se publica (casi seguro faltan datos en este ordenador)
-    const obrasAntes = Object.keys((planPrevio && planPrevio.obras) || {}); const perdidasPF = obrasAntes.filter((k) => !(nuevoPF.obras || {})[k]).length;
-    if (obrasAntes.length >= 4 && perdidasPF >= 4 && perdidasPF > obrasAntes.length / 2) { console.warn(`Planning: no se publica (se perderían ${perdidasPF} de ${obrasAntes.length} obras)`); return; }
+    // Se compara con lo que ESTE ordenador publicó la última vez (no con lo que hay en Firebase: si otro ordenador publicó basura, el seguro
+    // bloqueaba al bueno y el Control del día se quedaba vacío). Contra Firebase solo se para si aquí no sale NINGUNA obra.
+    const nNuevasPF = Object.keys(nuevoPF.obras || {}).length;
+    if (ultimoPublicadoFb.current) {
+      const obrasAntes = Object.keys(JSON.parse(ultimoPublicadoFb.current).obras || {}); const perdidasPF = obrasAntes.filter((k) => !(nuevoPF.obras || {})[k]).length;
+      if (obrasAntes.length >= 4 && perdidasPF >= 4 && perdidasPF > obrasAntes.length / 2) { console.warn(`Planning: no se publica (se perderían ${perdidasPF} de ${obrasAntes.length} obras)`); return; }
+    } else if (!nNuevasPF && Object.keys((planPrevio && planPrevio.obras) || {}).length >= 4) { console.warn("Planning: no se publica un planning vacío"); return; }
     ultimoPublicadoFb.current = publicadoFb; ultimoPubEn.current = Date.now();
     const quienPubPF = (() => { try { const u = fbAuth.currentUser; return String((u && (u.displayName || u.email)) || "").slice(0, 60); } catch (e) { return ""; } })(); // quién lo ha publicado (para encontrar fallos)
     fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now(), por: quienPubPF }).catch(() => {});
