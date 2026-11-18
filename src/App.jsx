@@ -18468,6 +18468,14 @@ function salvarJsonIA(txt) {
 async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60, modelo = "") {
   const contentBlock = await bloqueDeArchivoParaIA(file);
   const jobId = uid();
+  // Firebase no deja guardar un texto de más de 10 MB: un PDF o foto grande (su base64) se guarda EN TROZOS y la función los vuelve a juntar
+  const datos64 = String((contentBlock && contentBlock.source && contentBlock.source.data) || "");
+  const TROZO = 5 * 1024 * 1024;
+  if (datos64.length > TROZO) {
+    const n = Math.ceil(datos64.length / TROZO);
+    await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: modelo || "claude-sonnet-5", max_tokens: maxTokens || 8000, ...(modelo ? {} : { thinking: { type: "disabled" } }), contentBlock: { ...contentBlock, source: { ...contentBlock.source, data: "" } }, prompt, trozos: n });
+    for (let i = 0; i < n; i++) await fbSet(ref(fbDb, `packingListJobsInput/${jobId}/trozo_${i}`), datos64.slice(i * TROZO, (i + 1) * TROZO));
+  } else
   await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: modelo || "claude-sonnet-5", max_tokens: maxTokens || 8000, ...(modelo ? {} : { thinking: { type: "disabled" } }), contentBlock, prompt });
   await fetch("/.netlify/functions/anthropic-proxy-background", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),

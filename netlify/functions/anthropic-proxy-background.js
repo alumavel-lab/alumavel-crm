@@ -76,7 +76,15 @@ export const handler = async (event) => {
       return { statusCode: 200, body: "ok" };
     }
 
-    const { model, max_tokens, contentBlock, prompt } = await leerEntrada(jobId);
+    const entrada = await leerEntrada(jobId);
+    const { model, max_tokens, prompt } = entrada;
+    let { contentBlock } = entrada;
+    // Archivo grande: el navegador lo guardó en trozos (Firebase no deja textos de más de 10 MB). Se vuelven a juntar aquí.
+    if (entrada.trozos > 0 && contentBlock && contentBlock.source) {
+      let datos = "";
+      for (let i = 0; i < entrada.trozos; i++) datos += String(entrada[`trozo_${i}`] || "");
+      contentBlock = { ...contentBlock, source: { ...contentBlock.source, data: datos } };
+    }
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
