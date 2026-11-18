@@ -61965,7 +61965,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Enlace con Fábrica: SIEMPRE por código de presupuesto (con su versión: -1 y -2 son viviendas distintas)
   const presConVersion = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
-    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); } }
+    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero);
+      // obra del CRM que viene de UXCAR: su presupuesto suele estar solo en el expediente («Uxcar exp. 6.753-1»). Sin esto, cuando al
+      // expediente se le crea su proyecto, la obra deja de casar con el planning de Fábrica y desaparece del calendario
+      toArray(uxExpedientes).filter((e) => e && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id)).forEach((e) => { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); });
+      const mN = String(p.nombre || "").match(/\b(\d{1,2}\.\d{3}-\d{1,2})\b/); if (mN) add(mN[1]); } }
     if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     (presDeObra.get(limpia(d.key)) || []).forEach((pr) => add(pr.pres));
     if (d.tipo === "pl") { const pr = planPres && planPres[d.id]; if (pr) add(pr.pres); }
