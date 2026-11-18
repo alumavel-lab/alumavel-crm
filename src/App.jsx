@@ -62413,7 +62413,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Mismo orden que en el planning de Fábrica (el orden en que se metieron); lo que no está en el planning va detrás, por nombre
   const ordenFabDia = {}; Object.entries((planF && planF.dias && planF.dias[dia]) || {}).forEach(([k, v]) => { const ko = koDeFab.get(k); if (ko && v && typeof v.orden === "number" && ordenFabDia[ko] === undefined) ordenFabDia[ko] = v.orden; });
   const ordenObras = (a, b) => { const oa = ordenFabDia[limpia(a.d.key)], ob = ordenFabDia[limpia(b.d.key)]; if (oa !== undefined || ob !== undefined) return (oa === undefined ? 9999 : oa) - (ob === undefined ? 9999 : ob); return String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true }); };
-  const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
+  // PRIMERO las de HOY (las de este día) y DETRÁS, aparte, las de días anteriores que aún no están terminadas (arrastradas)
+  const esArrastrada = (o) => !!arrastradas[limpia(o.d.key)] && !(asignTodas[dia] || {})[limpia(o.d.key)];
+  const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort((a, b) => (esArrastrada(a) - esArrastrada(b)) || ordenObras(a, b) || String(arrastradas[limpia(a.d.key)] || "").localeCompare(String(arrastradas[limpia(b.d.key)] || "")));
+  const nArrastradas = lista.filter(esArrastrada).length;
+  const diaCorto = (f) => { const m = String(f || "").match(/^\d{4}-(\d{2})-(\d{2})$/); return m ? `${m[2]}/${m[1]}` : f; };
   // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
   const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
   const valorUlt = (k, id) => valorGlobalCD(k, id); void diasMarcas;
@@ -63152,10 +63156,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           const filas = Math.max(1, Math.ceil(unidades / 8)); const porFila = Math.max(1, Math.ceil(unidades / filas)); // repartidas a partes iguales: 10 obras = 5 + 5 (no 8 + 2)
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
+          const arr0 = esArrastrada(o); const primeraArr = arr0 && !hayGrande && (_i === 0 || !esArrastrada(arr[_i - 1]));
           return (
-            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 12rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+            <React.Fragment key={o.d.key}>
+            {primeraArr && <div className="basis-full w-full mt-1 px-3 py-1 rounded-md bg-amber-400 text-slate-900 font-extrabold text-sm">⏪ De días anteriores, sin terminar ({nArrastradas}){_i === 0 ? " · hoy no hay obras propias de este día" : ""}</div>}
+            <div style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 12rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
-                <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
+                <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{arr0 && <span className="mr-1 px-1 rounded bg-amber-400 text-slate-900 text-[10px] align-middle">⏪ del {diaCorto(arrastradas[limpia(o.d.key)])}</span>}{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className={`${grande ? "text-base" : "text-[11px]"} font-bold text-sky-100`}>{nH}/{nV || "?"}</span>
                   <span className={`ml-auto ${grande ? "" : "scale-90 origin-right"}`}><BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} /></span>
@@ -63204,6 +63211,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 ))}
               </div>
             </div>
+            </React.Fragment>
           );
         })}
       </div>
