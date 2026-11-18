@@ -53811,7 +53811,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     // SEGURO: si de golpe desaparecen más de la mitad de las obras publicadas (mín. 4), no se publica (casi seguro faltan datos en este ordenador)
     const obrasAntes = Object.keys((planPrevio && planPrevio.obras) || {}); const perdidasPF = obrasAntes.filter((k) => !(nuevoPF.obras || {})[k]).length;
     if (obrasAntes.length >= 4 && perdidasPF >= 4 && perdidasPF > obrasAntes.length / 2) { console.warn(`Planning: no se publica (se perderían ${perdidasPF} de ${obrasAntes.length} obras)`); return; }
-    ultimoPublicadoFb.current = publicadoFb; ultimoPubEn.current = Date.now(); fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {});
+    ultimoPublicadoFb.current = publicadoFb; ultimoPubEn.current = Date.now();
+    const quienPubPF = (() => { try { const u = fbAuth.currentUser; return String((u && (u.displayName || u.email)) || "").slice(0, 60); } catch (e) { return ""; } })(); // quién lo ha publicado (para encontrar fallos)
+    fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now(), por: quienPubPF }).catch(() => {});
     // «Mi puesto» y los partes leen el planning CONFIRMADO: se le actualizan los días (y su orden) para que salga igual que en todas partes
     (async () => { try { const sn = await fbGet(ref(fbDb, "planningPublicado/publicadoEn")); if (!sn.exists()) return; const diasPP = {}; Object.entries(plan1.dias).forEach(([f, d]) => { if (d.trozos.length && f <= publicadoHasta) diasPP[f] = d.trozos.filter((t) => { const r = plan1.obras[t.id]; return !r || !r.inicio || r.inicio <= publicadoHasta; }).map((t) => ({ id: t.id, nombre: t.nombre, horas: t.horas })); }); await fbUpdate(ref(fbDb, "planningPublicado"), JSON.parse(JSON.stringify({ dias: diasPP, sincronizadoEn: Date.now() }))); } catch (e) { /* se reintenta en el siguiente cambio */ } })();
   }, [publicadoFb, planPrevioListo, huellaFbActual]);
@@ -63205,6 +63207,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         {dia !== hoy && <button type="button" onClick={() => { setDia(hoy); setMesVer(hoy.slice(0, 7)); }} className="px-3 py-1.5 rounded-md bg-amber-400 text-slate-900 text-sm font-bold">Volver a hoy</button>}
         <button type="button" onClick={() => setTv(true)} className="ml-auto px-4 py-2 rounded-md bg-white text-slate-900 text-base font-extrabold">📺 Pantalla grande (tele)</button>
       </div>
+      {(() => { /* DIAGNÓSTICO: qué ha publicado el planning de Fábrica (si un día sale vacío, aquí se ve si es que no ha llegado nada) */
+        const ds = Object.keys((planF && planF.dias) || {}).filter((f) => Object.keys(planF.dias[f] || {}).length).sort(); const nO = Object.keys((planF && planF.obras) || {}).length;
+        const enPF = planF && planF.en ? new Date(planF.en) : null;
+        return <div className={`mb-2 text-xs ${nO ? "text-slate-500" : "font-bold text-rose-700"}`}>Planning de Fábrica recibido: {nO} obra{nO === 1 ? "" : "s"}{ds.length ? ` · días del ${fmtDate(ds[0])} al ${fmtDate(ds[ds.length - 1])}` : " · NINGÚN día"}{enPF ? ` · publicado ${enPF.toLocaleDateString("es-ES")} ${enPF.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}{planF && planF.por ? ` por ${planF.por}` : ""}{planF && planF.publicadoHasta ? ` · publicado hasta ${fmtDate(planF.publicadoHasta)}` : ""}</div>; })()}
       <div className="flex flex-wrap items-center gap-3 mb-2">
         <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}{horasDelDia > 0 ? ` · ${fmtHoras(horasDelDia)} del planning` : ""}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
