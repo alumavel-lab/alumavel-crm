@@ -14564,7 +14564,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           );
         })()}
 
-        {f.proyectoId && normalizarChecklist(proyectos.find((pr) => pr.id === f.proyectoId)?.checklistMateriales).some((c) => !c.estado) && (
+        {EXIGIR_QUE_LLEVA_OBRA && f.proyectoId && normalizarChecklist(proyectos.find((pr) => pr.id === f.proyectoId)?.checklistMateriales).some((c) => !c.estado) && (
           <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
             ⚠ El checklist "Qué lleva la obra" de este proyecto no está completo. No podrás guardar este pedido hasta rellenarlo en la ficha del proyecto (pestaña "Qué lleva la obra").
           </div>
@@ -14701,6 +14701,16 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
         <DocumentosPedido documentos={f.documentos} adjuntosPdf={f.adjuntosPdf}
           carpeta={`documentos-proyectos/pedido-${f.id || "nuevo"}`}
           onChange={(docs) => setF((prev) => ({ ...prev, documentos: docs }))} />
+
+        <Field label="📍 Dónde lo tiene que dejar fábrica al llegar">
+          <div className="flex flex-wrap gap-2">
+            <select value={f.destinoFabrica || ""} onChange={(e) => setF((prev) => ({ ...prev, destinoFabrica: e.target.value }))} className="border border-slate-300 rounded-md px-2 py-2 text-sm bg-white min-w-[16rem]">
+              <option value="">— Sin indicar —</option>
+              {DESTINOS_PEDIDO_FABRICA.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <input value={f.destinoNota || ""} onChange={(e) => setF((prev) => ({ ...prev, destinoNota: e.target.value }))} placeholder="Nota para fábrica (opcional): p. ej. junto a la obra 6.700" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-2 text-sm" />
+          </div>
+        </Field>
 
         <Field label="Comentarios"><TextArea rows={2} value={f.comentarios} onChange={set("comentarios")} /></Field>
 
@@ -15378,6 +15388,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       <div className="flex items-center gap-2 mb-6">
         <Badge className={ESTADO_PEDIDO_STYLE[pedido.estado]}>{pedido.estado}</Badge>
         {pedido.fechaRecibido && <span className="text-xs text-slate-400">Recibido el {fmtDate(pedido.fechaRecibido)}</span>}
+        {(pedido.destinoFabrica || pedido.ubicacionDejado) && <span className={`text-xs font-semibold px-2 py-0.5 rounded ${pedido.ubicacionDejado ? "bg-emerald-50 text-emerald-800" : "bg-sky-50 text-sky-800"}`}>📍 {pedido.ubicacionDejado ? `Dejado en: ${pedido.ubicacionDejado}` : `Dejar en: ${pedido.destinoFabrica}`}</span>}
         {(pedido.avisos?.llegada || pedido.avisos?.retraso) && (
           <span className="text-xs text-sky-600 font-semibold" title={`Avisos para ${pedido.avisos?.usuarioNombre || "un usuario"}`}>
             🔔 {[pedido.avisos?.llegada && "llegada", pedido.avisos?.retraso && "retraso"].filter(Boolean).join(" y ")} — {pedido.avisos?.usuarioNombre}
@@ -23237,11 +23248,33 @@ function AccesoriosDeLaObra({ proyecto }) {
     </div>
   );
 }
+// DÓNDE SE DEJA UN PEDIDO al llegar: lo dice oficina al hacer el pedido; fábrica, al recibirlo, apunta el sitio exacto (estantería…)
+const DESTINOS_PEDIDO_FABRICA = ["Almacén de aluminio", "Almacén de PVC / perfiles", "Almacén de herrajes y accesorios", "Almacén de cristales (caballetes)", "Almacén de compactos / persianas", "Preparación de material", "Línea de producción", "Se lleva directo a obra", "Otro sitio"];
+function DondeDejarPedido({ pedido, onGuardar, quien = "", compacto = false }) {
+  const [txt, setTxt] = useState(pedido.ubicacionDejado || "");
+  const [editando, setEditando] = useState(!pedido.ubicacionDejado);
+  useEffect(() => { setTxt(pedido.ubicacionDejado || ""); setEditando(!pedido.ubicacionDejado); }, [pedido.id, pedido.ubicacionDejado]);
+  if (!pedido.destinoFabrica && !pedido.destinoNota && !pedido.ubicacionDejado && !onGuardar) return null;
+  const guardar = () => { if (!onGuardar) return; onGuardar(pedido.id, { ubicacionDejado: txt.trim(), ubicacionDejadoEn: new Date().toISOString(), ubicacionDejadoPor: quien || "" }); setEditando(false); };
+  return (
+    <div className={`rounded-md border-2 ${pedido.ubicacionDejado ? "border-emerald-300 bg-emerald-50" : "border-sky-300 bg-sky-50"} px-3 py-2 text-sm ${compacto ? "mt-1" : "my-2"}`}>
+      <div className="font-bold text-slate-800">📍 Dejar en: {pedido.destinoFabrica || <span className="font-normal text-slate-500">oficina no lo ha indicado</span>}{pedido.destinoNota ? <span className="font-normal"> · {pedido.destinoNota}</span> : null}</div>
+      {pedido.ubicacionDejado && !editando ? (
+        <div className="flex flex-wrap items-center gap-2 mt-1 text-emerald-900"><span>✓ Dejado en: <b>{pedido.ubicacionDejado}</b>{pedido.ubicacionDejadoPor ? ` · ${pedido.ubicacionDejadoPor}` : ""}{pedido.ubicacionDejadoEn ? ` · ${fmtDate(String(pedido.ubicacionDejadoEn).slice(0, 10))}` : ""}</span>{onGuardar && <button type="button" onClick={() => setEditando(true)} className="text-xs underline text-slate-600">cambiar</button>}</div>
+      ) : onGuardar ? (
+        <div className="flex flex-wrap items-center gap-2 mt-1">
+          <input value={txt} onChange={(e) => setTxt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && txt.trim()) guardar(); }} placeholder="¿Dónde lo has dejado? Ej: estantería 3, balda 2" className="flex-1 min-w-[14rem] border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+          <button type="button" disabled={!txt.trim()} onClick={guardar} className="px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-sm font-bold disabled:opacity-40">Apuntar</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 // ── Fábrica → Materiales pendientes: subir el albarán del proveedor ──
 // Una sola subida: se lee el albarán, se busca el pedido pendiente al que corresponde y se compara línea a línea
 // (medidas, códigos, nombres y precios). Al confirmar, lo que llega se marca, cada cristal y cada persiana va a su hueco
 // o carro (y se te dice cuál), y lo que falta se queda apuntado. Un botón cierra el pedido completo.
-function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecibirConAlbaran, onCrearPedidoFaltante, onCerrarPedido }) {
+function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecibirConAlbaran, onCrearPedidoFaltante, onCerrarPedido, onActualizarPedido = null, quien = "" }) {
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
@@ -23355,6 +23388,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
                   <input type="checkbox" className="mt-0.5" checked={reentradaAlb} onChange={(e) => setReentradaAlb(e.target.checked)} />
                   <span><b>🔁 Volver a meter estas persianas en el almacén</b> (este pedido ya consta como recibido; por ejemplo, se borraron de los carros). Entran en «Pendientes de ubicar» y <b>no</b> cambia el pedido ni el stock.</span>
                 </label>) : null; })()}
+              <DondeDejarPedido pedido={elegido.p} onGuardar={onActualizarPedido} quien={quien} />
               <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}-${reentradaAlb ? "re" : ""}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
                 puedeRecibir={false} infoInicial={lect} reentrada={reentradaAlb}
                 onRecibirConAlbaran={(datos) => onRecibirConAlbaran(elegido.p.id, datos)} onCrearPedidoFaltante={onCrearPedidoFaltante} />
@@ -23403,7 +23437,7 @@ function AvisoSoloFaltaPanel({ pedidos, proveedorNombre, nombreLinea, onDarPorRe
 }
 // Fábrica → Materiales pendientes: «📥 Llegado hoy» (o el día que se elija). Al darse por llegado el pedido desaparece de la lista de
 // pendientes; aquí se sigue viendo lo que entró ese día (albarán leído, «Dar de baja», confirmado línea a línea o dado por recibido en oficina)
-function LlegadosDelDia({ modo = "ecowin", pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea }) {
+function LlegadosDelDia({ modo = "ecowin", pedidos, proyectos, uxExpedientes, proveedorNombre, nombreLinea, onActualizarPedido = null, quien = "" }) {
   const hoyLD = new Date().toLocaleDateString("sv-SE");
   const [dia, setDia] = useState(hoyLD); const [abierto, setAbierto] = useState(true); const [abiertoId, setAbiertoId] = useState(null);
   const d10 = (x) => String(x || "").slice(0, 10);
@@ -23442,6 +23476,8 @@ function LlegadosDelDia({ modo = "ecowin", pedidos, proyectos, uxExpedientes, pr
                     {!recs.length && p.recibidoDesdeOficina && <span className="text-xs text-slate-500">dado por recibido en oficina</span>}
                     <span className="ml-auto text-xs text-slate-400">{abiertoId === p.id ? "▲" : "▼ ver líneas"}</span>
                   </button>
+                  {(p.destinoFabrica || p.ubicacionDejado) && abiertoId !== p.id && <div className="text-xs text-slate-600 ml-1">📍 {p.ubicacionDejado ? <>Dejado en <b>{p.ubicacionDejado}</b></> : <>Dejar en {p.destinoFabrica} · <span className="text-amber-700 font-semibold">sin apuntar dónde</span></>}</div>}
+                  {abiertoId === p.id && <DondeDejarPedido pedido={p} onGuardar={onActualizarPedido} quien={quien} compacto />}
                   {abiertoId === p.id && (
                     <ul className="mt-1 ml-3 text-xs text-slate-700 list-disc">
                       {toArray(p.lineas).map((l, i) => { const bien = parseFloat(l.recibidoBien) || 0, cant = parseFloat(l.cantidad) || 0; const ok = l.confirmadoFabrica || l.estado === "Recibido" || (cant > 0 && bien >= cant);
@@ -23523,7 +23559,7 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
   const bloqueAlbaran = onRecibirConAlbaran && (<>
             <AlbaranFabrica pedidos={pedidos.filter((p) => !p.uxcarPedidoId)} materiales={materiales} proveedores={proveedores}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
-              onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
+              onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} onActualizarPedido={onActualizarPedido} quien={nombreUsuario || ""} />
             <AvisoSoloFaltaPanel pedidos={pedidos} proveedorNombre={proveedorNombre} onDarPorRecibido={onConfirmarPedidoEntero}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           </>);
@@ -23850,7 +23886,7 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
         <>
         {subTabsMateriales}
         {bloqueAlbaran}
-        <LlegadosDelDia modo="uxcar" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+        <LlegadosDelDia modo="uxcar" onActualizarPedido={onActualizarPedido} quien={nombreUsuario || ""} pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
           nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
         <UxEntradasFabrica pedidos={uxPedidos} onGuardarRecepcion={onGuardarRecepcionUx} quien={nombreUsuario || "Fábrica"} />
         </>
@@ -24083,7 +24119,7 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
           </div>
 
           {bloqueAlbaran}
-          <LlegadosDelDia modo="ecowin" pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
+          <LlegadosDelDia modo="ecowin" onActualizarPedido={onActualizarPedido} quien={nombreUsuario || ""} pedidos={pedidos} proyectos={proyectos} uxExpedientes={uxExpedientes} proveedorNombre={proveedorNombre}
             nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
           <div className="relative mb-4 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -24202,6 +24238,7 @@ function FabricaModulo({ onFechaMontaje = null, onPublicarMontajes = null, albar
                           {(() => { const cl = (clientes || []).find((c) => c.id === proyecto.clienteId); return cl ? ` · Cliente: ${cl.nombre}` : ""; })()}
                         </button>
                       )}
+                      <DondeDejarPedido pedido={pedido} onGuardar={onActualizarPedido} quien={nombreUsuario || ""} compacto />
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-slate-500">Pedido hecho: {pedido.fechaCompra ? fmtDate(pedido.fechaCompra) : <b className="text-red-600">sin fecha</b>}</span>
