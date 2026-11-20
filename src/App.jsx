@@ -7347,6 +7347,7 @@ export default function App() {
         {modulo === "presupuestos" && isAdmin && <RestaurarDesdeCopia clave="presupuestos" nombre="presupuestos" actual={presupuestos} proyectos={proyectos} clientes={clientes} onRestaurar={(faltan) => savePresupuestos([...presupuestos, ...faltan])} />}
         {modulo === "presupuestos" && (
           <PresupuestosModulo
+            ingresos={ingresos}
             presupuestos={presupuestos}
             clientes={clientes}
             usuarios={usuarios}
@@ -33982,7 +33983,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ ingresos = [], onCambiarEstadoRapido, onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -34291,6 +34292,7 @@ function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirP
         onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
         onGuardarTelefono={(tel, extra) => onUpsert({ ...presupuesto, telefono: tel, ...(extra || {}) })}
         onCrearProyecto={(cambio) => onCrearProyecto(cambio ? { ...presupuesto, ...cambio } : presupuesto)}
+        ingresosPresu={toArray(ingresos).filter((i) => i && i.presupuestoId === presupuesto.id)}
         onRecrearProyecto={onRecrearProyecto ? () => onRecrearProyecto(presupuesto) : null}
         onAbrirProyecto={onAbrirProyecto}
         onDuplicar={() => onDuplicar(presupuesto)}
@@ -37985,7 +37987,11 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                   <td className="px-4 py-3">
                     {proyecto ? (
                       <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {proyecto.nombre}</Badge>
-                    ) : (
+                    ) : i.presupuestoId ? (() => { const pre = toArray(presupuestos).find((x) => x && x.id === i.presupuestoId); return (
+                      <div className="space-y-1">
+                        <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Presupuesto {pre ? pre.numero : "?"}{pre && (pre.referencia || pre.descripcion) ? ` — ${String(pre.referencia || pre.descripcion).slice(0, 40)}` : ""} · sin proyecto todavía</Badge>
+                        <div className="text-[11px] text-slate-500">Pasa solo a su proyecto cuando se cree.</div>
+                      </div>); })() : (
                       <VincularProyectoSelect proyectos={proyectos} onVincular={(proyectoId) => onVincular(i.id, proyectoId)} />
                     )}
                   </td>
@@ -39942,7 +39948,7 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
   );
 }
 
-function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ ingresosPresu = [], puedeEliminar, onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
   // PASAR A PROYECTO: obligatorio comprobar el importe con la hoja del presupuesto FIRMADO (si no cuadra, no pasa)
@@ -40352,6 +40358,19 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
         </div>
       )}
 
+      {/* DINERO A CUENTA de este presupuesto (entradas de dinero vinculadas a él): así se sabe si ya han pagado la señal y se puede empezar */}
+      {(() => {
+        const cob = toArray(ingresosPresu).reduce((t, i) => t + (parseFloat(i.importe) || 0), 0);
+        const totIva = (parseFloat(presupuesto.importe) || 0) * 1.21;
+        if (!toArray(ingresosPresu).length) return estadoActual === "Aceptado" ? <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm font-semibold">💶 Todavía no hay ninguna entrada de dinero vinculada a este presupuesto (sin señal cobrada).</div> : null;
+        return (
+          <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border-2 border-emerald-400 text-emerald-900 text-sm">
+            <div className="font-extrabold text-base">✓ Señal / pagos cobrados: {money(cob)}{totIva > 0 ? <span className="font-semibold text-sm"> de {money(totIva)} con IVA · faltan {money(Math.max(0, totIva - cob))}</span> : null}</div>
+            <div className="mt-1 space-y-0.5 text-xs">{toArray(ingresosPresu).map((i) => <div key={i.id}>· {fmtDate(i.fecha)} — {money(i.importe)} · {i.concepto || "entrada"}{i.formaPago ? ` · ${i.formaPago}` : ""}{i.clienteNombre ? ` · ${i.clienteNombre}` : ""}</div>)}</div>
+            {!presupuesto.proyectoCreadoId && <div className="mt-1 text-xs text-emerald-800">Al crear el proyecto, este dinero pasa solo a él.</div>}
+          </div>
+        );
+      })()}
       {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado === "firmado" && (
         <button
           onClick={() => setConfImp({ valor: "", visto: false })}
