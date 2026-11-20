@@ -4278,7 +4278,7 @@ export default function App() {
       documentos: documentosProyecto,
     };
     saveProyectos([np, ...proyectos]);
-    savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
+    savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id, ...(presupuesto.importeConfirmadoEn ? { importe: presupuesto.importe, importeCRMAntes: presupuesto.importeCRMAntes, importeConfirmadoEn: presupuesto.importeConfirmadoEn } : {}) } : p)));
     showToast(`Proyecto #${np.numero} creado desde el presupuesto`);
     return np.id;
   };
@@ -34251,7 +34251,7 @@ function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirP
         onDeleteLlamada={(llamadaId) => onDeleteLlamada(presupuesto.id, llamadaId)}
         onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
         onGuardarTelefono={(tel, extra) => onUpsert({ ...presupuesto, telefono: tel, ...(extra || {}) })}
-        onCrearProyecto={() => onCrearProyecto(presupuesto)}
+        onCrearProyecto={(cambio) => onCrearProyecto(cambio ? { ...presupuesto, ...cambio } : presupuesto)}
         onRecrearProyecto={onRecrearProyecto ? () => onRecrearProyecto(presupuesto) : null}
         onAbrirProyecto={onAbrirProyecto}
         onDuplicar={() => onDuplicar(presupuesto)}
@@ -40336,10 +40336,14 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
               </label>
               {escrito > 0 && (casa
                 ? <div className="text-sm font-bold text-emerald-700">✓ Coincide con el importe del CRM.</div>
-                : <div className="text-sm font-bold text-rose-700">✕ No coincide ({money(escrito)} en la hoja y {money(imp)} en el CRM). Corrige el importe del presupuesto («Editar») antes de pasarlo a proyecto.</div>)}
+                : <div className="rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-900 space-y-1">
+                    <div className="font-bold">⚠ No coincide: {money(escrito)} escrito y {money(imp)} en el CRM ({escrito > imp ? "+" : ""}{money(escrito - imp)}).</div>
+                    <div>Si es un descuento o un cargo de más, el proyecto se crea con <b>{money(escrito)}</b> sin IVA (con IVA 21 %: {money(escrito * 1.21)}) y el presupuesto se queda con ese importe.</div>
+                    <label className="flex items-start gap-2 font-semibold"><input type="checkbox" checked={!!confImp.otro} onChange={(e) => setConfImp({ ...confImp, otro: e.target.checked })} className="mt-0.5 w-4 h-4" /> Sí: el precio bueno es {money(escrito)} sin IVA</label>
+                  </div>)}
               <label className="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" checked={confImp.visto} onChange={(e) => setConfImp({ ...confImp, visto: e.target.checked })} className="mt-0.5 w-4 h-4" /> He comprobado el importe en la hoja del presupuesto firmado</label>
               <div className="flex gap-2 pt-1">
-                <button type="button" disabled={!casa || !confImp.visto} onClick={() => { setConfImp(null); onCrearProyecto(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-bold py-2.5 rounded-md disabled:opacity-40">Sí, es correcto: crear el proyecto</button>
+                <button type="button" disabled={!(escrito > 0) || !confImp.visto || (!casa && !confImp.otro)} onClick={() => { setConfImp(null); onCrearProyecto(casa ? undefined : { importe: Math.round(escrito * 100) / 100, importeCRMAntes: imp, importeConfirmadoEn: new Date().toISOString() }); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-bold py-2.5 rounded-md disabled:opacity-40">{casa || !(escrito > 0) ? "Sí, es correcto: crear el proyecto" : `Crear el proyecto con ${money(escrito)}`}</button>
                 <button type="button" onClick={() => setConfImp(null)} className="px-4 text-sm font-semibold rounded-md border border-slate-300">Cancelar</button>
               </div>
             </div>
