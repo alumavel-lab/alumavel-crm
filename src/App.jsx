@@ -4261,7 +4261,9 @@ export default function App() {
     const np = {
       id: (opciones.recrear && presupuesto.proyectoCreadoId) || uid(),
       numero: nextNumeroProyecto(),
-      nombre: presupuesto.descripcion || presupuesto.numero,
+      // con REFERENCIA: el proyecto se llama como la referencia (con su nº de presupuesto) y la descripción larga va a la descripción de la obra
+      nombre: String(presupuesto.referencia || "").trim() ? descConNumeroPresu(String(presupuesto.referencia).trim(), presupuesto.numero) : (presupuesto.descripcion || presupuesto.numero),
+      ...(String(presupuesto.referencia || "").trim() && String(presupuesto.descripcion || "").trim() ? { especificaciones: String(presupuesto.descripcion).trim(), referenciaPresupuesto: String(presupuesto.referencia).trim() } : {}),
       presupuestoNumero: String(presupuesto.numero || ""), // el nº del presupuesto pasa a la obra (es obligatorio en la ficha de la obra)
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
@@ -9114,7 +9116,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition ${dupFila ? "bg-amber-50/60" : ""} ${inicioGrupo ? "border-t-4 border-t-amber-300" : ""}`}
                 >
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{dupFila && onBorrarDuplicados && <button type="button" onClick={(ev) => { ev.stopPropagation(); quedarseCon(p); }} title="Este se queda: se borran las demás copias" className="mr-2 inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 align-middle">✓ Este se queda</button>}{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; const otros = d ? d.filter((n) => n !== p.numero) : []; return d && p.estadoTrabajo !== "Cancelado" ? <button type="button" onClick={(ev) => { ev.stopPropagation(); setDupQuedar(""); setDupAbierto(String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")); }} className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap hover:bg-amber-200 underline" title="Pulsa para elegir cuál se queda y borrar las copias">⚠ posible duplicado ({otros.length ? otros.map((n) => "#" + n).join(", ") : `${d.length} con el mismo nº`}) · elegir</button> : null; })()}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{dupFila && onBorrarDuplicados && <button type="button" onClick={(ev) => { ev.stopPropagation(); quedarseCon(p); }} title="Este se queda: se borran las demás copias" className="mr-2 inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 align-middle">✓ Este se queda</button>}{(() => { const nm = String(p.nombre || ""); return nm.length > 70 ? <span title={nm}>{nm.slice(0, 70).trim()}…</span> : nm; })() /* en la lista solo la referencia: un nombre largo (la descripción entera) se corta; entera en la ficha */}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; const otros = d ? d.filter((n) => n !== p.numero) : []; return d && p.estadoTrabajo !== "Cancelado" ? <button type="button" onClick={(ev) => { ev.stopPropagation(); setDupQuedar(""); setDupAbierto(String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")); }} className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap hover:bg-amber-200 underline" title="Pulsa para elegir cuál se queda y borrar las copias">⚠ posible duplicado ({otros.length ? otros.map((n) => "#" + n).join(", ") : `${d.length} con el mismo nº`}) · elegir</button> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -39435,7 +39437,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       setErrorMsg(`El cliente "${f.clienteNombre}" no existe todavía en el CRM. Ve a Clientes y date de alta primero, y luego vuelve aquí a elegirlo de la lista.`);
       return;
     }
-    if (!String(f.descripcion || "").trim()) { setErrorMsg("Falta la referencia del presupuesto (campo «Referencia / Descripción de la obra»): es obligatoria."); return; }
+    if (!String(f.descripcion || "").trim() && !String(f.referencia || "").trim()) { setErrorMsg("Falta la referencia o la descripción de la obra: pon al menos una."); return; }
     if (!f.fechaEnvio) { setErrorMsg("Falta la fecha de envío (es obligatoria)."); return; }
     if (!f.envio && !f.montaje && !f.recoge) {
       setErrorMsg("Marca al menos una opción de ¿Envío?, ¿Montaje? o ¿Recoge el cliente? antes de guardar.");
@@ -39612,7 +39614,11 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           </Field>
         </div>
 
-        <Field label="Referencia / Descripción de la obra" required>
+        <Field label="Referencia (nombre corto de la obra: es el nombre que tendrá el proyecto)">
+          <TextInput value={f.referencia || ""} onChange={set("referencia")} placeholder="Ej: Carnicería Julián — María" />
+        </Field>
+
+        <Field label="Descripción de la obra" required>
           <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Reforma vivienda C/ Mayor 4 — 4 ventanas de PVC" />
         </Field>
 
@@ -40416,6 +40422,7 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
           <InfoRow icon={<Phone size={14} />} label="Teléfono" value={presupuesto.telefono || "—"} />
           <InfoRow icon={<Mail size={14} />} label="Email" value={presupuesto.email || "—"} />
           <InfoRow icon={<MapPin size={14} />} label="Zona" value={presupuesto.zona || "—"} />
+          {presupuesto.referencia ? <InfoRow icon={<FileText size={14} />} label="Referencia" value={presupuesto.referencia} /> : null}
           <InfoRow icon={<FileText size={14} />} label="Descripción / Obra" value={presupuesto.descripcion || "—"} />
           {presupuesto.fechaRespuesta && <InfoRow icon={<CalendarDays size={14} />} label="Fecha respuesta" value={`${fmtDate(presupuesto.fechaRespuesta)} (${diasResp}d)`} />}
           {estadoActual === "Rechazado" && <InfoRow icon={<AlertOctagon size={14} />} label="Motivo rechazo" value={presupuesto.motivoRechazo || "—"} />}
