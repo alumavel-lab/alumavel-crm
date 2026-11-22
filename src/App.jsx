@@ -2243,7 +2243,7 @@ export default function App() {
       asignadoPor: currentUser?.id || null,
       asignadoPorNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
       requiereConfirmacion: !!data.requiereConfirmacion,
-      fechaLimite: data.fechaLimite || "",
+      fechaLimite: data.fechaLimite || fechaLimitePorDefecto(),
       salaId: data.salaId || null,
       salaNombre: data.salaNombre || "",
       estado: "Pendiente",
@@ -6634,7 +6634,8 @@ export default function App() {
           // TAREAS VENCIDAS: a la persona (las suyas) y a quien supervisa tareas (las de todo el equipo)
           if (!currentUser || modulo === "tareas" || !tieneAcceso("tareas")) return null;
           const mias = tareas.filter((t) => t.asignadoA === currentUser.id && tareaVencida(t));
-          const equipo = esSupervisorTareas(currentUser, usuarios) ? tareas.filter((t) => t.asignadoA !== currentUser.id && tareaVencida(t)) : [];
+          const revisados = revisaA(currentUser);
+          const equipo = tareas.filter((t) => t.asignadoA !== currentUser.id && revisados.has(t.asignadoA) && tareaVencida(t));
           if (!mias.length && !equipo.length) return null;
           const nombres = [...new Set(equipo.map((t) => String(t.asignadoANombre || "").split(" ")[0]).filter(Boolean))];
           return (
@@ -30978,18 +30979,22 @@ function ChatModulo({ usuarios, currentUser, proyectos, onCrearTarea }) {
 
 function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, onClose, onCrear }) {
   const directa = !mensaje; // «Nueva tarea» directa (sin venir de un mensaje del chat)
-  const [asignadoA, setAsignadoA] = useState("");
+  const puedeAOtros = esSupervisorTareas(currentUser); // sin «Supervisa tareas», solo a uno mismo
+  const [asignadoA, setAsignadoA] = useState(puedeAOtros ? "" : (currentUser?.id || ""));
   const [titulo, setTitulo] = useState(mensaje ? String(mensaje.texto || "").slice(0, 80) : "");
   const [descripcion, setDescripcion] = useState(mensaje ? String(mensaje.texto || "") : "");
   const [fechaLimite, setFechaLimite] = useState("");
   const [requiereConfirmacion, setRequiereConfirmacion] = useState(true);
   const [error, setError] = useState("");
 
-  const candidatos = toArray(usuarios).filter((u) => u && (directa || u.id !== currentUser?.id));
+  const candidatos = puedeAOtros
+    ? toArray(usuarios).filter((u) => u && (u.id === currentUser?.id || !esOperarioLinea(u)))
+    : toArray(usuarios).filter((u) => u && u.id === currentUser?.id);
 
   const submit = () => {
     if (!asignadoA) { setError("Elige a quién se la asignas."); return; }
     if (!titulo.trim()) { setError("Ponle un título a la tarea."); return; }
+    if (!fechaLimite) { setError("Pon la fecha límite: toda tarea lleva fecha."); return; }
     const usuario = usuarios.find((u) => u.id === asignadoA);
     onCrear({
       titulo: titulo.trim(),
@@ -31011,7 +31016,7 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
         <div className="space-y-3">
           <Field label="Asignar a" required>
             <Select value={asignadoA} onChange={(e) => setAsignadoA(e.target.value)}>
-              <option value="">Elige un compañero...</option>
+              {puedeAOtros && <option value="">Elige a quién...</option>}
               {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}{u.id === currentUser?.id ? " (yo)" : ""}</option>)}
             </Select>
           </Field>
@@ -31021,7 +31026,7 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
           <Field label="Descripción">
             <TextArea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} />
           </Field>
-          <Field label="Fecha límite (opcional)">
+          <Field label="Fecha límite" required>
             <TextInput type="date" value={fechaLimite} onChange={(e) => setFechaLimite(e.target.value)} />
           </Field>
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -31042,19 +31047,26 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
 
 // Tarea vencida: pendiente y con la fecha límite ya pasada (hoy aún no cuenta como vencida). Las que esperan confirmación no cuentan: ya están hechas.
 const tareaVencida = (t) => !!t && t.estado === "Pendiente" && !!t.fechaLimite && String(t.fechaLimite).slice(0, 10) < new Date().toLocaleDateString("sv-SE");
-// Quién recibe el aviso de las tareas vencidas de todo el equipo: los marcados como «Supervisa tareas». Si no hay nadie marcado, los administradores (para que no se pierda).
+// «Puede asignar tareas a otros» (campo supervisaTareas; de serie, todos; se quita a mano en la ficha de usuario). Quien no lo tiene solo se crea tareas a sí mismo. El administrador siempre.
+// Las vencidas de los demás solo le avisan a quien los tiene marcados en «Revisa las tareas de» (revisaTareasDe): lo marca Miguel, para que no le salga todo a todos.
+const revisaA = (u) => new Set(toArray(u && u.revisaTareasDe));
 const tareasFiltroInicial = { actual: null }; // el aviso de vencidas del equipo abre Tareas directamente en esa pestaña
-const esSupervisorTareas = (u, usuarios) => !!u && (!!u.supervisaTareas || (u.rol === "Administrador" && !toArray(usuarios).some((x) => x && x.supervisaTareas)));
+const esSupervisorTareas = (u) => !!u && (u.rol === "Administrador" || u.supervisaTareas !== false);
+// Operario de la línea (tiene puesto en fábrica): no entra en la lista para asignarle tareas de oficina
+const esOperarioLinea = (u) => !!u && u.rol !== "Administrador" && (!!u.puestoFijo || toArray(u.puestosLinea).filter(Boolean).length > 0);
+// Fecha límite para las tareas que se crean solas sin fecha (llamadas, incidencias…): mañana. Toda tarea lleva fecha.
+const fechaLimitePorDefecto = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("sv-SE"); };
 
 function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial }) {
-  const supervisa = esSupervisorTareas(currentUser, usuarios);
-  const [filtro, setFiltro] = useState(filtroInicial === "equipo" && supervisa ? "equipo" : "asignadas");
+  const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
   useEffect(() => { tareasFiltroInicial.actual = null; }, []);
 
   const orden = (a, b) => (tareaVencida(b) - tareaVencida(a)) || ((b.fechaCreacion || 0) - (a.fechaCreacion || 0)); // las vencidas, arriba
   const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort(orden);
   const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort(orden);
-  const vencidasEquipo = supervisa ? tareas.filter((t) => tareaVencida(t) && t.asignadoA !== currentUser?.id).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
+  const misRevisados = revisaA(currentUser);
+  const revisaAlguien = misRevisados.size > 0;
+  const vencidasEquipo = revisaAlguien ? tareas.filter((t) => tareaVencida(t) && t.asignadoA !== currentUser?.id && misRevisados.has(t.asignadoA)).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
   const lista = filtro === "asignadas" ? asignadas : filtro === "equipo" ? vencidasEquipo : creadas;
 
   const badgeEstado = (t) => {
@@ -31080,7 +31092,7 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
         <button onClick={() => setFiltro("creadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "creadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
           Creadas por mí ({creadas.length})
         </button>
-        {supervisa && (
+        {revisaAlguien && (
           <button onClick={() => setFiltro("equipo")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "equipo" ? "bg-rose-600 text-white" : "bg-white border border-rose-300 text-rose-700"}`}>
             Vencidas del equipo ({vencidasEquipo.length})
           </button>
@@ -57901,6 +57913,7 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
     return (
       <UsuarioForm
         initial={editing}
+        usuarios={usuarios}
         onCancel={() => setView("list")}
         onSave={async (data) => { const ok = await onUpsert(data); if (ok) setView("list"); return ok; }}
         onEnviarCambioPassword={onEnviarCambioPassword}
@@ -64346,7 +64359,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   );
 }
 
-function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
+function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword, usuarios = [] }) {
   const [f, setF] = useState(
     initial ? { ...initial, password: "" } : { id: null, nombre: "", apellidos: "", email: "", password: "", telefono: "", rol: "Usuario", modulos: MODULOS_DISPONIBLES.map((m) => m.id) }
   );
@@ -64481,9 +64494,17 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
           </label>
         )}
         <label className="flex items-start gap-2 text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3 cursor-pointer">
-          <input type="checkbox" checked={!!f.supervisaTareas} onChange={(e) => setF({ ...f, supervisaTareas: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
-          <span><b>Supervisa tareas</b>: le avisa de las tareas vencidas de todo el equipo y las ve en Tareas → «Vencidas del equipo». Si no hay nadie marcado, avisa a los administradores.</span>
+          <input type="checkbox" checked={f.rol === "Administrador" || f.supervisaTareas !== false} disabled={f.rol === "Administrador"} onChange={(e) => setF({ ...f, supervisaTareas: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+          <span><b>Puede asignar tareas a otros</b> (de serie, todos): puede darle tareas a otros de la oficina. Si lo quitas, solo podrá crearse tareas a sí mismo.</span>
         </label>
+        <div className="text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3">
+          <b>Revisa las tareas de:</b> le avisa cuando a estas personas se les vence una tarea y las ve en Tareas → «Vencidas del equipo». Si no marcas a nadie, no revisa a nadie.
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            {toArray(usuarios).filter((u) => u && u.id && u.id !== f.id && !esOperarioLinea(u)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((u) => (
+              <label key={u.id} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={toArray(f.revisaTareasDe).includes(u.id)} onChange={(e) => setF({ ...f, revisaTareasDe: e.target.checked ? [...toArray(f.revisaTareasDe), u.id] : toArray(f.revisaTareasDe).filter((x) => x !== u.id) })} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+            ))}
+          </div>
+        </div>
         {f.rol !== "Administrador" && (
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-sky-50 border border-sky-200 rounded-md p-3 cursor-pointer">
             <input type="checkbox" checked={!!f.verTodosLeads} onChange={(e) => setF({ ...f, verTodosLeads: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
