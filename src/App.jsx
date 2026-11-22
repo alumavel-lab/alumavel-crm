@@ -23038,9 +23038,10 @@ const discrepanciasPedido = (p) => {
   if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return [];
   const f = String(p.fechaRecibido || p.fechaRecepcion || "").slice(0, 10);
   const viejo = !!f && (Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000 > 90; // pedidos recibidos hace más de 3 meses: no se avisa
+  const deUxcar = !!p.uxcarPedidoId || p.origen === "portalUxcar"; // protocolo de oficina (nov 2026): en lo de Uxcar basta con la baja de fábrica
   return toArray(p.lineas).map((l) => {
     const ofi = ofiRecibida(p, l), fab = !!l.confirmadoFabrica;
-    if (fab && !ofi) return { l, tipo: "fabrica" };
+    if (fab && !ofi) return deUxcar ? null : { l, tipo: "fabrica" };
     if (ofi && !fab && !viejo) return { l, tipo: "oficina" };
     return null;
   }).filter(Boolean);
@@ -41004,9 +41005,15 @@ const uxEstadoMat = (exp, k) => {
   if (k === "vidrios" || k === "compactos") {
     const ux = e === "recibido";
     const fab = uxEnAlmacen(exp, k);
-    if (ux && fab) return "recibido";
+    // Protocolo de oficina (nov 2026): basta con fábrica, ya no se espera la confirmación de Uxcar. Pero tiene que estar TODO lo pedido:
+    // si fábrica solo tiene una parte, sigue «en_fabrica» (amarillo) y la obra no sale como lista para fabricar.
+    if (fab) {
+      if (ux || uxAlmacenGlobal.resumen) return "recibido"; // en el portal de Uxcar solo hay el resumen (sin cantidades): ahí basta con que fábrica lo tenga
+      const c = uxCantidadesObra(exp);
+      const completo = k === "vidrios" ? c.pedCris > 0 && c.hayCris >= c.pedCris : c.pedPers > 0 && c.hayPers >= c.pedPers;
+      return completo ? "recibido" : "en_fabrica";
+    }
     if (ux) return "llegado_ux";
-    if (fab) return "en_fabrica"; // la fábrica ya lo tiene (puede seguir trabajando), pero hasta que Uxcar lo confirme (a mano o con albarán) no queda verde
   }
   return e;
 };
@@ -41035,7 +41042,7 @@ const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
   if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
   else if (est === "recibido") r = { t: "✓ Ha llegado todo: Uxcar y fábrica lo han confirmado", c: "text-emerald-700" };
   else if (est === "llegado_ux") r = { t: "Uxcar ha confirmado su albarán · falta que lo confirme la fábrica", c: "text-amber-700 font-semibold" };
-  else if (est === "en_fabrica") r = { t: "Ya está en el almacén de la fábrica · falta el albarán de Uxcar", c: "text-amber-700 font-semibold" };
+  else if (est === "en_fabrica") r = { t: "Fábrica tiene una parte · falta material", c: "text-amber-700 font-semibold" };
   else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
   else if (peds.some((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy())) r = { t: `⚠ Retrasado: debía llegar el ${uxFecha(peds.filter((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy()).map((p) => p.llegadaPrevista).sort()[0])}`, c: "text-rose-700 font-semibold" };
   else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
@@ -41286,7 +41293,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
                 <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
                 <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
                 <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
-                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "llegado_ux" || st === "en_fabrica" ? "text-amber-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`} title={st === "llegado_ux" ? "Uxcar ha confirmado su albarán; falta la fábrica" : st === "en_fabrica" ? "Ya está en la fábrica; falta el albarán de Uxcar" : undefined}>{st === "recibido" ? "✓ Llegado" : st === "llegado_ux" ? "Uxcar ✓ · falta fábrica" : st === "en_fabrica" ? "Fábrica ✓ · falta Uxcar" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
+                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "llegado_ux" || st === "en_fabrica" ? "text-amber-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`} title={st === "llegado_ux" ? "Uxcar ha confirmado su albarán; falta la fábrica" : st === "en_fabrica" ? "Fábrica tiene una parte; falta material por llegar" : undefined}>{st === "recibido" ? "✓ Llegado" : st === "llegado_ux" ? "Uxcar ✓ · falta fábrica" : st === "en_fabrica" ? "Fábrica: falta parte" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(e.fechaAlta)}</td>
                 <td className="px-3 py-2"><UxEstado estado={e.estado} /></td>
                 <td className="px-3 py-2 whitespace-nowrap font-semibold">{uxFecha(e.fechaEntrega)}</td>
@@ -41304,8 +41311,8 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
           <p><b className="text-rose-600">✗ Sin pedir</b> — Uxcar todavía no ha hecho el pedido de ese material.</p>
           <p><b className="text-sky-700">Pedido</b> — el pedido ya está hecho en el portal, pero el material todavía no ha llegado a ninguna parte.</p>
           <p><b className="text-amber-700">Uxcar ✓ · falta fábrica</b> — Uxcar dice que lo ha recibido, pero Ecowin PVC aún no lo ha recibido en su almacén.</p>
-          <p><b className="text-amber-700">Fábrica ✓ · falta Uxcar</b> — ya está en el almacén de la fábrica y se puede trabajar con ello; falta que Uxcar lo confirme, a mano con su botón o subiendo el albarán. Es el cruce entre las dos partes.</p>
-          <p><b className="text-emerald-700">✓ Llegado</b> — confirmado por las dos partes: Uxcar y la fábrica. Solo entonces queda verde.</p>
+          <p><b className="text-amber-700">Fábrica: falta parte</b> — ya hay material en el almacén de la fábrica, pero no todo lo pedido.</p>
+          <p><b className="text-emerald-700">✓ Llegado</b> — ya está en el almacén de la fábrica. Basta con que lo dé de baja fábrica: Uxcar no tiene que confirmarlo.</p>
           <p><b className="text-slate-500">No lleva</b> — el expediente no tiene persianas.</p>
           <p className="text-slate-500">El punto de la columna Material resume ambos: rojo = falta todo, amarillo = falta algo, verde = persianas y cristales llegados.</p>
         </div>
@@ -53099,7 +53106,7 @@ function RevisionExpedientesUx({ uxExpedientes, cristales, persianas }) {
       };
       [["vidrios", "Cristales", ev], ["compactos", "Persianas", ec]].forEach(([k, n, est]) => {
         if (est === "llegado_ux") { const pos = posibles(); avisos.push(`${n}: Uxcar lo confirmó y no encuentro el material en los almacenes con sus números (busco EXP ${[K.d, ...(K.exps || [])].filter(Boolean).join(", ")}${K.pptos.size ? ` · ppto ${[...K.pptos].join(", ")}` : ""}).${pos ? ` Hay ${pos}: si es el suyo, el número está mal en el almacén o en el expediente.` : " Comprueba que ha llegado y que está ubicado."}`); }
-        if (est === "en_fabrica") avisos.push(`${n}: la fábrica ya lo tiene en el almacén, pero Uxcar no ha confirmado su albarán.`);
+        if (est === "en_fabrica") avisos.push(`${n}: la fábrica tiene una parte en el almacén, pero falta material por llegar.`);
       });
       if (avisos.length) out.push({ e, avisos });
     });
@@ -56123,7 +56130,7 @@ Abrid el pedido en **Pedidos**, subid la foto o el PDF del **albarán** y el CRM
 En la pestaña **Incidencias** podéis avisar de cualquier problema (material roto, que no llega, un error en un expediente): elegid el expediente si es de uno, contad qué ha pasado y, si queréis, añadid una **foto**. Ecowin PVC la ve al momento y la marca como resuelta, con su respuesta.
 
 ## Discrepancias
-Cuando llega vuestro pedido, el chico de Uxcar lo **da de baja** en el portal, igual que hace fábrica. Si algo no coincide con lo pedido (falta, roto o de más), aparece en la pestaña **Discrepancias**. Revisadlo allí y avisad a Ecowin PVC. Cada uno ve solo **sus** pedidos: los pedidos que hace Ecowin PVC por su cuenta no salen en el portal.
+Cuando llega vuestro pedido, lo **da de baja fábrica** y con eso basta: no tenéis que confirmarlo vosotros. Si algo no coincide con lo pedido (falta, roto o de más), aparece en la pestaña **Discrepancias**. Revisadlo allí y avisad a Ecowin PVC. Cada uno ve solo **sus** pedidos: los pedidos que hace Ecowin PVC por su cuenta no salen en el portal.
 
 ## Comprobar y avisar
 - [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
