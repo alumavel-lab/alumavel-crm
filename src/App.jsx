@@ -6033,6 +6033,18 @@ export default function App() {
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
     return modulosPermitidos.includes(id);
   };
+  // UNA VEZ (protocolo de oficina, 22/11/2026): las tareas pendientes que se crearon sin fecha límite pasan a tener el viernes 27/11/2026,
+  // para que entren en el aviso de vencidas. Lo hace la primera sesión de administrador que abra el CRM; las hechas no se tocan.
+  const fechasTareasHechas = useRef(false);
+  useEffect(() => {
+    if (!isAdmin || loading || fechasTareasHechas.current) return;
+    const sinFecha = tareas.filter((t) => t && !t.fechaLimite && t.estado !== "Hecha");
+    if (!sinFecha.length) return;
+    fechasTareasHechas.current = true;
+    const ids = new Set(sinFecha.map((t) => t.id));
+    saveTareas(tareas.map((t) => (t && ids.has(t.id) ? { ...t, fechaLimite: "2026-11-27", fechaLimitePuestaAuto: true } : t)));
+    showToast(`${sinFecha.length} tarea${sinFecha.length === 1 ? "" : "s"} sin fecha: puesta${sinFecha.length === 1 ? "" : "s"} para el viernes 27/11`);
+  }, [isAdmin, loading, tareas]); // eslint-disable-line react-hooks/exhaustive-deps
   const [nuevaTareaAbierta, setNuevaTareaAbierta] = useState(false); // «+ Nueva tarea» directa (barra lateral y módulo Tareas)
   const misTareasPendientes = tareas.filter((t) =>
     (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
