@@ -33573,6 +33573,9 @@ const LIC_GRUPOS = {
   B: { label: "Obra / servicio de carpintería", corto: "B · Obra carpintería", color: "bg-sky-600 text-white" },
   C: { label: "La carpintería es una parte", corto: "C · Parte de obra", color: "bg-slate-400 text-white" },
 };
+// Cómo nos presentamos a cada licitación (por defecto, solos)
+const LIC_COMO = ["Solos", "UTE con Doranjo SL", "Doranjo se presenta, nosotros suministramos"];
+const LIC_PEQUENA = 100000; // "Pequeñas": hasta este importe (sin IVA)
 const licHoy = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Madrid" });
 const licDias = (f) => (f ? Math.round((new Date(f + "T12:00:00") - new Date(licHoy() + "T12:00:00")) / 864e5) : null);
 const licEnPlazo = (l) => l.estado === "PUB" && l.fin && l.fin >= licHoy();
@@ -33589,6 +33592,7 @@ function LicitacionesModulo({ currentUser, usuarios }) {
   const [grupos, setGrupos] = useState({ A: true, B: true, C: false });
   const [q, setQ] = useState("");
   const [soloPvc, setSoloPvc] = useState(false);
+  const [soloPequenas, setSoloPequenas] = useState(false);
   const [abierta, setAbierta] = useState(null);
   const [dias, setDias] = useState("3");
   const [lanzando, setLanzando] = useState(false);
@@ -33638,10 +33642,11 @@ function LicitacionesModulo({ currentUser, usuarios }) {
       if (pestana === "descartadas" && s !== "descartada") return false;
       if (pestana !== "todas" && pestana !== "descartadas" && pestana !== "resultado" && pestana !== "marcha" && !grupos[l.grupo || "C"]) return false;
       if (soloPvc && !l.pvc) return false;
-      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, l.expediente, l.notas, l.responsable].some((x) => String(x || "").toLowerCase().includes(t))) return false;
+      if (soloPequenas && !(parseFloat(l.importe) > 0 && parseFloat(l.importe) <= LIC_PEQUENA)) return false;
+      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, l.expediente, l.notas, l.responsable, l.comoVamos].some((x) => String(x || "").toLowerCase().includes(t))) return false;
       return true;
     }).sort((a, b) => (pestana === "estudiar" ? String(a.grupo).localeCompare(String(b.grupo)) : 0) || String(a.fin || "9").localeCompare(String(b.fin || "9")));
-  }, [items, pestana, grupos, q, soloPvc]);
+  }, [items, pestana, grupos, q, soloPvc, soloPequenas]);
 
   const todas = toArray(items).filter((l) => l && l.id);
   const cuenta = {
@@ -33690,6 +33695,7 @@ function LicitacionesModulo({ currentUser, usuarios }) {
         {pestana === "estudiar" && Object.entries(LIC_GRUPOS).map(([g, x]) => (
           <button key={g} onClick={() => setGrupos({ ...grupos, [g]: !grupos[g] })} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${grupos[g] ? x.color + " border-transparent" : "bg-white text-slate-500 border-slate-300"}`}>{x.corto}</button>
         ))}
+        <button onClick={() => setSoloPequenas(!soloPequenas)} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${soloPequenas ? "bg-amber-500 text-white border-transparent" : "bg-white text-slate-500 border-slate-300"}`} title="Para empezar: contratos pequeños, menos papeles y menos riesgo">Pequeñas (hasta {licEur(LIC_PEQUENA)})</button>
         <label className="text-xs flex items-center gap-1 text-slate-600"><input type="checkbox" checked={soloPvc} onChange={(e) => setSoloPvc(e.target.checked)} /> Solo las que dicen PVC</label>
         <div className="relative ml-auto">
           <Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
@@ -33723,7 +33729,7 @@ function LicitacionesModulo({ currentUser, usuarios }) {
                       <span className="text-xs text-slate-500">{l.tipo} · {licEur(l.importe)} sin IVA</span>
                     </div>
                     <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-left text-sm font-semibold text-slate-800 hover:text-[#2E8B57]">{String(l.titulo || "").slice(0, abiertaEsta ? 2000 : 220)}{!abiertaEsta && String(l.titulo || "").length > 220 ? "…" : ""}</button>
-                    <div className="text-xs text-slate-500 mt-0.5">{l.organo}{l.ciudad || l.provincia ? ` — ${l.ciudad || l.provincia}` : ""} · Exp. {l.expediente}{l.responsable ? ` · Lleva: ${l.responsable}` : ""}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{l.organo}{l.ciudad || l.provincia ? ` — ${l.ciudad || l.provincia}` : ""} · Exp. {l.expediente}{l.responsable ? ` · Lleva: ${l.responsable}` : ""}{l.comoVamos && l.comoVamos !== "Solos" ? ` · ${l.comoVamos}` : ""}</div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {l.enlace && <a href={l.enlace} target="_blank" rel="noreferrer" className="text-xs font-semibold text-sky-700 border border-sky-200 hover:bg-sky-50 rounded px-2 py-1.5 flex items-center gap-1"><Globe size={13} /> Pliego</a>}
@@ -33746,9 +33752,9 @@ function LicitacionesModulo({ currentUser, usuarios }) {
 }
 
 function LicitacionFicha({ l, usuarios, onEstado, onGuardar }) {
-  const [f, setF] = useState({ responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" });
-  useEffect(() => { setF({ responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" }); }, [l.id]);
-  const cambiado = Object.keys(f).some((k) => String(f[k] || "") !== String(l[k] || ""));
+  const [f, setF] = useState({ comoVamos: l.comoVamos || "Solos", responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" });
+  useEffect(() => { setF({ comoVamos: l.comoVamos || "Solos", responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" }); }, [l.id]);
+  const cambiado = Object.keys(f).some((k) => String(f[k] || "") !== String(l[k] || (k === "comoVamos" ? "Solos" : "")));
   const s = licSeg(l);
   const nombres = toArray(usuarios).map((u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim()).filter(Boolean);
   return (
@@ -33762,6 +33768,11 @@ function LicitacionFicha({ l, usuarios, onEstado, onGuardar }) {
         </div>
         {s === "descartada" && l.motivoDescarte && <div className="text-xs text-slate-500">Motivo del descarte: {l.motivoDescarte}</div>}
         <div className="grid grid-cols-2 gap-2">
+          <label className="text-xs text-slate-500 col-span-2">Cómo vamos
+            <select value={f.comoVamos} onChange={(e) => setF({ ...f, comoVamos: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800">
+              {LIC_COMO.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
           <label className="text-xs text-slate-500">Responsable
             <input list={`lic-resp-${l.id}`} value={f.responsable} onChange={(e) => setF({ ...f, responsable: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
             <datalist id={`lic-resp-${l.id}`}>{nombres.map((n) => <option key={n} value={n} />)}</datalist>
