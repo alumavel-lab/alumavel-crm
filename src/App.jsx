@@ -6046,6 +6046,12 @@ export default function App() {
     showToast(`${sinFecha.length} tarea${sinFecha.length === 1 ? "" : "s"} sin fecha: puesta${sinFecha.length === 1 ? "" : "s"} para el viernes 27/11`);
   }, [isAdmin, loading, tareas]); // eslint-disable-line react-hooks/exhaustive-deps
   const cfgTareasAuto = useObjetoFb("config/tareasAuto");
+  // «Me lo quedo»: alguien del grupo de presupuestos coge una tarea de presupuesto (pasa a su nombre, mismo plazo)
+  const cogerTarea = (id) => {
+    const nom = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
+    saveTareas(tareas.map((t) => (t && t.id === id ? { ...t, asignadoA: currentUser.id, asignadoANombre: nom, cogidaPor: nom, cogidaEn: Date.now(), asignadaAntesA: t.asignadoANombre || "" } : t)));
+    showToast("Presupuesto para ti");
+  };
   const guardarCfgTareasAuto = (cfg) => fbSet(ref(fbDb, "config/tareasAuto"), JSON.parse(JSON.stringify(cfg))).then(() => showToast("Tareas automáticas guardadas")).catch((e) => showToast("No se pudo guardar: " + e.message, "error"));
   useEffect(() => {
     // lo hacen el administrador y los responsables elegidos (ids fijos por presupuesto/pedido: si dos lo hacen a la vez, no se duplica)
@@ -7503,6 +7509,7 @@ export default function App() {
             onDelete={deleteTarea}
             onNueva={() => setNuevaTareaAbierta(true)}
             cfgAuto={cfgTareasAuto}
+            onCoger={cogerTarea}
             onGuardarCfgAuto={isAdmin ? guardarCfgTareasAuto : null}
             filtroInicial={tareasFiltroInicial.actual}
           />
@@ -31108,7 +31115,7 @@ const esOperarioLinea = (u) => !!u && u.rol !== "Administrador" && (!!u.puestoFi
 const fechaLimitePorDefecto = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("sv-SE"); };
 
 // Configuración de las tareas automáticas (solo administrador)
-function TareasAutoConfig({ cfg, usuarios, onGuardar }) {
+function TareasAutoConfig({ cfg, usuarios, onGuardar, tareas = [] }) {
   const [f, setF] = useState(() => ({ presupuestos: "", pedidos: "", diasPresupuestos: 2, diasPedidos: 2, ...(cfg || {}) }));
   useEffect(() => { setF((x) => ({ ...x, ...(cfg || {}) })); }, [JSON.stringify(cfg || {})]); // eslint-disable-line react-hooks/exhaustive-deps
   const lista = toArray(usuarios).filter((u) => u && u.id && !esOperarioLinea(u)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
@@ -31125,6 +31132,27 @@ function TareasAutoConfig({ cfg, usuarios, onGuardar }) {
       <div className="mt-3 space-y-3 text-sm text-slate-700">
         <p className="text-xs text-slate-500">Cuando entra un presupuesto o un pedido, se le crea una tarea a su responsable. Se cierra sola cuando el presupuesto se envía al cliente o el pedido se hace (o se cancela). Solo cuenta lo que entre desde que se activa, no lo antiguo. Los pedidos de Uxcar no, porque ya vienen hechos.</p>
         <div className="flex flex-wrap items-center gap-2"><b className="w-40">Presupuesto sin enviar →</b> {sel("presupuestos")} <span>plazo</span> {dias("diasPresupuestos")} <span>días</span></div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><b className="w-40">Pueden cogerlos también:</b>
+          {lista.filter((u) => u.id !== f.presupuestos).map((u) => (
+            <label key={u.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.cogenPresupuestos).includes(u.id)} onChange={(e) => setF({ ...f, cogenPresupuestos: e.target.checked ? [...toArray(f.cogenPresupuestos), u.id] : toArray(f.cogenPresupuestos).filter((x) => x !== u.id) })} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-500 -mt-1">Todos entran a nombre del responsable; él y los marcados pueden coger el que quieran con «Me lo quedo».</p>
+        {(() => {
+          // Últimos 7 días: presupuestos enviados por cada uno y los que tiene pendientes
+          const hace7 = Date.now() - 7 * 86400000;
+          const pres = toArray(tareas).filter((t) => t && t.automatica && t.automatica.tipo === "pres");
+          const porPersona = {};
+          pres.forEach((t) => { const k = t.asignadoANombre || "—"; const r = porPersona[k] || (porPersona[k] = { hechos: 0, cogidos: 0, pendientes: 0 }); if (t.estado === "Hecha" && (t.fechaCompletada || 0) >= hace7) r.hechos++; if (t.estado !== "Hecha") r.pendientes++; if ((t.cogidaEn || 0) >= hace7) r.cogidos++; });
+          const filas = Object.entries(porPersona);
+          if (!filas.length) return null;
+          return (
+            <div className="bg-slate-50 border border-slate-200 rounded-md p-3">
+              <div className="font-semibold mb-1">Presupuestos por persona (últimos 7 días)</div>
+              {filas.map(([n, r]) => <div key={n} className="text-xs">{n}: <b>{r.hechos}</b> enviados · {r.cogidos} cogidos con «Me lo quedo» · {r.pendientes} pendientes ahora</div>)}
+            </div>
+          );
+        })()}
         <div className="flex flex-wrap items-center gap-2"><b className="w-40">Pedido sin hacer →</b> {sel("pedidos")} <span>plazo</span> {dias("diasPedidos")} <span>días</span></div>
         <button onClick={() => onGuardar({ ...f, desde: f.desde || new Date().toLocaleDateString("sv-SE") })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold px-4 py-2 rounded-md">Guardar</button>
       </div>
@@ -31132,7 +31160,10 @@ function TareasAutoConfig({ cfg, usuarios, onGuardar }) {
   );
 }
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto, onCoger }) {
+  // Presupuestos para coger: si estás en el grupo de presupuestos, ves los pendientes de los demás del grupo
+  const grupoPres = new Set([cfgAuto && cfgAuto.presupuestos, ...toArray(cfgAuto && cfgAuto.cogenPresupuestos)].filter(Boolean));
+  const paraCoger = grupoPres.has(currentUser?.id) ? tareas.filter((t) => t && t.automatica && t.automatica.tipo === "pres" && t.estado === "Pendiente" && t.asignadoA !== currentUser.id && grupoPres.has(t.asignadoA)).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
   const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
   useEffect(() => { tareasFiltroInicial.actual = null; }, []);
 
@@ -31154,7 +31185,21 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
   return (
     <div className="p-8 max-w-4xl">
       <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti${asignadas.filter(tareaVencida).length ? ` · ${asignadas.filter(tareaVencida).length} vencida(s)` : ""}`} />
-      {onGuardarCfgAuto && <TareasAutoConfig cfg={cfgAuto} usuarios={usuarios} onGuardar={onGuardarCfgAuto} />}
+      {onGuardarCfgAuto && <TareasAutoConfig cfg={cfgAuto} usuarios={usuarios} onGuardar={onGuardarCfgAuto} tareas={tareas} />}
+      {paraCoger.length > 0 && onCoger && (
+        <div className="mb-5 bg-sky-50 border border-sky-200 rounded-lg p-4">
+          <div className="font-semibold text-sky-900 text-sm mb-2">Presupuestos para coger ({paraCoger.length})</div>
+          <div className="space-y-1.5">
+            {paraCoger.map((t) => (
+              <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-white border border-sky-100 rounded-md px-3 py-2">
+                <span className="font-semibold text-slate-800">{t.titulo}</span>
+                <span className="text-xs text-slate-500">ahora de {t.asignadoANombre} · límite {fmtDate(t.fechaLimite)}</span>
+                <button onClick={() => onCoger(t.id)} className="ml-auto text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1.5 rounded-md">Me lo quedo</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {onNueva && (
         <div className="mb-4">
           <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">+ Nueva tarea</button>
@@ -31189,7 +31234,7 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
             <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
-              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}</span>}
+              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}{t.cogidaPor ? ` · la cogió ${t.cogidaPor}` : ""}</span>}
               {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : filtro === "equipo" ? <span>Para: {t.asignadoANombre} · De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
               {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
               {t.fechaLimite && <span className={tareaVencida(t) ? "text-rose-600 font-semibold" : ""}>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
