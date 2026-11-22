@@ -7762,7 +7762,7 @@ export default function App() {
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
-        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
+        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} usuarioId={currentUser ? currentUser.id : ""} usuarios={usuarios} />}
         {modulo === "uxcar" && (
           <UxcarModulo
             incidenciasUx={incidenciasUx} stockUx={stockUxAuto} nombreUsuarioUx={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Ecowin PVC"}
@@ -55521,7 +55521,7 @@ function CondicionesDoc({ doc, marca, onVolver, acciones }) {
 
 // Lista de documentos (CRM y portal)
 function CondicionesLista({ docs, onAbrir, vacio }) {
-  const lista = toArray(docs).slice().sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || String(a.titulo).localeCompare(String(b.titulo)));
+  const lista = toArray(docs).slice().sort((a, b) => (!!b._primero - !!a._primero) || (a.orden ?? 99) - (b.orden ?? 99) || String(a.titulo).localeCompare(String(b.titulo)));
   if (lista.length === 0) return <p className="text-sm text-slate-500">{vacio || "Todavía no hay documentos."}</p>;
   return (
     <div className="grid gap-2 max-w-4xl">
@@ -55529,7 +55529,7 @@ function CondicionesLista({ docs, onAbrir, vacio }) {
         <button key={d.id} onClick={() => onAbrir(d.id)} className="text-left bg-white border border-slate-200 rounded-lg px-4 py-3 hover:border-[#2E8B57] flex items-center gap-3">
           <FileText size={18} className="text-[#2E8B57] shrink-0" />
           <div className="min-w-0">
-            <div className="font-semibold text-slate-800 truncate">{d.titulo}</div>
+            <div className="font-semibold text-slate-800 truncate">{d.tituloLista || d.titulo}</div>
             <div className="text-xs text-slate-400">Actualizado el {fmtDate(d.actualizado || d.fecha)}{d.archivoUrl ? " · PDF adjunto" : ""}</div>
           </div>
           <ChevronRight size={16} className="ml-auto text-slate-300" />
@@ -55540,7 +55540,7 @@ function CondicionesLista({ docs, onAbrir, vacio }) {
 }
 
 // Formulario (solo administrador)
-function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
+function CondicionesForm({ inicial, para, onCancel, onGuardar, usuarios = [] }) {
   const [f, setF] = useState(() => ({ titulo: "", contenido: "", enlace: "", orden: "", ...(inicial || {}), para: (inicial && inicial.para) || para }));
   const [archivo, setArchivo] = useState(null);
   const [guardando, setGuardando] = useState(false);
@@ -55577,6 +55577,17 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
           <p className="text-[11px] text-slate-400 mt-1">Quien tenga un puesto asignado verá los documentos marcados para su puesto. Si no marcas ninguno, es un documento GENERAL y lo ve todo el mundo.</p>
         </div>
       )}
+      {f.para === "equipo" && toArray(usuarios).length > 0 && (
+        <div className="text-sm bg-violet-50 border border-violet-200 rounded-md p-3">
+          <span className="font-semibold text-slate-700">Ficha personal: ¿de quién es?</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {toArray(usuarios).filter((u) => u && u.id).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((u) => (
+              <label key={u.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.personas).includes(u.id)} onChange={(e) => set("personas", e.target.checked ? [...toArray(f.personas), u.id] : toArray(f.personas).filter((x) => x !== u.id))} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">Si marcas a alguien, es su ficha: solo la ve esa persona (y los administradores), aunque tenga otros puestos. Si no marcas a nadie, se aplica lo de los puestos.</p>
+        </div>
+      )}
       <label className="block text-sm"><span className="font-semibold text-slate-700">Texto</span>
         <textarea value={f.contenido} onChange={(e) => set("contenido", e.target.value)} rows={16} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono" />
         <span className="text-[11px] text-slate-400">## Título de apartado · - punto · - [ ] casilla · 1. paso · **negrita** · tablas con | columna | columna |</span></label>
@@ -55599,8 +55610,12 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
 }
 
 // Módulo del CRM
-function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
+function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [], usuarioId = "", usuarios = [] }) {
   const restringido = !isAdmin && toArray(puestosUsuario).length > 0; // con puesto asignado: solo ve lo de su puesto
+  // Ficha personal (protocolo de oficina): un documento con «personas» solo lo ve esa persona y el administrador
+  const esFicha = (d) => toArray(d && d.personas).length > 0;
+  const esMia = (d) => esFicha(d) && toArray(d.personas).includes(usuarioId);
+  const nombreDe = (id) => { const u = toArray(usuarios).find((x) => x && x.id === id); return u ? (`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || "") : ""; };
   const [docs, setDocs] = useState({ equipo: null, uxcar: null });
   const [para, setPara] = useState("equipo");
   const [vista, setVista] = useState("lista"); // lista | ver | editar | nuevo
@@ -55614,7 +55629,11 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
   const avisar = (m) => { setAviso(m); setTimeout(() => setAviso(""), 2600); };
   const paraVer = restringido ? "equipo" : para;
   // sin puestos marcados = documento GENERAL (lo ven todos): así no desaparecen para los operarios los documentos que ya había
-  const lista = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => !toArray(d.puestos).length || toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))) : docs[para];
+  const listaBase = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => esMia(d) || (!esFicha(d) && (!toArray(d.puestos).length || toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))))) : docs[para];
+  // las fichas de otros no las ve nadie más que el administrador; la tuya sale la primera
+  const lista = listaBase === null || listaBase === undefined ? listaBase
+    : toArray(listaBase).filter((d) => isAdmin || !esFicha(d) || esMia(d))
+      .map((d) => (esFicha(d) ? { ...d, _primero: esMia(d), tituloLista: esMia(d) ? `Tu ficha · ${d.titulo}` : `${d.titulo} (ficha de ${toArray(d.personas).map(nombreDe).filter(Boolean).join(", ") || "—"})` } : d));
   const abierto = toArray(lista).find((d) => d.id === abiertoId);
 
   const guardar = async (f, archivo) => {
@@ -55627,6 +55646,7 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
         fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
         archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "", version: f.version || 1,
         puestos: f.para === "equipo" ? toArray(f.puestos) : [],
+        personas: f.para === "equipo" ? toArray(f.personas) : [],
       };
       if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
       const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
@@ -55695,9 +55715,9 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
       {lista === null ? (
         <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
       ) : vista === "nuevo" ? (
-        <CondicionesForm para={para} onCancel={() => setVista("lista")} onGuardar={guardar} />
+        <CondicionesForm para={para} usuarios={usuarios} onCancel={() => setVista("lista")} onGuardar={guardar} />
       ) : vista === "editar" && abierto ? (
-        <CondicionesForm inicial={{ ...abierto, para }} para={para} onCancel={() => setVista("ver")} onGuardar={guardar} />
+        <CondicionesForm inicial={{ ...abierto, para }} para={para} usuarios={usuarios} onCancel={() => setVista("ver")} onGuardar={guardar} />
       ) : vista === "ver" && abierto ? (
         <CondicionesDoc doc={abierto} marca={para} onVolver={() => setVista("lista")}
           acciones={isAdmin && (<>
