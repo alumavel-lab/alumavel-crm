@@ -6045,6 +6045,36 @@ export default function App() {
     saveTareas(tareas.map((t) => (t && ids.has(t.id) ? { ...t, fechaLimite: "2026-11-27", fechaLimitePuestaAuto: true } : t)));
     showToast(`${sinFecha.length} tarea${sinFecha.length === 1 ? "" : "s"} sin fecha: puesta${sinFecha.length === 1 ? "" : "s"} para el viernes 27/11`);
   }, [isAdmin, loading, tareas]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cfgTareasAuto = useObjetoFb("config/tareasAuto");
+  const guardarCfgTareasAuto = (cfg) => fbSet(ref(fbDb, "config/tareasAuto"), JSON.parse(JSON.stringify(cfg))).then(() => showToast("Tareas automáticas guardadas")).catch((e) => showToast("No se pudo guardar: " + e.message, "error"));
+  useEffect(() => {
+    // lo hacen el administrador y los responsables elegidos (ids fijos por presupuesto/pedido: si dos lo hacen a la vez, no se duplica)
+    const c = cfgTareasAuto || {};
+    if (!currentUser || loading || !c.desde || !(isAdmin || currentUser.id === c.presupuestos || currentUser.id === c.pedidos)) return;
+    const desdeTs = new Date(c.desde + "T00:00:00").getTime();
+    const porId = new Map(tareas.map((t) => [t && t.id, t]));
+    const nombreU = (id) => { const u = toArray(usuarios).find((x) => x && x.id === id); return u ? `${u.nombre} ${u.apellidos || ""}`.trim() : ""; };
+    const nuevas = []; const cerrar = new Set();
+    const revisar = (tipo, lista, pendiente, fechaDe, responsable, dias, titulo) => {
+      const vivos = new Set();
+      toArray(lista).forEach((x) => {
+        if (!x || !x.id) return;
+        const id = `auto-${tipo}-${x.id}`; vivos.add(id);
+        const t = porId.get(id);
+        if (pendiente(x)) {
+          if (!t && responsable && fechaDe(x) >= desdeTs) nuevas.push({ id, titulo: titulo(x), descripcion: "Tarea automática: se cierra sola cuando esté hecho.", asignadoA: responsable, asignadoANombre: nombreU(responsable), asignadoPor: null, asignadoPorNombre: "CRM (automática)", requiereConfirmacion: false, fechaLimite: sumarDiasHoy(dias), salaId: null, salaNombre: "", estado: "Pendiente", fechaCreacion: Date.now(), fechaCompletada: null, automatica: { tipo, refId: x.id } });
+        } else if (t && t.estado !== "Hecha") cerrar.add(id);
+      });
+      // si el presupuesto o pedido se ha borrado, su tarea también se cierra
+      tareas.forEach((t) => { if (t && t.automatica && t.automatica.tipo === tipo && t.estado !== "Hecha" && !vivos.has(t.id)) cerrar.add(t.id); });
+    };
+    revisar("pres", presupuestos, autoPresupuestoPendiente, (x) => x.creadoEn || (x.fechaEnvio ? new Date(x.fechaEnvio + "T12:00:00").getTime() : 0), c.presupuestos, c.diasPresupuestos ?? 2,
+      (x) => `Enviar presupuesto ${x.numero || ""}${x.clienteNombre ? ` · ${x.clienteNombre}` : ""}`.trim());
+    revisar("ped", pedidos, autoPedidoPendiente, (x) => x.creadoEn || (x.fechaCompra ? new Date(x.fechaCompra + "T12:00:00").getTime() : 0), c.pedidos, c.diasPedidos ?? 2,
+      (x) => { const prov = (toArray(proveedores).find((q) => q.id === x.proveedorId) || {}).nombre || x.proveedorExterno || ""; const pr = toArray(proyectos).find((q) => q.id === x.proyectoId); return `Hacer pedido #${x.numero || ""}${prov ? ` · ${prov}` : ""}${pr ? ` · obra #${pr.numero}` : ""}`; });
+    if (!nuevas.length && !cerrar.size) return;
+    saveTareas([...nuevas, ...tareas.map((t) => (t && cerrar.has(t.id) ? { ...t, estado: "Hecha", fechaCompletada: Date.now(), cerradaAuto: true } : t))]);
+  }, [cfgTareasAuto, presupuestos, pedidos, tareas, loading, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [nuevaTareaAbierta, setNuevaTareaAbierta] = useState(false); // «+ Nueva tarea» directa (barra lateral y módulo Tareas)
   const misTareasPendientes = tareas.filter((t) =>
     (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
@@ -7472,6 +7502,8 @@ export default function App() {
             onConfirmar={confirmarTarea}
             onDelete={deleteTarea}
             onNueva={() => setNuevaTareaAbierta(true)}
+            cfgAuto={cfgTareasAuto}
+            onGuardarCfgAuto={isAdmin ? guardarCfgTareasAuto : null}
             filtroInicial={tareasFiltroInicial.actual}
           />
         )}
@@ -31062,14 +31094,45 @@ const tareaVencida = (t) => !!t && t.estado === "Pendiente" && !!t.fechaLimite &
 // «Puede asignar tareas a otros» (campo supervisaTareas; de serie, todos; se quita a mano en la ficha de usuario). Quien no lo tiene solo se crea tareas a sí mismo. El administrador siempre.
 // Las vencidas de los demás solo le avisan a quien los tiene marcados en «Revisa las tareas de» (revisaTareasDe): lo marca Miguel, para que no le salga todo a todos.
 const revisaA = (u) => new Set(toArray(u && u.revisaTareasDe));
-const tareasFiltroInicial = { actual: null }; // el aviso de vencidas del equipo abre Tareas directamente en esa pestaña
+const tareasFiltroInicial = { actual: null };
+// TAREAS AUTOMÁTICAS (protocolo de oficina): presupuesto sin enviar → tarea a su responsable; pedido sin hacer → tarea a su responsable.
+// Quién y en cuántos días se elige en Tareas → «Tareas automáticas» (config/tareasAuto). Solo cuenta lo que entra DESDE que se activa (no lo antiguo).
+// La tarea se cierra SOLA cuando el presupuesto se envía o el pedido se hace (o se cancela / se borra): no hay que cerrarla dos veces.
+const autoPedidoPendiente = (pd) => !!pd && !pd.envioConfirmado && !pd.uxcarPedidoId && pd.origen !== "portalUxcar" && (!pd.estado || ["En espera", "Pendiente", "Solicitado"].includes(pd.estado));
+const autoPresupuestoPendiente = (pr) => !!pr && (!pr.estado || pr.estado === "Pendiente") && !(pr.firma && pr.firma.estado);
+const sumarDiasHoy = (n) => { const d = new Date(); d.setDate(d.getDate() + (parseInt(n, 10) || 0)); return d.toLocaleDateString("sv-SE"); }; // el aviso de vencidas del equipo abre Tareas directamente en esa pestaña
 const esSupervisorTareas = (u) => !!u && (u.rol === "Administrador" || u.supervisaTareas !== false);
 // Operario de la línea (tiene puesto en fábrica): no entra en la lista para asignarle tareas de oficina
 const esOperarioLinea = (u) => !!u && u.rol !== "Administrador" && (!!u.puestoFijo || toArray(u.puestosLinea).filter(Boolean).length > 0);
 // Fecha límite para las tareas que se crean solas sin fecha (llamadas, incidencias…): mañana. Toda tarea lleva fecha.
 const fechaLimitePorDefecto = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("sv-SE"); };
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial }) {
+// Configuración de las tareas automáticas (solo administrador)
+function TareasAutoConfig({ cfg, usuarios, onGuardar }) {
+  const [f, setF] = useState(() => ({ presupuestos: "", pedidos: "", diasPresupuestos: 2, diasPedidos: 2, ...(cfg || {}) }));
+  useEffect(() => { setF((x) => ({ ...x, ...(cfg || {}) })); }, [JSON.stringify(cfg || {})]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lista = toArray(usuarios).filter((u) => u && u.id && !esOperarioLinea(u)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+  const sel = (k) => (
+    <select value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+      <option value="">Nadie (desactivado)</option>
+      {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</option>)}
+    </select>
+  );
+  const dias = (k) => <input type="number" min="0" value={f[k] ?? 2} onChange={(e) => setF({ ...f, [k]: e.target.value === "" ? "" : Number(e.target.value) })} className="w-16 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />;
+  return (
+    <details className="mb-5 bg-white border border-slate-200 rounded-lg p-4" open={!(cfg && cfg.desde)}>
+      <summary className="cursor-pointer font-semibold text-slate-800 text-sm">Tareas automáticas {cfg && cfg.desde ? `(activas desde el ${fmtDate(cfg.desde)})` : "(sin activar)"}</summary>
+      <div className="mt-3 space-y-3 text-sm text-slate-700">
+        <p className="text-xs text-slate-500">Cuando entra un presupuesto o un pedido, se le crea una tarea a su responsable. Se cierra sola cuando el presupuesto se envía al cliente o el pedido se hace (o se cancela). Solo cuenta lo que entre desde que se activa, no lo antiguo. Los pedidos de Uxcar no, porque ya vienen hechos.</p>
+        <div className="flex flex-wrap items-center gap-2"><b className="w-40">Presupuesto sin enviar →</b> {sel("presupuestos")} <span>plazo</span> {dias("diasPresupuestos")} <span>días</span></div>
+        <div className="flex flex-wrap items-center gap-2"><b className="w-40">Pedido sin hacer →</b> {sel("pedidos")} <span>plazo</span> {dias("diasPedidos")} <span>días</span></div>
+        <button onClick={() => onGuardar({ ...f, desde: f.desde || new Date().toLocaleDateString("sv-SE") })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold px-4 py-2 rounded-md">Guardar</button>
+      </div>
+    </details>
+  );
+}
+
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
   const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
   useEffect(() => { tareasFiltroInicial.actual = null; }, []);
 
@@ -31091,6 +31154,7 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
   return (
     <div className="p-8 max-w-4xl">
       <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti${asignadas.filter(tareaVencida).length ? ` · ${asignadas.filter(tareaVencida).length} vencida(s)` : ""}`} />
+      {onGuardarCfgAuto && <TareasAutoConfig cfg={cfgAuto} usuarios={usuarios} onGuardar={onGuardarCfgAuto} />}
       {onNueva && (
         <div className="mb-4">
           <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">+ Nueva tarea</button>
@@ -31125,6 +31189,7 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
             <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
+              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}</span>}
               {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : filtro === "equipo" ? <span>Para: {t.asignadoANombre} · De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
               {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
               {t.fechaLimite && <span className={tareaVencida(t) ? "text-rose-600 font-semibold" : ""}>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
