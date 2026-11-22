@@ -6033,6 +6033,7 @@ export default function App() {
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
     return modulosPermitidos.includes(id);
   };
+  const [nuevaTareaAbierta, setNuevaTareaAbierta] = useState(false); // «+ Nueva tarea» directa (barra lateral y módulo Tareas)
   const misTareasPendientes = tareas.filter((t) =>
     (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
     (t.asignadoPor === currentUser?.id && t.estado === "Pendiente de confirmar")
@@ -6506,6 +6507,14 @@ export default function App() {
             )}
           </button>
           )}
+          {tieneAcceso("tareas") && (
+          <button
+            onClick={() => setNuevaTareaAbierta(true)}
+            className="w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 rounded-md text-xs font-semibold transition text-emerald-300 hover:bg-white/5"
+          >
+            + Nueva tarea
+          </button>
+          )}
         </nav>
         <div className="px-5 py-3 border-t border-white/10">
           <div className="flex items-center gap-2 mb-2">
@@ -6615,6 +6624,26 @@ export default function App() {
               <AlertOctagon size={15} />
               Tienes {incidenciasAbiertas.length} incidencia{incidenciasAbiertas.length === 1 ? "" : "s"} sin resolver
               {incidenciasAntiguas.length > 0 && ` — ${incidenciasAntiguas.length} lleva${incidenciasAntiguas.length === 1 ? "" : "n"} más de 7 días abierta${incidenciasAntiguas.length === 1 ? "" : "s"}`}
+              . Toca para verlas →
+            </button>
+          );
+        })()}
+        {(() => {
+          // TAREAS VENCIDAS: a la persona (las suyas) y a quien supervisa tareas (las de todo el equipo)
+          if (!currentUser || modulo === "tareas" || !tieneAcceso("tareas")) return null;
+          const mias = tareas.filter((t) => t.asignadoA === currentUser.id && tareaVencida(t));
+          const equipo = esSupervisorTareas(currentUser, usuarios) ? tareas.filter((t) => t.asignadoA !== currentUser.id && tareaVencida(t)) : [];
+          if (!mias.length && !equipo.length) return null;
+          const nombres = [...new Set(equipo.map((t) => String(t.asignadoANombre || "").split(" ")[0]).filter(Boolean))];
+          return (
+            <button
+              onClick={() => { tareasFiltroInicial.actual = mias.length ? null : "equipo"; setModulo("tareas"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-100 text-rose-800 hover:bg-rose-200"
+            >
+              <ClipboardList size={15} />
+              {mias.length > 0 && `Tienes ${mias.length} tarea${mias.length === 1 ? "" : "s"} vencida${mias.length === 1 ? "" : "s"}`}
+              {mias.length > 0 && equipo.length > 0 && " · "}
+              {equipo.length > 0 && `${equipo.length} tarea${equipo.length === 1 ? "" : "s"} vencida${equipo.length === 1 ? "" : "s"} del equipo (${nombres.join(", ")})`}
               . Toca para verlas →
             </button>
           );
@@ -7427,6 +7456,16 @@ export default function App() {
             onMarcarHecha={marcarTareaHecha}
             onConfirmar={confirmarTarea}
             onDelete={deleteTarea}
+            onNueva={() => setNuevaTareaAbierta(true)}
+            filtroInicial={tareasFiltroInicial.actual}
+          />
+        )}
+        {nuevaTareaAbierta && (
+          <CrearTareaModal
+            usuarios={usuarios}
+            currentUser={currentUser}
+            onClose={() => setNuevaTareaAbierta(false)}
+            onCrear={(data) => { crearTarea(data); setNuevaTareaAbierta(false); }}
           />
         )}
         {modulo === "ingresos" && (
@@ -30935,14 +30974,15 @@ function ChatModulo({ usuarios, currentUser, proyectos, onCrearTarea }) {
 }
 
 function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, onClose, onCrear }) {
+  const directa = !mensaje; // «Nueva tarea» directa (sin venir de un mensaje del chat)
   const [asignadoA, setAsignadoA] = useState("");
-  const [titulo, setTitulo] = useState(mensaje.texto.slice(0, 80));
-  const [descripcion, setDescripcion] = useState(mensaje.texto);
+  const [titulo, setTitulo] = useState(mensaje ? String(mensaje.texto || "").slice(0, 80) : "");
+  const [descripcion, setDescripcion] = useState(mensaje ? String(mensaje.texto || "") : "");
   const [fechaLimite, setFechaLimite] = useState("");
   const [requiereConfirmacion, setRequiereConfirmacion] = useState(true);
   const [error, setError] = useState("");
 
-  const candidatos = usuarios.filter((u) => u.id !== currentUser?.id);
+  const candidatos = toArray(usuarios).filter((u) => u && (directa || u.id !== currentUser?.id));
 
   const submit = () => {
     if (!asignadoA) { setError("Elige a quién se la asignas."); return; }
@@ -30955,21 +30995,21 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
       asignadoANombre: usuario ? `${usuario.nombre} ${usuario.apellidos || ""}`.trim() : "",
       requiereConfirmacion,
       fechaLimite,
-      salaId,
-      salaNombre,
+      salaId: salaId || null,
+      salaNombre: salaNombre || "",
     });
   };
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg p-5 max-w-md w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-display font-bold text-slate-800 mb-3">Crear tarea desde este mensaje</h3>
+        <h3 className="font-display font-bold text-slate-800 mb-3">{directa ? "Nueva tarea" : "Crear tarea desde este mensaje"}</h3>
         {error && <p className="text-xs text-rose-600 font-semibold mb-3">⚠ {error}</p>}
         <div className="space-y-3">
           <Field label="Asignar a" required>
             <Select value={asignadoA} onChange={(e) => setAsignadoA(e.target.value)}>
               <option value="">Elige un compañero...</option>
-              {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+              {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}{u.id === currentUser?.id ? " (yo)" : ""}</option>)}
             </Select>
           </Field>
           <Field label="Título" required>
@@ -30997,22 +31037,38 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
 
 /* ================= TAREAS ================= */
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete }) {
-  const [filtro, setFiltro] = useState("asignadas");
+// Tarea vencida: pendiente y con la fecha límite ya pasada (hoy aún no cuenta como vencida). Las que esperan confirmación no cuentan: ya están hechas.
+const tareaVencida = (t) => !!t && t.estado === "Pendiente" && !!t.fechaLimite && String(t.fechaLimite).slice(0, 10) < new Date().toLocaleDateString("sv-SE");
+// Quién recibe el aviso de las tareas vencidas de todo el equipo: los marcados como «Supervisa tareas». Si no hay nadie marcado, los administradores (para que no se pierda).
+const tareasFiltroInicial = { actual: null }; // el aviso de vencidas del equipo abre Tareas directamente en esa pestaña
+const esSupervisorTareas = (u, usuarios) => !!u && (!!u.supervisaTareas || (u.rol === "Administrador" && !toArray(usuarios).some((x) => x && x.supervisaTareas)));
 
-  const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
-  const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
-  const lista = filtro === "asignadas" ? asignadas : creadas;
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial }) {
+  const supervisa = esSupervisorTareas(currentUser, usuarios);
+  const [filtro, setFiltro] = useState(filtroInicial === "equipo" && supervisa ? "equipo" : "asignadas");
+  useEffect(() => { tareasFiltroInicial.actual = null; }, []);
+
+  const orden = (a, b) => (tareaVencida(b) - tareaVencida(a)) || ((b.fechaCreacion || 0) - (a.fechaCreacion || 0)); // las vencidas, arriba
+  const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort(orden);
+  const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort(orden);
+  const vencidasEquipo = supervisa ? tareas.filter((t) => tareaVencida(t) && t.asignadoA !== currentUser?.id).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
+  const lista = filtro === "asignadas" ? asignadas : filtro === "equipo" ? vencidasEquipo : creadas;
 
   const badgeEstado = (t) => {
     if (t.estado === "Hecha") return <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Hecha</Badge>;
     if (t.estado === "Pendiente de confirmar") return <Badge className="bg-amber-50 text-amber-700 ring-amber-200">Pendiente de confirmar</Badge>;
+    if (tareaVencida(t)) return <Badge className="bg-rose-100 text-rose-700 ring-rose-300">Vencida</Badge>;
     return <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Pendiente</Badge>;
   };
 
   return (
     <div className="p-8 max-w-4xl">
-      <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti`} />
+      <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti${asignadas.filter(tareaVencida).length ? ` · ${asignadas.filter(tareaVencida).length} vencida(s)` : ""}`} />
+      {onNueva && (
+        <div className="mb-4">
+          <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">+ Nueva tarea</button>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-5">
         <button onClick={() => setFiltro("asignadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "asignadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
@@ -31021,25 +31077,30 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
         <button onClick={() => setFiltro("creadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "creadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
           Creadas por mí ({creadas.length})
         </button>
+        {supervisa && (
+          <button onClick={() => setFiltro("equipo")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "equipo" ? "bg-rose-600 text-white" : "bg-white border border-rose-300 text-rose-700"}`}>
+            Vencidas del equipo ({vencidasEquipo.length})
+          </button>
+        )}
       </div>
 
       <div className="space-y-3">
         {lista.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-slate-400 text-sm">
-            {filtro === "asignadas" ? "No tienes tareas asignadas." : "No has creado ninguna tarea todavía. Puedes crear una desde cualquier mensaje del Chat."}
+            {filtro === "asignadas" ? "No tienes tareas asignadas." : filtro === "equipo" ? "Nadie del equipo tiene tareas vencidas." : "No has creado ninguna tarea todavía. Usa «+ Nueva tarea» o créala desde un mensaje del Chat."}
           </div>
         )}
         {lista.map((t) => (
-          <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-4">
+          <div key={t.id} className={`bg-white border rounded-lg p-4 ${tareaVencida(t) ? "border-rose-300" : "border-slate-200"}`}>
             <div className="flex items-start justify-between gap-3 mb-1.5">
               <h3 className="font-semibold text-slate-800 text-sm">{t.titulo}</h3>
               {badgeEstado(t)}
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
             <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
-              {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
+              {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : filtro === "equipo" ? <span>Para: {t.asignadoANombre} · De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
               {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
-              {t.fechaLimite && <span>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
+              {t.fechaLimite && <span className={tareaVencida(t) ? "text-rose-600 font-semibold" : ""}>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
               <span>Creada: {new Date(t.fechaCreacion).toLocaleDateString("es-ES")}</span>
             </div>
             <div className="flex gap-2">
@@ -64390,6 +64451,10 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             <span><b>Responsable de pedidos</b>: puede hacer pedidos a proveedores y aprobar las solicitudes de los empleados. Si no está marcado, en Pedidos solo puede <b>solicitar</b> pedidos.</span>
           </label>
         )}
+        <label className="flex items-start gap-2 text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3 cursor-pointer">
+          <input type="checkbox" checked={!!f.supervisaTareas} onChange={(e) => setF({ ...f, supervisaTareas: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+          <span><b>Supervisa tareas</b>: le avisa de las tareas vencidas de todo el equipo y las ve en Tareas → «Vencidas del equipo». Si no hay nadie marcado, avisa a los administradores.</span>
+        </label>
         {f.rol !== "Administrador" && (
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-sky-50 border border-sky-200 rounded-md p-3 cursor-pointer">
             <input type="checkbox" checked={!!f.verTodosLeads} onChange={(e) => setF({ ...f, verTodosLeads: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
