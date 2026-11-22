@@ -4044,7 +4044,7 @@ export default function App() {
     let idParaAbrir = null;
     if (data.id) {
       const anterior = presupuestos.find((p) => p.id === data.id);
-      const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
+      const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente", ...(!anterior?.hechoPorId && currentUser ? { hechoPorId: currentUser.id, hechoPorNombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() } : {}) };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
       copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === data.id));
@@ -4059,7 +4059,7 @@ export default function App() {
       }
       idParaAbrir = data.id;
     } else {
-      const np = { estado: "Pendiente", ...data, id: uid(), creadoEn: Date.now() };
+      const np = { estado: "Pendiente", ...data, id: uid(), creadoEn: Date.now(), ...(currentUser ? { hechoPorId: currentUser.id, hechoPorNombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() } : {}) }; // quién lo hace: el usuario con el que se ha entrado
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
       idParaAbrir = np.id;
@@ -6046,12 +6046,6 @@ export default function App() {
     showToast(`${sinFecha.length} tarea${sinFecha.length === 1 ? "" : "s"} sin fecha: puesta${sinFecha.length === 1 ? "" : "s"} para el viernes 27/11`);
   }, [isAdmin, loading, tareas]); // eslint-disable-line react-hooks/exhaustive-deps
   const cfgTareasAuto = useObjetoFb("config/tareasAuto");
-  // «Me lo quedo»: alguien del grupo de presupuestos coge una tarea de presupuesto (pasa a su nombre, mismo plazo)
-  const cogerTarea = (id) => {
-    const nom = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
-    saveTareas(tareas.map((t) => (t && t.id === id ? { ...t, asignadoA: currentUser.id, asignadoANombre: nom, cogidaPor: nom, cogidaEn: Date.now(), asignadaAntesA: t.asignadoANombre || "" } : t)));
-    showToast("Presupuesto para ti");
-  };
   const guardarCfgTareasAuto = (cfg) => fbSet(ref(fbDb, "config/tareasAuto"), JSON.parse(JSON.stringify(cfg))).then(() => showToast("Tareas automáticas guardadas")).catch((e) => showToast("No se pudo guardar: " + e.message, "error"));
   useEffect(() => {
     // lo hacen el administrador y los responsables elegidos (ids fijos por presupuesto/pedido: si dos lo hacen a la vez, no se duplica)
@@ -6061,25 +6055,36 @@ export default function App() {
     const porId = new Map(tareas.map((t) => [t && t.id, t]));
     const nombreU = (id) => { const u = toArray(usuarios).find((x) => x && x.id === id); return u ? `${u.nombre} ${u.apellidos || ""}`.trim() : ""; };
     const nuevas = []; const cerrar = new Set();
+    const grupoPres = new Set([c.presupuestos, ...toArray(c.cogenPresupuestos)].filter(Boolean));
+    const quienPres = (x) => (x && x.hechoPorId && grupoPres.has(x.hechoPorId) ? x.hechoPorId : c.presupuestos); // el presupuesto dice quién lo hace
+    const mover = new Map(); // id tarea → usuario al que pasa
     const revisar = (tipo, lista, pendiente, fechaDe, responsable, dias, titulo) => {
       const vivos = new Set();
       toArray(lista).forEach((x) => {
         if (!x || !x.id) return;
         const id = `auto-${tipo}-${x.id}`; vivos.add(id);
         const t = porId.get(id);
+        const resp = typeof responsable === "function" ? responsable(x) : responsable;
+        if (t && t.estado !== "Hecha" && resp && t.asignadoA !== resp && tipo === "pres") mover.set(id, resp);
         if (pendiente(x)) {
-          if (!t && responsable && fechaDe(x) >= desdeTs) nuevas.push({ id, titulo: titulo(x), descripcion: "Tarea automática: se cierra sola cuando esté hecho.", asignadoA: responsable, asignadoANombre: nombreU(responsable), asignadoPor: null, asignadoPorNombre: "CRM (automática)", requiereConfirmacion: false, fechaLimite: sumarDiasHoy(dias), salaId: null, salaNombre: "", estado: "Pendiente", fechaCreacion: Date.now(), fechaCompletada: null, automatica: { tipo, refId: x.id } });
+          if (!t && resp && fechaDe(x) >= desdeTs) nuevas.push({ id, titulo: titulo(x), descripcion: "Tarea automática: se cierra sola cuando esté hecho.", asignadoA: resp, asignadoANombre: nombreU(resp), asignadoPor: null, asignadoPorNombre: "CRM (automática)", requiereConfirmacion: false, fechaLimite: sumarDiasHoy(dias), salaId: null, salaNombre: "", estado: "Pendiente", fechaCreacion: Date.now(), fechaCompletada: null, automatica: { tipo, refId: x.id } });
         } else if (t && t.estado !== "Hecha") cerrar.add(id);
       });
       // si el presupuesto o pedido se ha borrado, su tarea también se cierra
       tareas.forEach((t) => { if (t && t.automatica && t.automatica.tipo === tipo && t.estado !== "Hecha" && !vivos.has(t.id)) cerrar.add(t.id); });
     };
-    revisar("pres", presupuestos, autoPresupuestoPendiente, (x) => x.creadoEn || (x.fechaEnvio ? new Date(x.fechaEnvio + "T12:00:00").getTime() : 0), c.presupuestos, c.diasPresupuestos ?? 2,
+    revisar("pres", presupuestos, autoPresupuestoPendiente, (x) => x.creadoEn || (x.fechaEnvio ? new Date(x.fechaEnvio + "T12:00:00").getTime() : 0), c.presupuestos ? quienPres : "", c.diasPresupuestos ?? 2,
       (x) => `Enviar presupuesto ${x.numero || ""}${x.clienteNombre ? ` · ${x.clienteNombre}` : ""}`.trim());
     revisar("ped", pedidos, autoPedidoPendiente, (x) => x.creadoEn || (x.fechaCompra ? new Date(x.fechaCompra + "T12:00:00").getTime() : 0), c.pedidos, c.diasPedidos ?? 2,
       (x) => { const prov = (toArray(proveedores).find((q) => q.id === x.proveedorId) || {}).nombre || x.proveedorExterno || ""; const pr = toArray(proyectos).find((q) => q.id === x.proyectoId); return `Hacer pedido #${x.numero || ""}${prov ? ` · ${prov}` : ""}${pr ? ` · obra #${pr.numero}` : ""}`; });
-    if (!nuevas.length && !cerrar.size) return;
-    saveTareas([...nuevas, ...tareas.map((t) => (t && cerrar.has(t.id) ? { ...t, estado: "Hecha", fechaCompletada: Date.now(), cerradaAuto: true } : t))]);
+    if (!nuevas.length && !cerrar.size && !mover.size) return;
+    saveTareas([...nuevas, ...tareas.map((t) => {
+      if (!t) return t;
+      let n = t;
+      if (mover.has(t.id)) n = { ...n, asignadoA: mover.get(t.id), asignadoANombre: nombreU(mover.get(t.id)) };
+      if (cerrar.has(t.id)) n = { ...n, estado: "Hecha", fechaCompletada: Date.now(), cerradaAuto: true };
+      return n;
+    })]);
   }, [cfgTareasAuto, presupuestos, pedidos, tareas, loading, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [nuevaTareaAbierta, setNuevaTareaAbierta] = useState(false); // «+ Nueva tarea» directa (barra lateral y módulo Tareas)
   const misTareasPendientes = tareas.filter((t) =>
@@ -7509,7 +7514,6 @@ export default function App() {
             onDelete={deleteTarea}
             onNueva={() => setNuevaTareaAbierta(true)}
             cfgAuto={cfgTareasAuto}
-            onCoger={cogerTarea}
             onGuardarCfgAuto={isAdmin ? guardarCfgTareasAuto : null}
             filtroInicial={tareasFiltroInicial.actual}
           />
@@ -31132,24 +31136,24 @@ function TareasAutoConfig({ cfg, usuarios, onGuardar, tareas = [] }) {
       <div className="mt-3 space-y-3 text-sm text-slate-700">
         <p className="text-xs text-slate-500">Cuando entra un presupuesto o un pedido, se le crea una tarea a su responsable. Se cierra sola cuando el presupuesto se envía al cliente o el pedido se hace (o se cancela). Solo cuenta lo que entre desde que se activa, no lo antiguo. Los pedidos de Uxcar no, porque ya vienen hechos.</p>
         <div className="flex flex-wrap items-center gap-2"><b className="w-40">Presupuesto sin enviar →</b> {sel("presupuestos")} <span>plazo</span> {dias("diasPresupuestos")} <span>días</span></div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><b className="w-40">Pueden cogerlos también:</b>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><b className="w-40">También los hacen:</b>
           {lista.filter((u) => u.id !== f.presupuestos).map((u) => (
             <label key={u.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.cogenPresupuestos).includes(u.id)} onChange={(e) => setF({ ...f, cogenPresupuestos: e.target.checked ? [...toArray(f.cogenPresupuestos), u.id] : toArray(f.cogenPresupuestos).filter((x) => x !== u.id) })} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
           ))}
         </div>
-        <p className="text-[11px] text-slate-500 -mt-1">Todos entran a nombre del responsable; él y los marcados pueden coger el que quieran con «Me lo quedo».</p>
+        <p className="text-[11px] text-slate-500 -mt-1">Entran a nombre del responsable. Si uno de los marcados crea o edita el presupuesto con su usuario, queda grabado en el presupuesto que lo hace él y la tarea pasa a su nombre sola.</p>
         {(() => {
           // Últimos 7 días: presupuestos enviados por cada uno y los que tiene pendientes
           const hace7 = Date.now() - 7 * 86400000;
           const pres = toArray(tareas).filter((t) => t && t.automatica && t.automatica.tipo === "pres");
           const porPersona = {};
-          pres.forEach((t) => { const k = t.asignadoANombre || "—"; const r = porPersona[k] || (porPersona[k] = { hechos: 0, cogidos: 0, pendientes: 0 }); if (t.estado === "Hecha" && (t.fechaCompletada || 0) >= hace7) r.hechos++; if (t.estado !== "Hecha") r.pendientes++; if ((t.cogidaEn || 0) >= hace7) r.cogidos++; });
+          pres.forEach((t) => { const k = t.asignadoANombre || "—"; const r = porPersona[k] || (porPersona[k] = { hechos: 0, pendientes: 0 }); if (t.estado === "Hecha" && (t.fechaCompletada || 0) >= hace7) r.hechos++; if (t.estado !== "Hecha") r.pendientes++; });
           const filas = Object.entries(porPersona);
           if (!filas.length) return null;
           return (
             <div className="bg-slate-50 border border-slate-200 rounded-md p-3">
               <div className="font-semibold mb-1">Presupuestos por persona (últimos 7 días)</div>
-              {filas.map(([n, r]) => <div key={n} className="text-xs">{n}: <b>{r.hechos}</b> enviados · {r.cogidos} cogidos con «Me lo quedo» · {r.pendientes} pendientes ahora</div>)}
+              {filas.map(([n, r]) => <div key={n} className="text-xs">{n}: <b>{r.hechos}</b> enviados · {r.pendientes} pendientes ahora</div>)}
             </div>
           );
         })()}
@@ -31160,10 +31164,7 @@ function TareasAutoConfig({ cfg, usuarios, onGuardar, tareas = [] }) {
   );
 }
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto, onCoger }) {
-  // Presupuestos para coger: si estás en el grupo de presupuestos, ves los pendientes de los demás del grupo
-  const grupoPres = new Set([cfgAuto && cfgAuto.presupuestos, ...toArray(cfgAuto && cfgAuto.cogenPresupuestos)].filter(Boolean));
-  const paraCoger = grupoPres.has(currentUser?.id) ? tareas.filter((t) => t && t.automatica && t.automatica.tipo === "pres" && t.estado === "Pendiente" && t.asignadoA !== currentUser.id && grupoPres.has(t.asignadoA)).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
   const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
   useEffect(() => { tareasFiltroInicial.actual = null; }, []);
 
@@ -31186,20 +31187,6 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
     <div className="p-8 max-w-4xl">
       <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti${asignadas.filter(tareaVencida).length ? ` · ${asignadas.filter(tareaVencida).length} vencida(s)` : ""}`} />
       {onGuardarCfgAuto && <TareasAutoConfig cfg={cfgAuto} usuarios={usuarios} onGuardar={onGuardarCfgAuto} tareas={tareas} />}
-      {paraCoger.length > 0 && onCoger && (
-        <div className="mb-5 bg-sky-50 border border-sky-200 rounded-lg p-4">
-          <div className="font-semibold text-sky-900 text-sm mb-2">Presupuestos para coger ({paraCoger.length})</div>
-          <div className="space-y-1.5">
-            {paraCoger.map((t) => (
-              <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-white border border-sky-100 rounded-md px-3 py-2">
-                <span className="font-semibold text-slate-800">{t.titulo}</span>
-                <span className="text-xs text-slate-500">ahora de {t.asignadoANombre} · límite {fmtDate(t.fechaLimite)}</span>
-                <button onClick={() => onCoger(t.id)} className="ml-auto text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1.5 rounded-md">Me lo quedo</button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {onNueva && (
         <div className="mb-4">
           <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">+ Nueva tarea</button>
@@ -31234,7 +31221,7 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
             <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
-              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}{t.cogidaPor ? ` · la cogió ${t.cogidaPor}` : ""}</span>}
+              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}{t.automatica.tipo === "pres" && t.asignadoANombre ? ` · lo hace ${t.asignadoANombre}` : ""}</span>}
               {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : filtro === "equipo" ? <span>Para: {t.asignadoANombre} · De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
               {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
               {t.fechaLimite && <span className={tareaVencida(t) ? "text-rose-600 font-semibold" : ""}>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
@@ -40285,7 +40272,7 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
             <h1 className="font-display text-2xl font-extrabold text-slate-900">{presupuesto.numero}</h1>
             <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[estadoActual]}>{estadoActual}</Badge>
           </div>
-          <p className="text-slate-500 text-sm">{presupuesto.clienteNombre} · {fmtDate(presupuesto.fechaEnvio)}</p>
+          <p className="text-slate-500 text-sm">{presupuesto.clienteNombre} · {fmtDate(presupuesto.fechaEnvio)}{presupuesto.hechoPorNombre ? ` · lo hace ${presupuesto.hechoPorNombre}` : ""}</p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           {enlaceLlamar(presupuesto) && (
