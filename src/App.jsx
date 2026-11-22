@@ -6630,24 +6630,14 @@ export default function App() {
           if (!resp && !veFabrica && !soloUx) return null;
           return (
             <button
-              onClick={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
+              onClick={() => { if (!isAdmin) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
             >
               ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →{isAdmin && (() => { const hoyD = new Date().toISOString().slice(0, 10); const v = Object.values(vistasDiscApp || {}).filter((x) => x && String(x.fecha || "").slice(0, 10) === hoyD).sort((p, q) => String(q.fecha).localeCompare(String(p.fecha))); return v.length ? <span className="ml-2 font-normal text-orange-700">· {v.map((x) => `${x.nombre} lo abrió a las ${new Date(x.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`).join(" · ")}</span> : null; })()}
             </button>
           );
         })()}
-        {(() => {
-          if (!currentUser || modulo === "pedidos") return null;
-          const aPedidos = tieneAcceso("pedidos");
-          const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
-          const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
-          if (modulo === "uxcar" && soloUx) return null;
-          if (!resp && !soloUx) return null; // la ventana que insiste solo sale a administrador, responsable de pedidos y Uxcar: NO a quien trabaja en fábrica / puestos de línea
-          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
-          const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
-          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
-        })()}
+        {/* La ventana de discrepancias que volvía cada 15 minutos se quitó (protocolo de oficina, nov 2026): queda solo la franja naranja de arriba. */}
         {(() => {
           // CABALLETES POR RECLAMAR: los que salieron con un cliente y ya tenían que haber vuelto (fecha prevista pasada)
           if (!currentUser || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
@@ -23022,56 +23012,6 @@ const discrepanciasParaMi = (disc, { fabrica, oficina, uxcar }) => toArray(disc)
   return { ...x, items };
 }).filter((x) => x.items.length > 0);
 const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
-// Aviso que INSISTE: mientras haya un pedido que una parte da por llegado y la otra no, sale una ventana que pregunta por qué no se ha marcado
-// y vuelve a salir cada 15 minutos (y al entrar) hasta que se resuelva. «Más tarde» solo la aplaza.
-const MIN_INSISTE_DISCREPANCIA = 15;
-function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor, onDarDeBaja }) {
-  const [abierto, setAbierto] = useState(true);
-  const hay = disc.length > 0;
-  useEffect(() => {
-    if (!hay) { setAbierto(false); return undefined; }
-    const t = setInterval(() => setAbierto(true), MIN_INSISTE_DISCREPANCIA * 60 * 1000);
-    return () => clearInterval(t);
-  }, [hay]);
-  useEffect(() => { if (hay) setAbierto(true); }, [disc.length]);
-  if (!hay || !abierto) return null;
-  const dias = (p) => { const f = String(p.fechaRecibido || p.fechaRecepcion || p.fechaCompra || "").slice(0, 10); return f ? Math.max(0, Math.floor((Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000)) : null; };
-  return (
-    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl w-full max-w-xl max-h-[85vh] flex flex-col border-4 border-orange-500">
-        <div className="px-5 pt-4 pb-2">
-          <h3 className="font-bold text-orange-700 text-lg">⚠ Material que una parte da por llegado y la otra no</h3>
-          <p className="text-xs text-slate-500 mt-1">No se quita hasta que fábrica y oficina coincidan. Avisa a la otra parte y averigua por qué no se ha marcado.</p>
-        </div>
-        <div className="px-5 py-2 overflow-y-auto space-y-2">
-          {disc.map(({ p, items }) => {
-            const d = dias(p);
-            const faltaOficina = items.filter((x) => x.tipo === "fabrica").length;
-            const faltaFabrica = items.filter((x) => x.tipo === "oficina").length;
-            return (
-              <div key={p.id} className="border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 text-sm">
-                <div className="font-bold text-slate-800">Pedido #{p.numero} · {nombreProveedor(p)}{p.tipoUxcar ? ` · Uxcar (${p.tipoUxcar})` : ""}{d != null ? <span className="font-normal text-xs text-slate-500"> · {d} día{d === 1 ? "" : "s"}</span> : null}</div>
-                {faltaOficina > 0 && (p.uxcarPedidoId
-                  ? <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>Uxcar no ha subido su albarán</b>. Uxcar: ¿ha llegado o falta algo?</div>
-                  : <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>)}
-                {faltaFabrica > 0 && <div className="text-orange-800">{p.uxcarPedidoId ? "Uxcar" : "Oficina"} lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
-                {faltaFabrica > 0 && onDarDeBaja && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button onClick={() => { if (window.confirm(`¿Dar de baja el pedido #${p.numero}? Se da por llegado TODO lo pendiente igual que con el albarán (cristales a Fábrica, persianas al almacén, stock, y el portal de Uxcar si es suyo). Si ya lo habías colocado a mano, se duplicaría. Desaparece de Materiales pendientes.`)) onDarDeBaja(p.id); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Dar de baja: ha llegado todo</button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap justify-end gap-2">
-          <button onClick={() => setAbierto(false)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">Más tarde (vuelve a avisar en {MIN_INSISTE_DISCREPANCIA} min)</button>
-          <button onClick={() => { setAbierto(false); onIr(); }} className="text-sm font-semibold text-white bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg">Resolverlo ahora →</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarPedido, onIrAlbaran, onDarDeBaja }) {
   const grupos = discrepanciasTodas(pedidos);
   const prov = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "—";
