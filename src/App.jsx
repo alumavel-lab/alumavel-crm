@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  RefreshCw,
+  RefreshCw, Landmark,
   Users, Briefcase, Search, Plus, X, Pencil, Trash2, ChevronLeft,
   Building2, ChevronDown, Phone, Mail, MapPin, Euro, Clock, FileText, CheckCircle2,
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
@@ -133,6 +133,7 @@ const MODULOS_DISPONIBLES = [
   { id: "proyectos", label: "Proyectos / Obras" },
   { id: "clientes", label: "Clientes" },
   { id: "leads", label: "Leads / Prospección" },
+  { id: "licitaciones", label: "Licitaciones públicas" },
   { id: "proveedores", label: "Proveedores" },
   { id: "stock", label: "Gestión de Stock" },
   { id: "pedidos", label: "Pedidos" },
@@ -6023,6 +6024,9 @@ export default function App() {
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
   // OPERARIO DE LA LÍNEA: usuario (no administrador) con su puesto de la línea marcado → solo ve lo suyo (sin avisos generales)
   const soloOperario = !isAdmin && !!currentUser && (toArray(currentUser.puestosLinea).filter(Boolean).length > 0 || !!currentUser.puestoFijo);
+  // Licitaciones en plazo sin mirar (para el aviso rojo del menú)
+  const [licPendientes, setLicPendientes] = useState(0);
+  useEffect(() => { if (!currentUser) return undefined; return onValue(ref(fbDb, "licitaciones/items"), (snap) => setLicPendientes(licPendientesMenu(snap.val())), () => {}); }, [currentUser && currentUser.id]);
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
@@ -6291,6 +6295,19 @@ export default function App() {
             }`}
           >
             <UserPlus size={16} /> Leads / Prospección
+          </button>
+          )}
+          {tieneAcceso("licitaciones") && (
+          <button
+            onClick={() => setModulo("licitaciones")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "licitaciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Landmark size={16} /> Licitaciones
+            {licPendientes > 0 && (
+              <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="En plazo y sin mirar todavía">{licPendientes}</span>
+            )}
           </button>
           )}
           {tieneAcceso("proyectos") && (
@@ -7152,6 +7169,7 @@ export default function App() {
             }}
           />
         )}
+        {modulo === "licitaciones" && <LicitacionesModulo currentUser={currentUser} usuarios={usuarios} />}
         {modulo === "leads" && (
           <LeadsModulo
             leads={leads}
@@ -33535,6 +33553,253 @@ const enlaceWhatsappLead = (l) => {
   const telConPrefijo = tel.startsWith("+") ? tel.replace("+", "") : (tel.startsWith("34") ? tel : `34${tel}`);
   return `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(mensajeWhatsappLead(l))}`;
 };
+
+// ===================== LICITACIONES PÚBLICAS =====================
+// Las trae cada mañana la función "avisos-licitaciones-background" (Plataforma de Contratación
+// del Sector Público, Estado y autonómicas) a "licitaciones/items". Aquí el equipo las estudia,
+// las descarta o hace el seguimiento del presupuesto hasta saber si se gana o se pierde.
+// Lo que se marca aquí (seguimiento, responsable, notas...) la función no lo pisa nunca.
+const LIC_ESTADOS = {
+  nueva: { label: "Por estudiar", color: "bg-sky-100 text-sky-800" },
+  estudiando: { label: "Estudiando pliego", color: "bg-indigo-100 text-indigo-800" },
+  presupuestando: { label: "Presupuestando", color: "bg-amber-100 text-amber-800" },
+  presentada: { label: "Oferta enviada", color: "bg-violet-100 text-violet-800" },
+  ganada: { label: "Ganada", color: "bg-emerald-100 text-emerald-800" },
+  perdida: { label: "Perdida", color: "bg-rose-100 text-rose-800" },
+  descartada: { label: "Descartada", color: "bg-slate-200 text-slate-600" },
+};
+const LIC_GRUPOS = {
+  A: { label: "Suministro de carpintería", corto: "A · Suministro", color: "bg-emerald-600 text-white" },
+  B: { label: "Obra / servicio de carpintería", corto: "B · Obra carpintería", color: "bg-sky-600 text-white" },
+  C: { label: "La carpintería es una parte", corto: "C · Parte de obra", color: "bg-slate-400 text-white" },
+};
+const licHoy = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Madrid" });
+const licDias = (f) => (f ? Math.round((new Date(f + "T12:00:00") - new Date(licHoy() + "T12:00:00")) / 864e5) : null);
+const licEnPlazo = (l) => l.estado === "PUB" && l.fin && l.fin >= licHoy();
+const licSeg = (l) => l.seguimiento || "nueva";
+const licFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
+const licEur = (n) => (n ? Number(n).toLocaleString("es-ES", { maximumFractionDigits: 0 }) + " €" : "—");
+// Cuenta para el aviso del menú: en plazo, grupos A/B y sin mirar todavía
+const licPendientesMenu = (items) => toArray(items).filter((l) => l && licEnPlazo(l) && licSeg(l) === "nueva" && l.grupo !== "C").length;
+
+function LicitacionesModulo({ currentUser, usuarios }) {
+  const [items, setItems] = useState(null);
+  const [estado, setEstado] = useState({});
+  const [pestana, setPestana] = useState("estudiar");
+  const [grupos, setGrupos] = useState({ A: true, B: true, C: false });
+  const [q, setQ] = useState("");
+  const [soloPvc, setSoloPvc] = useState(false);
+  const [abierta, setAbierta] = useState(null);
+  const [dias, setDias] = useState("3");
+  const [lanzando, setLanzando] = useState(false);
+  const [msg, setMsg] = useState("");
+  useEffect(() => onValue(ref(fbDb, "licitaciones/items"), (s) => setItems(s.val() || {}), () => setItems({})), []);
+  useEffect(() => onValue(ref(fbDb, "licitaciones/estado"), (s) => setEstado(s.val() || {}), () => {}), []);
+  const yo = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "";
+
+  const guardar = (l, cambios, texto) => {
+    const hist = toArray(l.historial);
+    const h = texto ? [...hist, { fecha: new Date().toISOString(), quien: yo, texto }] : hist;
+    return fbUpdate(ref(fbDb, `licitaciones/items/${l.id}`), { ...cambios, historial: h, modificadoEn: new Date().toISOString(), modificadoPor: yo }).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const cambiarEstado = (l, nuevo, extra = {}) => {
+    if (nuevo === licSeg(l)) return;
+    guardar(l, { seguimiento: nuevo, ...extra, ...(nuevo === "presentada" && !l.fechaOferta ? { fechaOferta: licHoy() } : {}) }, `Estado: ${LIC_ESTADOS[licSeg(l)].label} → ${LIC_ESTADOS[nuevo].label}${extra.motivoDescarte ? ` (${extra.motivoDescarte})` : ""}`);
+  };
+  // "Oferta enviada": a partir de aquí empieza el seguimiento del presupuesto (todo dentro de Licitaciones).
+  const marcarEnviada = (l) => {
+    const imp = window.prompt("Importe ofertado (€ sin IVA):", l.importeOferta || "");
+    if (imp === null) return;
+    const refP = window.prompt("Nº o referencia de nuestro presupuesto (opcional):", l.presupuestoRef || "");
+    if (refP === null) return;
+    cambiarEstado(l, "presentada", { importeOferta: imp.replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", "."), presupuestoRef: refP.trim(), fechaOferta: l.fechaOferta || licHoy(), responsable: l.responsable || yo });
+  };
+  const descartar = (l) => {
+    const motivo = window.prompt("¿Por qué no nos interesa? (opcional: lejos, poco importe, no es PVC/aluminio, piden clasificación...)", "");
+    if (motivo === null) return;
+    cambiarEstado(l, "descartada", { motivoDescarte: motivo.trim() });
+  };
+  const buscarAhora = async () => {
+    setLanzando(true); setMsg("");
+    try {
+      const r = await fetch(`/.netlify/functions/avisos-licitaciones-background?dias=${dias}&sinCorreo=1`, { method: "POST" });
+      setMsg(r.status === 202 || r.ok ? "Buscando en la Plataforma de Contratación… Las licitaciones irán apareciendo solas (unos minutos; con muchos días, hasta 10-15)." : `No se pudo lanzar (${r.status}).`);
+    } catch (e) { setMsg("No se pudo lanzar: " + e.message); }
+    setLanzando(false);
+  };
+
+  const lista = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return toArray(items).filter((l) => l && l.id).filter((l) => {
+      const s = licSeg(l);
+      if (pestana === "estudiar" && !(licEnPlazo(l) && ["nueva", "estudiando"].includes(s))) return false;
+      if (pestana === "marcha" && !["presupuestando", "presentada"].includes(s)) return false;
+      if (pestana === "resultado" && !["ganada", "perdida"].includes(s)) return false;
+      if (pestana === "descartadas" && s !== "descartada") return false;
+      if (pestana !== "todas" && pestana !== "descartadas" && pestana !== "resultado" && pestana !== "marcha" && !grupos[l.grupo || "C"]) return false;
+      if (soloPvc && !l.pvc) return false;
+      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, l.expediente, l.notas, l.responsable].some((x) => String(x || "").toLowerCase().includes(t))) return false;
+      return true;
+    }).sort((a, b) => (pestana === "estudiar" ? String(a.grupo).localeCompare(String(b.grupo)) : 0) || String(a.fin || "9").localeCompare(String(b.fin || "9")));
+  }, [items, pestana, grupos, q, soloPvc]);
+
+  const todas = toArray(items).filter((l) => l && l.id);
+  const cuenta = {
+    estudiar: todas.filter((l) => licEnPlazo(l) && ["nueva", "estudiando"].includes(licSeg(l)) && grupos[l.grupo || "C"]).length,
+    marcha: todas.filter((l) => ["presupuestando", "presentada"].includes(licSeg(l))).length,
+    resultado: todas.filter((l) => ["ganada", "perdida"].includes(licSeg(l))).length,
+    descartadas: todas.filter((l) => licSeg(l) === "descartada").length,
+    todas: todas.length,
+  };
+  const ganadas = todas.filter((l) => licSeg(l) === "ganada"), perdidas = todas.filter((l) => licSeg(l) === "perdida");
+  const enCurso = estado.enCurso && Date.now() - new Date(estado.enCurso).getTime() < 16 * 6e4;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Landmark size={22} /> Licitaciones públicas</h2>
+          <p className="text-sm text-slate-500">Carpintería de PVC, aluminio y metálica en toda España (Plataforma de Contratación del Estado y plataformas autonómicas). Se actualiza sola cada mañana de lunes a viernes.</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {enCurso ? <span className="text-amber-700 font-semibold flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Buscando ahora…</span>
+              : estado.terminada ? <>Última actualización: {new Date(estado.terminada).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}{estado.nuevas != null ? ` · ${estado.nuevas} nuevas` : ""}</> : "Todavía no se ha hecho ninguna búsqueda: pulsa «Actualizar ahora» (la primera vez, mejor 45 días)."}
+            {estado.error && <span className="block text-rose-600">Último error: {estado.error}</span>}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={dias} onChange={(e) => setDias(e.target.value)} className="border border-slate-300 rounded-md px-2 py-2 text-sm" title="Cuántos días hacia atrás revisar">
+            <option value="1">Último día</option><option value="3">Últimos 3 días</option><option value="7">Última semana</option><option value="15">Últimos 15 días</option><option value="45">Últimos 45 días</option>
+          </select>
+          <button onClick={buscarAhora} disabled={lanzando || enCurso} className="flex items-center gap-1.5 bg-[#2E8B57] hover:bg-[#256f46] disabled:opacity-50 text-white text-sm font-semibold px-3 py-2 rounded-md">
+            <RefreshCw size={15} className={lanzando || enCurso ? "animate-spin" : ""} /> Actualizar ahora
+          </button>
+        </div>
+      </div>
+      {msg && <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2">{msg}</div>}
+
+      <div className="flex flex-wrap gap-1 border-b border-slate-200">
+        {[["estudiar", "Por estudiar"], ["marcha", "En marcha (presupuesto)"], ["resultado", "Ganadas / perdidas"], ["descartadas", "Descartadas"], ["todas", "Todas"]].map(([k, t]) => (
+          <button key={k} onClick={() => setPestana(k)} className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px ${pestana === k ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500"}`}>{t} ({cuenta[k]})</button>
+        ))}
+      </div>
+      {pestana === "resultado" && (ganadas.length + perdidas.length > 0) && (
+        <div className="text-sm text-slate-600">Ganadas {ganadas.length} ({licEur(ganadas.reduce((a, l) => a + (parseFloat(l.importeOferta) || 0), 0))} ofertado) · Perdidas {perdidas.length} · Ratio {Math.round((100 * ganadas.length) / (ganadas.length + perdidas.length))}%</div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {pestana === "estudiar" && Object.entries(LIC_GRUPOS).map(([g, x]) => (
+          <button key={g} onClick={() => setGrupos({ ...grupos, [g]: !grupos[g] })} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${grupos[g] ? x.color + " border-transparent" : "bg-white text-slate-500 border-slate-300"}`}>{x.corto}</button>
+        ))}
+        <label className="text-xs flex items-center gap-1 text-slate-600"><input type="checkbox" checked={soloPvc} onChange={(e) => setSoloPvc(e.target.checked)} /> Solo las que dicen PVC</label>
+        <div className="relative ml-auto">
+          <Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar: ventanas, Ourense, colegio…" className="border border-slate-300 rounded-md pl-7 pr-2 py-1.5 text-sm w-64" />
+        </div>
+      </div>
+      {pestana === "estudiar" && <p className="text-xs text-slate-500">A = suministro (o suministro y colocación) de carpintería: lo que más nos encaja · B = obra o servicio cuyo objeto es la carpintería (hace falta ir como contratista) · C = obra general o lote de materiales donde la carpintería es una parte (oculto por defecto).</p>}
+
+      {items === null ? <div className="text-slate-500 text-sm flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Cargando…</div>
+        : lista.length === 0 ? <div className="text-slate-500 text-sm bg-slate-50 border border-slate-200 rounded-md p-6 text-center">No hay licitaciones en esta vista.</div>
+        : (
+        <div className="space-y-2">
+          {lista.map((l) => {
+            const d = licDias(l.fin), s = licSeg(l), abiertaEsta = abierta === l.id;
+            const nueva = s === "nueva" && l.primeraVez && Date.now() - new Date(l.primeraVez).getTime() < 3 * 864e5;
+            return (
+              <div key={l.id} className={`bg-white border rounded-lg ${d != null && d <= 7 && licEnPlazo(l) && !["descartada", "presentada", "ganada", "perdida"].includes(s) ? "border-rose-300" : "border-slate-200"}`}>
+                <div className="p-3 flex flex-wrap gap-3 items-start">
+                  <div className="w-24 shrink-0 text-center">
+                    <div className={`text-xs font-bold rounded px-1 py-0.5 ${!licEnPlazo(l) ? "bg-slate-100 text-slate-500" : d <= 7 ? "bg-rose-600 text-white" : d <= 14 ? "bg-amber-400 text-white" : "bg-slate-100 text-slate-700"}`}>
+                      {!l.fin ? "sin fecha" : !licEnPlazo(l) ? "cerrada" : d === 0 ? "cierra HOY" : d === 1 ? "cierra mañana" : `${d} días`}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{licFecha(l.fin)}{l.hora ? ` ${l.hora}` : ""}</div>
+                  </div>
+                  <div className="flex-1 min-w-[260px]">
+                    <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${(LIC_GRUPOS[l.grupo] || LIC_GRUPOS.C).color}`}>{(LIC_GRUPOS[l.grupo] || LIC_GRUPOS.C).corto}</span>
+                      {l.pvc && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">PVC</span>}
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${LIC_ESTADOS[s].color}`}>{LIC_ESTADOS[s].label}</span>
+                      {nueva && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white">NUEVA</span>}
+                      <span className="text-xs text-slate-500">{l.tipo} · {licEur(l.importe)} sin IVA</span>
+                    </div>
+                    <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-left text-sm font-semibold text-slate-800 hover:text-[#2E8B57]">{String(l.titulo || "").slice(0, abiertaEsta ? 2000 : 220)}{!abiertaEsta && String(l.titulo || "").length > 220 ? "…" : ""}</button>
+                    <div className="text-xs text-slate-500 mt-0.5">{l.organo}{l.ciudad || l.provincia ? ` — ${l.ciudad || l.provincia}` : ""} · Exp. {l.expediente}{l.responsable ? ` · Lleva: ${l.responsable}` : ""}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {l.enlace && <a href={l.enlace} target="_blank" rel="noreferrer" className="text-xs font-semibold text-sky-700 border border-sky-200 hover:bg-sky-50 rounded px-2 py-1.5 flex items-center gap-1"><Globe size={13} /> Pliego</a>}
+                    {["nueva", "estudiando"].includes(s) && <button onClick={() => cambiarEstado(l, "presupuestando", l.responsable ? {} : { responsable: yo })} className="text-xs font-semibold bg-[#2E8B57] hover:bg-[#256f46] text-white rounded px-2 py-1.5 flex items-center gap-1"><CheckCircle2 size={13} /> Me interesa</button>}
+                    {["estudiando", "presupuestando"].includes(s) && <button onClick={() => marcarEnviada(l)} className="text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded px-2 py-1.5 flex items-center gap-1"><Send size={13} /> Oferta enviada</button>}
+                    {s === "presentada" && <><button onClick={() => cambiarEstado(l, "ganada")} className="text-xs font-semibold bg-emerald-600 text-white rounded px-2 py-1.5">Ganada</button><button onClick={() => cambiarEstado(l, "perdida")} className="text-xs font-semibold bg-rose-600 text-white rounded px-2 py-1.5">Perdida</button></>}
+                    {s !== "descartada" && !["ganada", "perdida", "presentada"].includes(s) && <button onClick={() => descartar(l)} className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-100 rounded px-2 py-1.5 flex items-center gap-1"><X size={13} /> Descartar</button>}
+                    {s === "descartada" && <button onClick={() => cambiarEstado(l, "nueva", { motivoDescarte: "" })} className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-100 rounded px-2 py-1.5">Recuperar</button>}
+                    <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-xs text-slate-500 hover:text-slate-800 px-1">{abiertaEsta ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>
+                  </div>
+                </div>
+                {abiertaEsta && <LicitacionFicha l={l} usuarios={usuarios} onEstado={(n) => (n === "descartada" ? descartar(l) : n === "presentada" ? marcarEnviada(l) : cambiarEstado(l, n))} onGuardar={(c, t) => guardar(l, c, t)} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LicitacionFicha({ l, usuarios, onEstado, onGuardar }) {
+  const [f, setF] = useState({ responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" });
+  useEffect(() => { setF({ responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" }); }, [l.id]);
+  const cambiado = Object.keys(f).some((k) => String(f[k] || "") !== String(l[k] || ""));
+  const s = licSeg(l);
+  const nombres = toArray(usuarios).map((u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim()).filter(Boolean);
+  return (
+    <div className="border-t border-slate-100 bg-slate-50 p-3 grid md:grid-cols-2 gap-4 text-sm">
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-500 uppercase">Seguimiento</div>
+        <div className="flex flex-wrap gap-1">
+          {Object.entries(LIC_ESTADOS).map(([k, x]) => (
+            <button key={k} onClick={() => onEstado(k)} className={`text-xs px-2 py-1 rounded border ${s === k ? x.color + " border-transparent font-bold" : "bg-white border-slate-300 text-slate-600"}`}>{x.label}</button>
+          ))}
+        </div>
+        {s === "descartada" && l.motivoDescarte && <div className="text-xs text-slate-500">Motivo del descarte: {l.motivoDescarte}</div>}
+        <div className="grid grid-cols-2 gap-2">
+          <label className="text-xs text-slate-500">Responsable
+            <input list={`lic-resp-${l.id}`} value={f.responsable} onChange={(e) => setF({ ...f, responsable: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+            <datalist id={`lic-resp-${l.id}`}>{nombres.map((n) => <option key={n} value={n} />)}</datalist>
+          </label>
+          <label className="text-xs text-slate-500">Nº / referencia de nuestro presupuesto
+            <input value={f.presupuestoRef} onChange={(e) => setF({ ...f, presupuestoRef: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+          <label className="text-xs text-slate-500">Importe ofertado (€ sin IVA)
+            <input type="number" value={f.importeOferta} onChange={(e) => setF({ ...f, importeOferta: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+          <label className="text-xs text-slate-500">Fecha de envío de la oferta
+            <input type="date" value={f.fechaOferta} onChange={(e) => setF({ ...f, fechaOferta: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+        </div>
+        <label className="text-xs text-slate-500 block">Notas (qué pide el pliego, garantías, si admite PVC, visita de obra…)
+          <textarea rows={3} value={f.notas} onChange={(e) => setF({ ...f, notas: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+        </label>
+        <button disabled={!cambiado} onClick={() => onGuardar({ ...f }, "Datos de seguimiento actualizados")} className="flex items-center gap-1 bg-[#2E8B57] disabled:opacity-40 text-white text-xs font-semibold px-3 py-1.5 rounded"><Save size={13} /> Guardar</button>
+      </div>
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-500 uppercase">Datos de la licitación</div>
+        <div className="text-xs text-slate-600 space-y-0.5">
+          <div>Órgano: {l.organo || "—"}</div>
+          <div>Lugar: {[l.ciudad, l.provincia].filter(Boolean).join(" · ") || "—"}</div>
+          <div>Tipo: {l.tipo} · Importe: {licEur(l.importe)} sin IVA</div>
+          <div>Cierre de ofertas: {licFecha(l.fin)} {l.hora || ""}</div>
+          <div>Expediente: {l.expediente} · CPV: {toArray(l.cpvs).join(", ") || "—"}</div>
+          <div>Encontrada: {l.primeraVez ? new Date(l.primeraVez).toLocaleDateString("es-ES") : "—"} · Fuente: {l.origen === "autonomicas" ? "plataforma autonómica" : "Plataforma del Estado"}</div>
+        </div>
+        <div className="text-xs font-semibold text-slate-500 uppercase pt-1">Historial</div>
+        <div className="text-xs text-slate-600 space-y-0.5 max-h-40 overflow-auto">
+          {toArray(l.historial).length === 0 ? <div className="text-slate-400">Sin movimientos todavía.</div>
+            : toArray(l.historial).slice().reverse().map((h, i) => <div key={i}>{new Date(h.fecha).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })} · {h.quien || "—"} · {h.texto}</div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onConvertirCliente, onSubirPresupuesto }) {
   const [q, setQ] = useState("");

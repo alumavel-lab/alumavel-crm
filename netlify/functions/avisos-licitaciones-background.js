@@ -12,8 +12,8 @@
 //
 // Destinatario: AVISOS_LICITACIONES_EMAIL_TO (puede llevar varias direcciones separadas por
 // comas); si no está, EMAIL_USER. Envío: RESEND_API_KEY o la cuenta de Microsoft 365.
-// Prueba a mano: /.netlify/functions/avisos-licitaciones-background?dias=3  (revisa los
-// últimos 3 días aunque ya se hayan revisado).
+// Búsqueda a mano: desde el CRM (Licitaciones → «Buscar ahora»), que llama a
+// /.netlify/functions/avisos-licitaciones-background?dias=N&sinCorreo=1 con la sesión del usuario.
 
 import nodemailer from "nodemailer";
 
@@ -23,7 +23,8 @@ const FEEDS = [
   { clave: "estatal", url: "https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom" },
   { clave: "autonomicas", url: "https://contrataciondelestado.es/sindicacion/sindicacion_1044/PlataformasAgregadasSinMenores.atom" },
 ];
-const MAX_PAGINAS = 40; // tope de seguridad por fichero en cada pasada
+const MAX_PAGINAS = 40; // tope de seguridad por fichero en la pasada diaria
+const MAX_PAGINAS_MANUAL = 400; // búsqueda a mano desde el CRM ("Buscar ahora", hasta 45 días)
 
 async function fbAuthQuery() {
   const email = (process.env.FIREBASE_ROBOT_EMAIL || "").trim();
@@ -111,10 +112,10 @@ function analizar(entrada) {
   };
 }
 
-async function recorrer(feed, desde) {
+async function recorrer(feed, desde, maxPaginas, guardarTanda) {
   const encontradas = {};
-  let url = feed.url, paginas = 0, masAntigua = "9999";
-  while (url && paginas < MAX_PAGINAS) {
+  let url = feed.url, paginas = 0, masAntigua = "9999", pendientes = {};
+  while (url && paginas < maxPaginas) {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${feed.clave}: ${r.status} en ${url}`);
     const xml = await r.text();
@@ -125,10 +126,13 @@ async function recorrer(feed, desde) {
       if (act < masAntigua) masAntigua = act;
       if (act < desde) continue;
       const l = analizar(m[1]);
-      if (l && (!encontradas[l.id] || encontradas[l.id].actualizado < l.actualizado)) encontradas[l.id] = { ...l, origen: feed.clave };
+      if (l && (!encontradas[l.id] || encontradas[l.id].actualizado < l.actualizado)) pendientes[l.id] = encontradas[l.id] = { ...l, origen: feed.clave };
     }
+    // Se guarda cada 10 páginas: si una búsqueda larga se corta, lo encontrado no se pierde.
+    if (paginas % 10 === 0 && Object.keys(pendientes).length) { await guardarTanda(pendientes); pendientes = {}; }
     url = masAntigua >= desde ? siguiente : null;
   }
+  if (Object.keys(pendientes).length) await guardarTanda(pendientes);
   return { encontradas, paginas };
 }
 
@@ -139,42 +143,70 @@ const linea = (l) => `  ☐ [${l.fin ? `cierra ${l.fin.split("-").reverse().join
 const ordenar = (a, b) => String(a.grupo).localeCompare(String(b.grupo)) || b.pvc - a.pvc || String(a.fin).localeCompare(String(b.fin));
 const porGrupos = (arr) => ["A", "B", "C"].map((g) => { const x = arr.filter((l) => (l.grupo || "C") === g); return x.length ? `\n-- ${GRUPOS[g]} (${x.length}) --\n${x.map(linea).join("\n")}` : ""; }).join("");
 
+// Solo quien ha iniciado sesión en el CRM puede pedir una búsqueda a mano (como en enviar-email).
+async function usuarioAutorizado(event) {
+  const token = (event.headers?.authorization || event.headers?.Authorization || "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return false;
+  const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_WEB_API_KEY}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: token }),
+  });
+  const d = await r.json().catch(() => ({}));
+  const uid = r.ok && d.users && d.users[0] && d.users[0].localId;
+  if (!uid) return false;
+  const x = await fetch(`${FIREBASE_DB_URL}/equipo/${uid}.json?auth=${encodeURIComponent(token)}`);
+  return x.ok && !!(await x.json().catch(() => null));
+}
+
 export const handler = async (event) => {
   try {
-    FB_AUTH = await fbAuthQuery();
     const q = (event && event.queryStringParameters) || {};
+    const manual = !!(q.dias || q.sinCorreo);
+    if (manual && !(await usuarioAutorizado(event))) return { statusCode: 200, body: "Sin permiso: hay que entrar en el CRM." };
+    FB_AUTH = await fbAuthQuery();
     const estado = (await leer("licitaciones/estado")) || {};
+    // La pasada automática no se repite si ya se hizo hace menos de 30 minutos (evita correos repetidos).
+    if (!manual && estado.ultimaRevision && Date.now() - new Date(estado.ultimaRevision).getTime() < 30 * 6e4) return { statusCode: 200, body: "Ya revisado hace poco." };
+    if (estado.enCurso && Date.now() - new Date(estado.enCurso).getTime() < 16 * 6e4) return { statusCode: 200, body: "Ya hay una búsqueda en marcha." };
     const inicio = new Date().toISOString();
-    // Desde cuándo mirar: la última revisión (menos 2 h de margen); la primera vez, 3 días.
-    const dias = parseInt(q.dias, 10);
+    await escribir("licitaciones/estado/enCurso", inicio);
+    // Desde cuándo mirar: la última revisión (menos 2 h de margen); la primera vez, 3 días. A mano: los días pedidos (máx. 45).
+    const dias = Math.min(45, parseInt(q.dias, 10) || 0);
     const desde = dias > 0 ? new Date(Date.now() - dias * 864e5).toISOString()
       : estado.ultimaRevision ? new Date(new Date(estado.ultimaRevision).getTime() - 2 * 36e5).toISOString()
       : new Date(Date.now() - 3 * 864e5).toISOString();
 
-    const resultados = await Promise.all(FEEDS.map((f) => recorrer(f, desde)));
-    const nuevas = Object.assign({}, ...resultados.map((r) => r.encontradas));
     const guardadas = (await leer("licitaciones/items")) || {};
     const hoy = hoyEs();
-
-    // Guardar / actualizar (sin pisar lo que el equipo haya marcado: "seguimiento", "notas"...)
-    const cambios = {};
     const avisarNuevas = [];
-    for (const l of Object.values(nuevas)) {
-      const previa = guardadas[l.id];
-      cambios[l.id] = { ...(previa || {}), ...l, primeraVez: (previa && previa.primeraVez) || inicio };
-      if (!previa && l.estado === "PUB" && l.fin && l.fin >= hoy) avisarNuevas.push(l);
-    }
-    if (Object.keys(cambios).length) await escribir("licitaciones/items", cambios, "PATCH");
+    const yaContadas = new Set();
+    // Se escribe campo a campo ("id/campo"): así no se pisa lo que el equipo haya marcado
+    // en el CRM (seguimiento, notas, responsable...).
+    const guardarTanda = async (tanda) => {
+      const cambios = {};
+      for (const l of Object.values(tanda)) {
+        for (const [k, v] of Object.entries(l)) cambios[`${l.id}/${k}`] = v;
+        if (!guardadas[l.id]) {
+          cambios[`${l.id}/primeraVez`] = inicio;
+          if (!yaContadas.has(l.id) && l.estado === "PUB" && l.fin && l.fin >= hoy) { avisarNuevas.push(l); yaContadas.add(l.id); }
+        }
+      }
+      if (Object.keys(cambios).length) await escribir("licitaciones/items", cambios, "PATCH");
+    };
+    const maxPag = manual ? MAX_PAGINAS_MANUAL : MAX_PAGINAS;
+    const resultados = await Promise.all(FEEDS.map((f) => recorrer(f, desde, maxPag, guardarTanda)));
+    const nuevas = Object.assign({}, ...resultados.map((r) => r.encontradas));
 
-    const todasItems = { ...guardadas, ...cambios };
+    const todasItems = { ...guardadas };
+    for (const l of Object.values(nuevas)) todasItems[l.id] = { ...(guardadas[l.id] || {}), ...l };
     const idsNuevas = new Set(avisarNuevas.map((l) => l.id));
     const cierran = Object.values(todasItems).filter((l) => l.estado === "PUB" && l.fin && l.fin >= hoy && diasHasta(l.fin) <= 7 && !idsNuevas.has(l.id) && l.seguimiento !== "descartada");
 
-    await escribir("licitaciones/estado", { ultimaRevision: inicio, paginas: resultados.map((r) => r.paginas), encontradas: Object.keys(nuevas).length });
+    await escribir("licitaciones/estado", { ultimaRevision: inicio, terminada: new Date().toISOString(), paginas: resultados.map((r) => r.paginas), encontradas: Object.keys(nuevas).length, nuevas: avisarNuevas.length, desde, manual });
 
+    if (q.sinCorreo) return { statusCode: 200, body: `Guardadas ${Object.keys(nuevas).length} (${avisarNuevas.length} nuevas en plazo). Sin correo.` };
     if (!avisarNuevas.length && !cierran.length) return { statusCode: 200, body: "Nada nuevo ni que cierre esta semana." };
     avisarNuevas.sort(ordenar); cierran.sort(ordenar);
-    let cuerpo = `LICITACIONES DE CARPINTERÍA — ${hoy.split("-").reverse().join("/")}\n`;
+    let cuerpo = `LICITACIONES DE CARPINTERÍA — ${hoy.split("-").reverse().join("/")}\n(también las tenéis en el CRM, sección «Licitaciones»)\n`;
     if (avisarNuevas.length) cuerpo += `\n=== NUEVAS EN PLAZO (${avisarNuevas.length}) ===\n${porGrupos(avisarNuevas)}`;
     if (cierran.length) cuerpo += `\n=== CIERRAN EN LOS PRÓXIMOS 7 DÍAS (${cierran.length}) ===\n${porGrupos(cierran)}`;
     cuerpo += `\n— Aviso automático del CRM. Fuente: Plataforma de Contratación del Sector Público (Estado y plataformas autonómicas). Comprobad siempre plazo y pliego en el enlace.`;
@@ -184,6 +216,9 @@ export const handler = async (event) => {
     return { statusCode: 200, body: "Enviado" };
   } catch (e) {
     console.error("avisos-licitaciones:", e.message);
+    await escribir("licitaciones/estado/error", `${new Date().toISOString()} · ${e.message}`).catch(() => {});
     return { statusCode: 200, body: "Error: " + e.message };
+  } finally {
+    await escribir("licitaciones/estado/enCurso", null).catch(() => {});
   }
 };
