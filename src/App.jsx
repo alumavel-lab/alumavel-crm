@@ -33576,6 +33576,26 @@ const LIC_GRUPOS = {
 // Cómo nos presentamos a cada licitación (por defecto, solos)
 const LIC_COMO = ["Solos", "UTE con Doranjo SL", "Doranjo se presenta, nosotros suministramos"];
 const LIC_PEQUENA = 100000; // "Pequeñas": hasta este importe (sin IVA)
+// Provincia de cada licitación: por el código NUTS del lugar de ejecución y, si no viene, por el
+// código postal del organismo (ojo: un organismo estatal puede tener la sede en Madrid aunque la obra sea en otro sitio).
+const LIC_NUTS = { ES111: "A Coruña", ES112: "Lugo", ES113: "Ourense", ES114: "Pontevedra", ES120: "Asturias", ES130: "Cantabria", ES211: "Álava", ES212: "Gipuzkoa", ES213: "Bizkaia", ES220: "Navarra", ES230: "La Rioja", ES241: "Huesca", ES242: "Teruel", ES243: "Zaragoza", ES300: "Madrid", ES411: "Ávila", ES412: "Burgos", ES413: "León", ES414: "Palencia", ES415: "Salamanca", ES416: "Segovia", ES417: "Soria", ES418: "Valladolid", ES419: "Zamora", ES421: "Albacete", ES422: "Ciudad Real", ES423: "Cuenca", ES424: "Guadalajara", ES425: "Toledo", ES431: "Badajoz", ES432: "Cáceres", ES511: "Barcelona", ES512: "Girona", ES513: "Lleida", ES514: "Tarragona", ES521: "Alicante", ES522: "Castellón", ES523: "Valencia", ES531: "Baleares", ES532: "Baleares", ES533: "Baleares", ES611: "Almería", ES612: "Cádiz", ES613: "Córdoba", ES614: "Granada", ES615: "Huelva", ES616: "Jaén", ES617: "Málaga", ES618: "Sevilla", ES620: "Murcia", ES630: "Ceuta", ES640: "Melilla" };
+const LIC_CP = ["", "Álava", "Albacete", "Alicante", "Almería", "Ávila", "Badajoz", "Baleares", "Barcelona", "Burgos", "Cáceres", "Cádiz", "Castellón", "Ciudad Real", "Córdoba", "A Coruña", "Cuenca", "Girona", "Granada", "Guadalajara", "Gipuzkoa", "Huelva", "Huesca", "Jaén", "León", "Lleida", "La Rioja", "Lugo", "Madrid", "Málaga", "Murcia", "Navarra", "Ourense", "Asturias", "Palencia", "Las Palmas", "Pontevedra", "Salamanca", "S. C. Tenerife", "Cantabria", "Segovia", "Sevilla", "Soria", "Tarragona", "Teruel", "Toledo", "Valencia", "Valladolid", "Bizkaia", "Zamora", "Zaragoza", "Ceuta", "Melilla"];
+// Zonas por tiempo aproximado en carretera desde la fábrica de María (Almería)
+const LIC_ZONAS = [
+  { id: 1, label: "Cerca (hasta 2 h)", provs: ["Almería", "Granada", "Murcia"], color: "bg-emerald-100 text-emerald-800" },
+  { id: 2, label: "Hasta 3 h", provs: ["Jaén", "Málaga", "Albacete", "Alicante"], color: "bg-lime-100 text-lime-800" },
+  { id: 3, label: "Hasta 5 h", provs: ["Córdoba", "Sevilla", "Cádiz", "Huelva", "Ciudad Real", "Valencia", "Cuenca", "Castellón", "Toledo", "Madrid"], color: "bg-amber-100 text-amber-800" },
+  { id: 4, label: "Lejos", provs: [], color: "bg-slate-100 text-slate-600" },
+  // Melilla: aparte, se haría con Doranjo SL (constructora de allí)
+  { id: 5, label: "Melilla · con Doranjo", provs: ["Melilla"], color: "bg-violet-100 text-violet-800" },
+];
+const licProvincia = (l) => {
+  if (l.nuts && LIC_NUTS[String(l.nuts).slice(0, 5)]) return { prov: LIC_NUTS[String(l.nuts).slice(0, 5)], seguro: true };
+  const n = parseInt(String(l.cp || "").slice(0, 2), 10);
+  if (n >= 1 && n <= 52) return { prov: LIC_CP[n], seguro: false };
+  return { prov: "", seguro: false };
+};
+const licZona = (l) => { const { prov } = licProvincia(l); if (/melilla/i.test(`${prov} ${l.ciudad || ""} ${l.provincia || ""}`)) return 5; if (!prov) return null; return (LIC_ZONAS.find((z) => z.provs.includes(prov)) || LIC_ZONAS[3]).id; };
 const licHoy = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Madrid" });
 const licDias = (f) => (f ? Math.round((new Date(f + "T12:00:00") - new Date(licHoy() + "T12:00:00")) / 864e5) : null);
 const licEnPlazo = (l) => l.estado === "PUB" && l.fin && l.fin >= licHoy();
@@ -33593,6 +33613,7 @@ function LicitacionesModulo({ currentUser, usuarios }) {
   const [q, setQ] = useState("");
   const [soloPvc, setSoloPvc] = useState(false);
   const [soloPequenas, setSoloPequenas] = useState(false);
+  const [zonaMax, setZonaMax] = useState(4); // 1 = solo cerca … 4 = toda España
   const [abierta, setAbierta] = useState(null);
   const [dias, setDias] = useState("3");
   const [lanzando, setLanzando] = useState(false);
@@ -33643,10 +33664,11 @@ function LicitacionesModulo({ currentUser, usuarios }) {
       if (pestana !== "todas" && pestana !== "descartadas" && pestana !== "resultado" && pestana !== "marcha" && !grupos[l.grupo || "C"]) return false;
       if (soloPvc && !l.pvc) return false;
       if (soloPequenas && !(parseFloat(l.importe) > 0 && parseFloat(l.importe) <= LIC_PEQUENA)) return false;
-      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, l.expediente, l.notas, l.responsable, l.comoVamos].some((x) => String(x || "").toLowerCase().includes(t))) return false;
+      if (zonaMax === 5) { if (licZona(l) !== 5) return false; } else if (zonaMax < 4) { const z = licZona(l); if (z == null || z > zonaMax) return false; }
+      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, licProvincia(l).prov, l.expediente, l.notas, l.responsable, l.comoVamos].some((x) => String(x || "").toLowerCase().includes(t))) return false;
       return true;
     }).sort((a, b) => (pestana === "estudiar" ? String(a.grupo).localeCompare(String(b.grupo)) : 0) || String(a.fin || "9").localeCompare(String(b.fin || "9")));
-  }, [items, pestana, grupos, q, soloPvc, soloPequenas]);
+  }, [items, pestana, grupos, q, soloPvc, soloPequenas, zonaMax]);
 
   const todas = toArray(items).filter((l) => l && l.id);
   const cuenta = {
@@ -33696,6 +33718,9 @@ function LicitacionesModulo({ currentUser, usuarios }) {
           <button key={g} onClick={() => setGrupos({ ...grupos, [g]: !grupos[g] })} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${grupos[g] ? x.color + " border-transparent" : "bg-white text-slate-500 border-slate-300"}`}>{x.corto}</button>
         ))}
         <button onClick={() => setSoloPequenas(!soloPequenas)} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${soloPequenas ? "bg-amber-500 text-white border-transparent" : "bg-white text-slate-500 border-slate-300"}`} title="Para empezar: contratos pequeños, menos papeles y menos riesgo">Pequeñas (hasta {licEur(LIC_PEQUENA)})</button>
+        <select value={zonaMax} onChange={(e) => setZonaMax(parseInt(e.target.value, 10))} className="text-xs border border-slate-300 rounded-full px-2 py-1 bg-white" title="Distancia desde la fábrica (María, Almería)">
+          <option value={4}>Toda España</option><option value={1}>Cerca de fábrica (hasta 2 h)</option><option value={2}>Hasta 3 h</option><option value={3}>Hasta 5 h</option><option value={5}>Melilla (con Doranjo)</option>
+        </select>
         <label className="text-xs flex items-center gap-1 text-slate-600"><input type="checkbox" checked={soloPvc} onChange={(e) => setSoloPvc(e.target.checked)} /> Solo las que dicen PVC</label>
         <div className="relative ml-auto">
           <Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
@@ -33726,6 +33751,7 @@ function LicitacionesModulo({ currentUser, usuarios }) {
                       {l.pvc && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">PVC</span>}
                       <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${LIC_ESTADOS[s].color}`}>{LIC_ESTADOS[s].label}</span>
                       {nueva && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white">NUEVA</span>}
+                      {(() => { const z = licZona(l), pr = licProvincia(l); return pr.prov ? <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${LIC_ZONAS[(z || 4) - 1].color}`} title={pr.seguro ? "Lugar de ejecución" : "Por el código postal del organismo: puede no ser el lugar de la obra"}>{pr.prov}{pr.seguro ? "" : " ?"} · {LIC_ZONAS[(z || 4) - 1].label}</span> : null; })()}
                       <span className="text-xs text-slate-500">{l.tipo} · {licEur(l.importe)} sin IVA</span>
                     </div>
                     <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-left text-sm font-semibold text-slate-800 hover:text-[#2E8B57]">{String(l.titulo || "").slice(0, abiertaEsta ? 2000 : 220)}{!abiertaEsta && String(l.titulo || "").length > 220 ? "…" : ""}</button>

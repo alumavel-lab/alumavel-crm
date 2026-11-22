@@ -106,6 +106,9 @@ function analizar(entrada) {
     expediente: uno(entrada, "cbc:ContractFolderID"),
     organo: uno((entrada.match(/<cac:PartyName>[\s\S]*?<\/cac:PartyName>/) || [""])[0], "cbc:Name"),
     ciudad: uno(entrada, "cbc:CityName"), provincia: uno(entrada, "cbc:CountrySubentity"),
+    // Lugar de ejecución (código NUTS de la provincia) y código postal del organismo: el CRM los usa
+    // para calcular la distancia desde la fábrica (María, Almería).
+    nuts: uno(entrada, "cbc:CountrySubentityCode"), cp: uno(entrada, "cbc:PostalZone"),
     tipo: TIPOS[tipo] || tipo, importe,
     fin: uno(entrada, "cbc:EndDate"), hora: uno(entrada, "cbc:EndTime").slice(0, 5),
     enlace: desc(enlace), actualizado: uno(entrada, "updated"),
