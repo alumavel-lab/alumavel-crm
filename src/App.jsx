@@ -6545,14 +6545,19 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
-        {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
-        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
+        {/* Incidencias de fábrica abiertas: las ven quienes trabajan en fábrica (en grande el encargado / jefe de línea).
+            Protocolo de oficina (nov 2026): a la oficina y a los administradores ya no les salen; solo las que tengan asignadas a ellos. Siguen en el módulo «Incidencias de fábrica». */}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={(currentUser.encargadoLinea || soloOperario || (!isAdmin && !!areasUsuario.fabrica)) ? incidenciasFabrica : incidenciasFabrica.filter((i) => i && i.asignadoA === currentUser.id)} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
           actualizarIncFab(id, { llegaPrevista: f || "" }); if (!f) return;
           // la OBRA de la incidencia se pone en el planning ese día (cuando llega lo que faltaba)
           const inc = incidenciasFabrica.find((x) => x.id === id); if (!inc || !inc.obra) return;
           try { const sn = (await fbGet(ref(fbDb, "controlDiaVentanasObra"))).val() || {}; const e = Object.values(sn).find((x) => x && String(x.nombre || "").trim() === String(inc.obra || "").trim());
             if (!e) return; const ids = e.tipo === "u" ? [`u-${e.id}`, ...(e.proyectoId ? [`p-${e.proyectoId}`] : [])] : e.tipo === "p" ? [`p-${e.id}`] : [];
             ids.forEach((oid) => moverDiaPlanningFab(oid, f)); if (ids.length) showToast(`${inc.obra}: puesta en el planning el ${fmtDate(f)}`); } catch (er) { /* sin planning */ } }} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {/* Avisos de la línea de fábrica: antes al administrador; ahora al encargado / jefe de línea (protocolo de oficina, nov 2026); fuera del bloque de abajo para que le salgan aunque tenga puesto en la línea */}
+        {currentUser && currentUser.encargadoLinea && <AvisoSoldaduraLinea />}
+        {currentUser && currentUser.encargadoLinea && <AvisoFaltaMaterialLinea />}
+        {currentUser && currentUser.encargadoLinea && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {(() => {
@@ -6590,12 +6595,9 @@ export default function App() {
             . Toca para verlo →
           </button>
         )}
-        {isAdmin && <AvisoSoldaduraLinea />}
-        {isAdmin && <AvisoFaltaMaterialLinea />}
-        {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
           if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
-          const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === currentUser.id));
+          const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && i.asignadoA === currentUser.id); // solo las tuyas (también el administrador)
           if (abiertasF.length === 0) return null;
           const vencidas = abiertasF.filter((i) => i.venceTs < Date.now()).length;
           const sinAsignar = isAdmin ? abiertasF.filter((i) => !i.asignadoA).length : 0;
@@ -6605,7 +6607,7 @@ export default function App() {
               className={`w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition ${vencidas > 0 ? "bg-rose-100 text-rose-800 hover:bg-rose-200" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
             >
               <AlertOctagon size={15} />
-              {isAdmin ? "Incidencias de fábrica" : "Tienes incidencias de fábrica"}: {abiertasF.length} abierta{abiertasF.length === 1 ? "" : "s"}
+              Tienes incidencias de fábrica: {abiertasF.length} abierta{abiertasF.length === 1 ? "" : "s"}
               {vencidas > 0 && ` · ${vencidas} fuera de plazo`}
               {sinAsignar > 0 && ` · ${sinAsignar} sin asignar`}
               . Toca para verlas →
