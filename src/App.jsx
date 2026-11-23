@@ -6026,6 +6026,11 @@ export default function App() {
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
   // OPERARIO DE LA LÍNEA: usuario (no administrador) con su puesto de la línea marcado → solo ve lo suyo (sin avisos generales)
   const soloOperario = !isAdmin && !!currentUser && (toArray(currentUser.puestosLinea).filter(Boolean).length > 0 || !!currentUser.puestoFijo);
+  // NÚMEROS DEL MENÚ: lo pendiente de cada apartado
+  const nPresuPendMenu = toArray(presupuestos).filter((p) => p && p.estado === "Pendiente").length;
+  const nMedPendMenu = toArray(mediciones).filter((m) => m && !m.presupuestoCreado).length;
+  const nInstPendMenu = toArray(instalaciones).filter((i) => i && i.estado !== "Finalizada").length;
+  const nProyPendMenu = toArray(proyectos).filter((p) => p && p.estadoTrabajo === "Pendiente de aceptación").length;
   // Licitaciones en plazo sin mirar (para el aviso rojo del menú)
   const [licPendientes, setLicPendientes] = useState(0);
   useEffect(() => { if (!currentUser) return undefined; return onValue(ref(fbDb, "licitaciones/items"), (snap) => setLicPendientes(licPendientesMenu(snap.val())), () => {}); }, [currentUser && currentUser.id]);
@@ -6320,6 +6325,7 @@ export default function App() {
             }`}
           >
             <Briefcase size={16} /> Proyectos / Obras
+            {nProyPendMenu > 0 && <span className="ml-auto bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="Obras aceptadas sin empezar a fabricar">{nProyPendMenu}</span>}
           </button>
           )}
           {tieneAcceso("mediciones") && (
@@ -6330,6 +6336,7 @@ export default function App() {
             }`}
           >
             <Ruler size={16} /> Mediciones
+            {nMedPendMenu > 0 && <span className="ml-auto bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="Mediciones sin pasar a presupuesto">{nMedPendMenu}</span>}
           </button>
           )}
           {tieneAcceso("presupuestos") && (
@@ -6340,6 +6347,7 @@ export default function App() {
             }`}
           >
             <FileSpreadsheet size={16} /> Presupuestos
+            {nPresuPendMenu > 0 && <span className="ml-auto bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="Presupuestos pendientes de respuesta del cliente">{nPresuPendMenu}</span>}
           </button>
           )}
           {tieneAcceso("instalaciones") && (
@@ -6350,6 +6358,7 @@ export default function App() {
             }`}
           >
             <Wrench size={16} /> Instalaciones
+            {nInstPendMenu > 0 && <span className="ml-auto bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="Instalaciones sin terminar (pendientes o en curso)">{nInstPendMenu}</span>}
           </button>
           )}
           {tieneAcceso("proveedores") && (
