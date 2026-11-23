@@ -2360,6 +2360,38 @@ export default function App() {
     else saveIncidencias(incidencias.map((x) => (x.id === obj.id ? { ...x, presupuestoPedido: new Date().toISOString().slice(0, 10) } : x)));
     setModulo("presupuestos"); setPresupuestoEditId(null); setPresupuestoView("form");
   };
+  // PROYECTO DESDE UNA INCIDENCIA (reparación ya aceptada, con montaje): obra nueva aceptada, con el cliente y la dirección de la incidencia,
+  // que lleva instalación (se crea pendiente). El importe se pregunta (sin IVA).
+  const hacerProyectoDeIncidencia = (inc) => {
+    if (!inc) return null;
+    const prO = inc.proyectoId ? proyectos.find((x) => x.id === inc.proyectoId) : null;
+    const clienteId = (prO && prO.clienteId) || "";
+    const cl = clienteId ? clientes.find((c) => c.id === clienteId) : null;
+    if (!cl) { window.alert("Falta el CLIENTE: la obra de esta incidencia no tiene cliente. Pónselo antes en la obra."); return null; }
+    const direccion = String(inc.direccion || (prO && prO.ubicacion) || "").trim();
+    if (!direccion) { window.alert("Falta la DIRECCIÓN de la incidencia (es obligatoria para el montaje). Pulsa «Editar» y ponla."); return null; }
+    if (inc.proyectoCreadoId && proyectos.some((x) => x.id === inc.proyectoCreadoId)) { const ya = proyectos.find((x) => x.id === inc.proyectoCreadoId); if (!window.confirm(`Esta incidencia ya se pasó a la obra #${ya.numero}. ¿Crear OTRA obra igualmente?`)) return null; }
+    const imp = window.prompt(`Crear la obra de la incidencia #${inc.numero} para ${cl.nombre} (ya aceptada, con montaje).\n\nImporte SIN IVA (déjalo vacío si aún no lo sabes):`, "");
+    if (imp === null) return null;
+    const importe = parseFloat(String(imp).replace(/\s|€/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")) || 0;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const np = {
+      id: uid(), numero: nextNumeroProyecto(),
+      nombre: `Reparación incidencia #${inc.numero || ""} · ${cl.nombre}`,
+      clienteId, ubicacion: direccion, importePresupuesto: importe,
+      especificaciones: `${inc.especificaciones || ""}${inc.observaciones ? `\n${inc.observaciones}` : ""}${prO ? `\n(Obra original: #${prO.numero} ${prO.nombre || ""})` : ""}`.trim(),
+      fechaAceptado: hoy, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
+      llevaInstalacion: true, gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
+      documentos: toArray(inc.archivos).filter((d) => d && d.url).map((d) => ({ id: uid(), nombre: d.nombre || d.name || "Foto incidencia", url: d.url, subidoEn: Date.now() })),
+      origenIncidenciaId: inc.id,
+    };
+    saveProyectos([np, ...proyectos]);
+    saveIncidencias(incidencias.map((x) => (x.id === inc.id ? { ...x, proyectoCreadoId: np.id, direccion } : x)));
+    crearInstalacionParaProyecto(np);
+    showToast(`Obra #${np.numero} creada desde la incidencia #${inc.numero} (con instalación)`);
+    setModulo("proyectos"); setProyectoDetailId(np.id); setProyectoView("detail");
+    return np.id;
+  };
   const crearInstalacionManual = (data) => {
     const nueva = {
       id: uid(), proyectoId: data.proyectoId || null, nombre: data.nombre || "", clienteNombre: data.clienteNombre || "",
@@ -7384,6 +7416,7 @@ export default function App() {
             usuarios={usuarios}
             onFechaGarantia={(pid, v) => { updateProyectoInline(pid, { fechaGarantia: v || "" }); showToast(v ? "Fecha de entrega para la garantía guardada en la obra" : "Fecha de garantía quitada"); }}
             onHacerPresupuesto={(inc) => hacerPresupuestoDe("incidencia", inc)}
+            onHacerProyecto={hacerProyectoDeIncidencia}
             onMandarMontadores={(inc) => {
               const pr = proyectos.find((x) => x.id === inc.proyectoId);
               const cl = pr && clientes.find((c) => c.id === pr.clienteId);
@@ -31486,7 +31519,7 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ onHacerProyecto = null, onHacerPresupuesto = null, onFechaGarantia = null, usuarios = [], onMandarMontadores, incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -31560,6 +31593,7 @@ function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, 
         onPedirMateriales={() => onPedirMateriales(incidencia)}
         onMandarMontadores={onMandarMontadores ? () => onMandarMontadores(incidencia) : null}
         onHacerPresupuesto={onHacerPresupuesto ? () => onHacerPresupuesto(incidencia) : null}
+        onHacerProyecto={onHacerProyecto ? () => onHacerProyecto(incidencia) : null}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(incidencia.id); setView("form"); }}
         onDelete={() => onDelete(incidencia.id)}
@@ -31763,6 +31797,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       setErrorMsg("Falta el campo Especificaciones de la incidencia (es obligatorio).");
       return;
     }
+    { const pS = proyectos.find((x) => x.id === f.proyectoId); if (!String(f.direccion || (pS && pS.ubicacion) || "").trim()) { setErrorMsg("Falta la DIRECCIÓN de la incidencia (es obligatoria)."); return; } }
     setErrorMsg("");
     onSave(adjuntos.length ? { ...f, archivos: [...adjuntos, ...toArray(f.archivos)] } : f);
   };
@@ -31793,7 +31828,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           <div className="grid grid-cols-3 gap-4 text-sm bg-slate-50 border border-slate-200 rounded-md p-3">
             <InfoRow icon={<Users size={13} />} label="Cliente" value={clienteSel?.nombre || "—"} />
             <InfoRow icon={<Euro size={13} />} label="Importe presupuesto" value={money(proyectoSel.importePresupuesto)} />
-            <InfoRow icon={<MapPin size={13} />} label="Dirección" value={proyectoSel.ubicacion || "—"} />
+            <InfoRow icon={<MapPin size={13} />} label="Dirección de la obra" value={proyectoSel.ubicacion || "—"} />
           </div>
         )}
         {proyectoSel && <AvisoGarantia proyecto={proyectoSel} fecha={f.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyectoSel.id, v) : null} />}
@@ -31810,6 +31845,10 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           </Field>
         </div>
         <Field label="Comercial asociado"><TextInput value={f.comercialAsociado} onChange={set("comercialAsociado")} /></Field>
+
+        <Field label="Dirección de la incidencia (dónde hay que ir)" required>
+          <TextInput value={f.direccion != null ? f.direccion : ((proyectos.find((x) => x.id === f.proyectoId) || {}).ubicacion || "")} onChange={(e) => setF({ ...f, direccion: e.target.value })} placeholder="Calle, número, piso, población" />
+        </Field>
 
         <Field label="Especificaciones de la incidencia" required>
           <TextArea rows={3} value={f.especificaciones} onChange={set("especificaciones")} required />
@@ -31862,7 +31901,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
-function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function IncidenciaDetail({ onHacerProyecto = null, onHacerPresupuesto = null, onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
   const totalGastos = gastos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
@@ -31987,6 +32026,7 @@ function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, i
             </span>
           )}
           {onHacerPresupuesto && <button type="button" onClick={onHacerPresupuesto} title={incidencia.presupuestoPedido ? `Ya se abrió un presupuesto el ${fmtDate(incidencia.presupuestoPedido)}` : "Abre un presupuesto nuevo relleno con esta incidencia"} className="flex items-center gap-1.5 text-sm font-bold text-emerald-800 border-2 border-emerald-500 bg-emerald-50 px-3.5 py-2 rounded-md hover:bg-emerald-100"><FileText size={14} /> Pasar a presupuesto{incidencia.presupuestoPedido ? " ✓" : ""}</button>}
+          {onHacerProyecto && <button type="button" onClick={onHacerProyecto} title="Ya está aceptada: crea la obra (con montaje) directamente" className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#2E8B57] px-3.5 py-2 rounded-md hover:opacity-90"><Briefcase size={14} /> Pasar a proyecto{incidencia.proyectoCreadoId ? " ✓" : ""}</button>}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
             <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
@@ -32017,7 +32057,7 @@ function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, i
           {proyecto && <div className="mb-4"><AvisoGarantia proyecto={proyecto} fecha={incidencia.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyecto.id, v) : null} /></div>}
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Euro size={14} />} label="Importe presupuesto" value={money(proyecto?.importePresupuesto)} />
-            <InfoRow icon={<MapPin size={14} />} label="Dirección" value={proyecto?.ubicacion || "—"} />
+            <InfoRow icon={<MapPin size={14} />} label="Dirección" value={incidencia.direccion || proyecto?.ubicacion || "—"} />
             <InfoRow icon={<Users size={14} />} label="Responsable inicial" value={incidencia.responsableInicial || "—"} />
             <InfoRow icon={<Users size={14} />} label="Asignada a" value={incidencia.responsableActual || "Sin asignar (la ven todos los montadores)"} />
             <InfoRow icon={<Users size={14} />} label="Comercial asociado" value={incidencia.comercialAsociado || "—"} />
