@@ -670,6 +670,7 @@ const estadoFacturaCalc = (factura) => {
 const ESTADO_TRABAJO_STYLE = {
   "Pendiente de aceptación": "bg-rose-50 text-rose-700 ring-rose-200",
   "En proceso": "bg-amber-50 text-amber-700 ring-amber-200",
+  "Listo para reparto/recogida": "bg-teal-50 text-teal-700 ring-teal-200",
   "Entregado": "bg-emerald-50 text-emerald-700 ring-emerald-200",
   "Cancelado": "bg-slate-100 text-slate-500 ring-slate-200",
 };
@@ -9271,10 +9272,24 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={p.estadoTrabajo}
-                      onChange={(e) => onUpsert({ ...p, estadoTrabajo: e.target.value })}
-                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}`}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        // DAR DE BAJA DESDE OFICINA (como en Almacén del día): fabricada y lista para salir; sale del planning de Fábrica
+                        if (v === "Listo para reparto/recogida") {
+                          if (!window.confirm(`¿Dar por FABRICADA la obra #${p.numero}?\n\nPasa a «Fabricada · lista para salir» (reparto / recogida / instalación) y sale del planning de Fábrica, igual que al darla de baja en Almacén del día.`)) return;
+                          const hoyB = new Date().toLocaleDateString("sv-SE");
+                          onUpsert({ ...p, estadoTrabajo: v, fechaTerminadoFabrica: p.fechaTerminadoFabrica || hoyB, bajaDesdeOficina: hoyB });
+                          const claveH = (k) => k.replace(/[.#$/[\]]/g, "_");
+                          fbSet(ref(fbDb, `planFabricaHechas/${claveH(`p-${p.id}`)}`), { nombre: `#${p.numero} ${p.nombre || ""}`.slice(0, 80), pres: [], dia: hoyB, en: Date.now(), desdeOficina: true }).catch(() => {});
+                          if (p.uxcarExpedienteId) fbSet(ref(fbDb, `planFabricaHechas/${claveH(`u-${p.uxcarExpedienteId}`)}`), { nombre: `#${p.numero} ${p.nombre || ""}`.slice(0, 80), pres: [], dia: hoyB, en: Date.now(), desdeOficina: true }).catch(() => {});
+                          return;
+                        }
+                        onUpsert({ ...p, estadoTrabajo: v });
+                      }}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_STYLE[p.estadoTrabajo] || "bg-teal-50 text-teal-700 ring-teal-200"}`}
                     >
-                      {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e}</option>)}
+                      {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e === "Listo para reparto/recogida" ? "Fabricada · lista para salir (dar de baja)" : e}</option>)}
+                      {p.estadoTrabajo && !ESTADO_TRABAJO_STYLE[p.estadoTrabajo] ? <option value={p.estadoTrabajo}>{p.estadoTrabajo}</option> : null}
                     </select>
                   </td>
                   <td className="px-4 py-3">{(() => { const fs = faseObra(p, pedidos, uxExpedientes); return <span className={`text-[11px] font-bold px-2 py-1 rounded whitespace-nowrap ${fs.cls}`}>{fs.txt}</span>; })()}</td>
