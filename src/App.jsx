@@ -7651,7 +7651,7 @@ export default function App() {
           }}>
           {modulo === "fabrica" && (
           <FabricaModulo
-            albaranesEl={<AlbaranesChofer
+            albaranesEl={<AlbaranesChofer onFijarSalida={updateProyectoInline}
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
             proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
             currentUser={currentUser} isAdmin={isAdmin}
@@ -7831,7 +7831,7 @@ export default function App() {
         )}
         {/* Mosquiteras y postigos / Auxiliares: se trabaja desde «Línea (pistola)», como todos los puestos */}
         {modulo === "albaranes" && (
-          <AlbaranesChofer
+          <AlbaranesChofer onFijarSalida={updateProyectoInline}
             caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
             proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
             currentUser={currentUser} isAdmin={isAdmin}
@@ -25370,7 +25370,7 @@ const obraTerminadaSalida = (p, idx) => ["Listo para reparto/recogida", "Albará
 const tipoSalidaObra = (p) => (p.llevaInstalacion ? "instalacion" : esRecogidaFabrica(p) ? "recogida" : "reparto");
 const citaSalidaOk = (p) => { const c = p.citaSalida || {}; const t = tipoSalidaObra(p); const f = t === "instalacion" ? p.fechaMontaje : p.fechaReparto; return !!(f && c.contactadoCliente && (t !== "reparto" || c.avisadoRepartidor)); };
 
-function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio, soloChofer = false, onCrearProveedor = null }) {
+function AlbaranesChofer({ onFijarSalida = null, caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onGuardarCita, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio, soloChofer = false, onCrearProveedor = null }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [qAlb, setQAlb] = useState(""); // BUSCADOR: presupuesto, cliente, obra, nº de albarán, dirección…
@@ -25761,6 +25761,22 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             {Object.values(selCita).some(Boolean) && <button type="button" onClick={() => setSelCita({})} className="text-xs underline text-slate-500">desmarcar</button>}
             {(() => { const con = repartos.filter((p) => !fechaCitaDe(p) && planDe(p)); return con.length ? <button type="button" onClick={() => { if (!window.confirm(`¿Poner a ${con.length} obra(s) sin fecha la salida que sale del planning de Fábrica (día siguiente a terminar)? Quedan como APROXIMADAS.`)) return; con.forEach((p) => fijarFechaObra(p, planDe(p).salida, null, false)); }} className="px-3 py-1 rounded bg-amber-500 text-white font-semibold">📅 Fecha del planning a {con.length} sin fecha</button> : null; })()}
           </div>
+          {/* BUSCANDO: obras que casan con la búsqueda pero NO tienen salida (reparto / recogida / instalación): sin eso no salen aquí ni tienen albarán */}
+          {nq && (() => { const ids = new Set(repartosBase.map((p) => p.id)); const sinS = proyectos.filter((p) => p && !ids.has(p.id) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && casaQ(p)).slice(0, 10); return sinS.length ? (
+            <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-3 text-sm space-y-2">
+              <div className="font-bold text-amber-900">⚠ {sinS.length} obra{sinS.length === 1 ? "" : "s"} con «{qAlb}» SIN SALIDA: no tienen albarán hasta que se elija cómo sale</div>
+              {sinS.map((p) => (
+                <div key={p.id} className="flex flex-wrap items-center gap-2 bg-white rounded border border-amber-200 px-2 py-1.5">
+                  <span className="font-semibold text-slate-800">#{p.numero} — {String(p.nombre || "").slice(0, 70)}</span>
+                  <span className="text-xs text-slate-500">{(clienteDe(p) || {}).nombre || ""} · {p.estadoTrabajo}</span>
+                  {onFijarSalida && !soloChofer ? <span className="ml-auto flex flex-wrap gap-1">
+                    <button type="button" onClick={() => onFijarSalida(p.id, { estadoLogistica: "Reparto (camión)", llevaInstalacion: false })} className="text-xs font-bold px-2 py-1 rounded bg-sky-600 text-white">🚚 Reparto</button>
+                    <button type="button" onClick={() => onFijarSalida(p.id, { estadoLogistica: "Recogida en fábrica", llevaInstalacion: false })} className="text-xs font-bold px-2 py-1 rounded bg-emerald-600 text-white">🏭 Recogida en fábrica</button>
+                    <button type="button" onClick={() => onFijarSalida(p.id, { llevaInstalacion: true })} className="text-xs font-bold px-2 py-1 rounded bg-violet-600 text-white">🔧 Instalación</button>
+                  </span> : <span className="ml-auto text-xs text-amber-800">Pide a oficina que le ponga la salida en el proyecto</span>}
+                </div>
+              ))}
+            </div>) : null; })()}
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
