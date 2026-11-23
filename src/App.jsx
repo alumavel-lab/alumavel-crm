@@ -2112,7 +2112,7 @@ export default function App() {
       autoEnProcesoHecho.current.add(pr.id); cambios.push(pr);
     });
     cambios.forEach((pr) => updateProyectoInline(pr.id, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), enProcesoAuto: "planning" }));
-  }, [planFabApp, proyectos, uxExpedientes, currentUser]);
+  }, [planFabApp, proyectos, uxExpedientes, authUser, usuarios]); // (currentUser se define más abajo: en esta lista no se puede poner)
   const meterObraEnPlanning = async (proyectoId, fecha) => {
     const p = proyectos.find((x) => x.id === proyectoId); if (!p) return false;
     if (p.estadoTrabajo !== "En proceso") { const ok = await iniciarFabricacionObra(proyectoId); if (!ok) return false; }
