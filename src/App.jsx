@@ -55252,6 +55252,17 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
     Object.entries(grupos).forEach(([k, xs]) => { let mejor = null;
       cands.forEach((c) => { const n = xs.filter((a) => c.ls.some((l) => medidaOk(a, l) && !portalMal(a, l, c.p))).length; if (!mejor || n > mejor.n) mejor = { id: c.p.id, n }; });
       if (mejor && mejor.n >= 2 && mejor.n >= 0.6 * xs.length) bloquePedido[k] = mejor.id; }); }
+  // PRIMERO Y MANDA: MISMA VENTANA (V01.310) Y MISMA MEDIDA (±3 mm) que una línea pendiente de un pedido → es esa, diga lo que diga la cabecera
+  // del albarán (el lector a veces se salta una cabecera y desplaza las obras). Si esa ventana+medida está en varios pedidos, decide la obra/portal.
+  resto.forEach((a) => {
+    if (!(a.q > 0) || !a.ventana || !(a.ancho && a.alto)) return;
+    const opc = []; cands.forEach((c) => c.ls.forEach((l) => { if (l.pedido - (parseFloat(c.llegado[l.key]) || 0) > 0 && mismaVentanaTxt(a, l) && medidaOk(a, l)) opc.push({ c, l }); }));
+    let el = opc.length === 1 ? opc[0] : null;
+    if (!el && opc.length > 1) { const f = opc.filter(({ c, l }) => obraOk(a, l, c.p) && !portalMal(a, l, c.p)); if (f.length >= 1) el = f[0]; }
+    if (!el) return;
+    const { c, l } = el; const pon = Math.min(l.pedido - (parseFloat(c.llegado[l.key]) || 0), a.q);
+    a.q -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; a._porVentana = true;
+  });
   asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
   asignar(true, true, true); // 1º: misma obra Y misma vivienda (1K, 1B…), medida parecida
   asignar(true); // 2º: misma medida (±3) Y misma obra
