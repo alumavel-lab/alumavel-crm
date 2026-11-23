@@ -43223,7 +43223,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. BLOQUES DE PEDIDO (Dealux y otros): cada línea «Pedido Nº 26013110 Fecha … Ref/Obra: VLC - EXP 698 P5» es una CABECERA: devuélvela como UNA LÍNEA MÁS de "lineas", EN SU SITIO (en el mismo orden en que aparece en la hoja, entre las líneas de material), con "cabecera": "VLC - EXP 698 P5" (el texto que va tras Ref/Obra), cantidad 0 y sin medidas. En las líneas de material deja "expediente" vacío: yo le pongo a cada una la cabecera que tenga ENCIMA. NO cambies el orden de las líneas ni juntes cabeceras. La línea «Obra: VALENCIA - EXP 633 P1|VALENCIA - EXP 633 P2|…» de arriba de cada página es la lista de todas las obras del albarán: NO la uses como expediente de ninguna línea. "codigo" = la columna Ref. de la línea (la ventana: V07.317, P02.316, V13.312), tal cual. Si la cantidad es negativa (abono, -1,0), ponla negativa. Si la línea dice «REPARADO», «REPARADO SIN CARGO» o «SIN CARGO», pon "reparado": true en esa línea (y en "descripcion" copia también ese texto). Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":"","cabecera":"","reparado":false}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. BLOQUES DE PEDIDO (Dealux y otros): cada línea «Pedido Nº 26013110 Fecha … Ref/Obra: VLC - EXP 698 P5» es una CABECERA: devuélvela como UNA LÍNEA MÁS de "lineas", EN SU SITIO (en el mismo orden en que aparece en la hoja, entre las líneas de material), con "cabecera": "VLC - EXP 698 P5" (el texto que va tras Ref/Obra), cantidad 0 y sin medidas. En las líneas de material deja "expediente" vacío: yo le pongo a cada una la cabecera que tenga ENCIMA. NO cambies el orden de las líneas ni juntes cabeceras. ADEMÁS, en "cabeceras" (fuera de "lineas") pon TODAS las cabeceras «Pedido Nº … Ref/Obra: …» del documento, en orden, sin saltarte ninguna (cada «Pedido Nº» es una cabecera distinta), con "refObra" = el texto tras Ref/Obra y "primera" = la Ref. (columna Ref., p. ej. V07.208) de la PRIMERA línea de material que va justo DEBAJO de esa cabecera; si la cabecera es lo último de la página y debajo no hay ninguna línea, "primera": "". La línea «Obra: VALENCIA - EXP 633 P1|VALENCIA - EXP 633 P2|…» de arriba de cada página es la lista de todas las obras del albarán: NO la uses como expediente de ninguna línea. "codigo" = la columna Ref. de la línea (la ventana: V07.317, P02.316, V13.312), tal cual. Si la cantidad es negativa (abono, -1,0), ponla negativa. Si la línea dice «REPARADO», «REPARADO SIN CARGO» o «SIN CARGO», pon "reparado": true en esa línea (y en "descripcion" copia también ese texto). Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":"","cabecera":"","reparado":false}],"cabeceras":[{"refObra":"","primera":""}]}';
   // 1º lectura rápida. Un PACKING LIST con muchos cristales tarda más de lo que deja Netlify (error 504/502):
   // entonces se lee EN SEGUNDO PLANO (sin límite de tiempo, el CRM va preguntando hasta que está)
   let texto = "";
@@ -43252,6 +43252,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   try { res = JSON.parse(trozo); } catch (e) { try { res = JSON.parse(repararJsonIA(trozo)); } catch (e2) { const sv = salvarJsonIA(trozo); if (!sv.leidos) throw new Error("la lectura ha salido con un error de formato: vuelve a subirlo"); res = sv.obj; } }
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
+    cabeceras: (Array.isArray(res.cabeceras) ? res.cabeceras : []).map((c) => ({ refObra: String((c && (c.refObra || c.ref)) || "").trim(), primera: String((c && c.primera) || "").trim().toUpperCase().replace(/,/g, ".") })).filter((c) => c.refObra),
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
     lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ cabecera: String(l.cabecera || "").trim(), reparado: l.reparado === true || /reparad|sin\s*cargo/i.test(String(l.descripcion || "")), ventana: (String(l.codigo || "").trim().toUpperCase().replace(/,/g, ".").match(/^[A-Z]\d{1,2}(?:\.\d{3})+$/) || [""])[0], codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
   };
@@ -55373,13 +55374,14 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     const prev = anadir && albRes ? albRes : null;
     setAlbLeyendo(true); setAlbMsg(""); if (!prev) setAlbRes(null);
     try {
-      let lineas = prev ? [...(prev.lineasCrudas || prev.lineas)] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
+      let lineas = prev ? [...(prev.lineasCrudas || prev.lineas)] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : []; let cabsAlb = prev ? [...toArray(prev.cabsAlb)] : [];
       const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0; const avisosLect = [];
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas).map((l, i) => ({ ...l, _pag: info.pagina || 0, _ord: lineas.length + i }))); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+        cabsAlb = cabsAlb.concat(toArray(info.cabeceras).map((c, i) => ({ ...c, _pag: info.pagina || 0, _i: i })));
         if (info.sinIA) avisosLect.push(`📄 ${file.name}: leído exacto, sin IA — ${info.resumen}${info.aviso ? ` ${info.aviso}` : ""}`);
         // un PDF se lee entero (todas sus páginas de una vez); solo en fotos sueltas se cuentan las páginas que faltan
         if (mediaType === "application/pdf" && info.paginasTotal) { for (let pg = 1; pg <= info.paginasTotal; pg++) paginas.push(pg); }
@@ -55391,11 +55393,24 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       // la página siguiente: «Ref/Obra: … P12» al final de la página 9 es de los compactos que salen arriba de la página 10
       if (lineas.every((l) => (l._pag || 0) > 0)) lineas = [...lineas].sort((x, y) => (x._pag - y._pag) || ((x._ord || 0) - (y._ord || 0)));
       const lineasCrudas = lineas; // tal cual se leyeron (con las cabeceras), para poder añadir más páginas y volver a calcular
-      if (lineasCrudas.some((l) => l && l.cabecera)) {
-        // CABECERAS LEÍDAS EN SU SITIO: cada línea de material es de la ÚLTIMA cabecera que tiene ENCIMA (aunque esté en la página anterior).
-        // Lo decide el CRM, no el lector (que se lo ponía a las líneas de arriba)
-        let ult = ""; const out = [];
-        lineasCrudas.forEach((l) => { if (!l) return; if (l.cabecera) { ult = String(l.cabecera).trim(); return; } out.push(ult ? { ...l, expediente: ult, expHeredado: true } : l); });
+      if (lineasCrudas.some((l) => l && l.cabecera) || cabsAlb.length) {
+        // CABECERAS: cada línea de material es de la ÚLTIMA cabecera que tiene ENCIMA (aunque esté en la página anterior). Lo decide el CRM.
+        // La lista aparte de cabeceras dice en qué ventana EMPIEZA cada una («710 P4 → V07.208»): manda sobre la cabecera puesta entre las
+        // líneas (el lector a veces se salta una y todo el bloque se pegaba al anterior)
+        const nCod = (t) => String(t || "").trim().toUpperCase().replace(/,/g, ".");
+        const anclas = cabsAlb.filter((c) => c.primera).map((c) => ({ ...c, usada: false }));
+        const finPag = {}; cabsAlb.filter((c) => !c.primera).forEach((c) => { (finPag[c._pag || 0] = finPag[c._pag || 0] || []).push(c.refObra); });
+        const ancladas = new Set(cabsAlb.map((c) => c.refObra.toUpperCase().replace(/\s+/g, " ")));
+        let ult = ""; const out = []; let pagAnt = null;
+        const cerrarPag = (pg) => { if (pg != null && finPag[pg] && finPag[pg].length) ult = finPag[pg][finPag[pg].length - 1]; };
+        lineasCrudas.forEach((l) => {
+          if (!l) return;
+          const pg = l._pag || 0; if (pagAnt !== null && pg !== pagAnt) cerrarPag(pagAnt); pagAnt = pg;
+          if (l.cabecera) { if (!anclas.length || !ancladas.has(String(l.cabecera).toUpperCase().replace(/\s+/g, " "))) ult = String(l.cabecera).trim(); return; }
+          const an = anclas.find((c) => !c.usada && (c._pag || 0) === pg && nCod(c.primera) === nCod(l.codigo)) || anclas.find((c) => !c.usada && !c._pag && nCod(c.primera) === nCod(l.codigo));
+          if (an) { an.usada = true; ult = an.refObra; }
+          out.push(ult ? { ...l, expediente: ult, expHeredado: true } : l);
+        });
         lineas = out;
       } else {
         lineas = lineas.map((l) => (l.expHeredado ? { ...l, expediente: "", expHeredado: false } : l)); // se recalcula con todas las páginas juntas
@@ -55409,7 +55424,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const rc = repartirEnPedidosCrm(r0.sobran);
       const r = { ...r0, sobran: rc.sobran, crm: rc.crm, reparados };
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; }); toArray(r.crm).forEach((x) => { sel[`crm:${x.p.id}`] = true; });
-      setAlbSel(sel); setAlbRes({ ...r, lineas, lineasCrudas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
+      setAlbSel(sel); setAlbRes({ ...r, lineas, lineasCrudas, cabsAlb, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
       if (!r.reparto.length && !toArray(r.crm).length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
