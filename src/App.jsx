@@ -31608,7 +31608,8 @@ function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, 
                       {Object.keys(ESTADO_INCIDENCIA_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
                     </select>
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {onHacerPresupuesto && <button type="button" onClick={(e) => { e.stopPropagation(); onHacerPresupuesto(i); }} title={i.presupuestoPedido ? `Ya se abrió un presupuesto el ${fmtDate(i.presupuestoPedido)}` : "Abre un presupuesto nuevo ya relleno con esta incidencia"} className={`mr-3 inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-md border ${i.presupuestoPedido ? "border-slate-300 text-slate-500" : "border-emerald-500 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"}`}><FileText size={13} /> {i.presupuestoPedido ? "Presupuesto ✓" : "A presupuesto"}</button>}
                     {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar la incidencia #${i.numero}?`)) onDelete(i.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
                     </button>)}
