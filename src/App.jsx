@@ -32347,12 +32347,24 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
     cambiarFecha(ev, diaDestino);
     setSelectedDay(diaDestino);
   };
-  const cambiarFecha = (ev, nuevaFecha) => {
+  // DESHACER: cada cambio de fecha se apunta (fecha de antes y de después) para poder volverlo atrás
+  const [deshacerCal, setDeshacerCal] = useState([]);
+  const aplicarFecha = (ev, f) => {
+    if (ev.type.startsWith("proyecto_")) onCambiarFechaProyecto(ev.id, ev.campo, f);
+    else if (ev.type === "pedido") onCambiarFechaPedido(ev.id, ev.campo, f);
+    else if (ev.type === "incidencia") onCambiarFechaIncidencia(ev.id, ev.campo, f);
+  };
+  const cambiarFecha = (ev, nuevaFecha, desde = "") => {
     if (!ev.campo) { window.alert("Esta fecha sale del planning de Fábrica / Control del día: cámbiala allí, no aquí."); setEditandoFechaId(null); return; }
-    if (ev.type.startsWith("proyecto_")) onCambiarFechaProyecto(ev.id, ev.campo, nuevaFecha);
-    else if (ev.type === "pedido") onCambiarFechaPedido(ev.id, ev.campo, nuevaFecha);
-    else if (ev.type === "incidencia") onCambiarFechaIncidencia(ev.id, ev.campo, nuevaFecha);
+    aplicarFecha(ev, nuevaFecha);
+    setDeshacerCal((l) => [...l.slice(-19), { ev, antes: desde || ev.dia || selectedDay, despues: nuevaFecha }]);
     setEditandoFechaId(null);
+  };
+  const deshacerUltimo = () => {
+    const u = deshacerCal[deshacerCal.length - 1]; if (!u) return;
+    const fx = (f) => (f ? new Date(f + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" }) : "sin fecha");
+    if (!window.confirm(`¿Volver «${u.ev.label}» a ${fx(u.antes)}? (ahora está en ${fx(u.despues)})`)) return;
+    aplicarFecha(u.ev, u.antes); setDeshacerCal((l) => l.slice(0, -1)); if (u.antes) setSelectedDay(u.antes);
   };
 
   return (
@@ -32453,6 +32465,8 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
             {new Date(selectedDay + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
           </h3>
           <p className="text-xs text-slate-400 mb-3">{selectedEvents.length} evento{selectedEvents.length === 1 ? "" : "s"}</p>
+          {deshacerCal.length > 0 && (() => { const u = deshacerCal[deshacerCal.length - 1]; return (
+            <button type="button" onClick={deshacerUltimo} className="w-full mb-3 text-left text-sm font-bold px-3 py-2 rounded-md border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100">↩ Deshacer: volver «{String(u.ev.label || "").slice(0, 40)}» a {u.antes ? new Date(u.antes + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "sin fecha"}{deshacerCal.length > 1 ? <span className="font-normal text-xs"> · {deshacerCal.length} cambios para deshacer</span> : null}</button>); })()}
           {selectedEvents.length === 0 ? (
             <p className="text-sm text-slate-400 py-4 text-center">Sin eventos este día.</p>
           ) : (
@@ -32472,9 +32486,10 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
                       <input
                         type="date"
                         defaultValue={selectedDay}
-                        onChange={(e) => { if (e.target.value) cambiarFecha(ev, e.target.value); }}
+                        onChange={(e) => { if (e.target.value) cambiarFecha(ev, e.target.value, selectedDay); }}
                         className="text-xs border border-white/60 rounded px-2 py-1 bg-white/70 flex-1"
                       />
+                      {ev.campo && <button type="button" onClick={() => { if (window.confirm(`¿Quitar la fecha a «${ev.label}»? Deja de salir en el calendario (se puede deshacer con «↩ Deshacer»).`)) cambiarFecha(ev, "", selectedDay); }} className="text-xs font-semibold px-2 py-1 rounded border border-rose-300 bg-white/80 text-rose-700 whitespace-nowrap">Quitar fecha</button>}
                     </div>
                   )}
                 </div>
