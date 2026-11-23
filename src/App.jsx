@@ -2097,6 +2097,21 @@ export default function App() {
   // Control del día: meter una obra en el planning de Fábrica en un día. Si no estaba en fabricación, se empieza (con sus comprobaciones);
   // si estaba quitada del planning (sin tick), se vuelve a poner. El día queda como «Empezar el».
   const planFabApp = useObjetoFb("planFabrica"); // para el aviso de obras atrasadas (lo publica el planning de Fábrica)
+  // EN EL PLANNING = EN FABRICACIÓN: una obra aceptada («sin fabricar») que el planning de Fábrica ya tiene en un día de hoy o anterior
+  // pasa sola a «En proceso» (antes había que pulsar «Empezar a fabricar» y casi nunca se hacía). Lo hace solo un ordenador de oficina.
+  const autoEnProcesoHecho = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || currentUser.rol !== "Administrador" || !planFabApp || !planFabApp.obras) return; // (isAdmin se define más abajo: aquí no se puede usar)
+    const hoyEP = new Date().toLocaleDateString("sv-SE");
+    const cambios = [];
+    Object.entries(planFabApp.obras).forEach(([k, o]) => {
+      if (!o || !o.inicio || o.inicio > hoyEP) return;
+      const pr = o.tipo === "proyecto" ? proyectos.find((x) => String(x.id) === String(o.id)) : o.tipo === "uxcar" ? proyectos.find((x) => x.uxcarExpedienteId === o.id || x.id === ((toArray(uxExpedientes).find((e) => e && e.id === o.id) || {}).proyectoId)) : null;
+      if (!pr || pr.estadoTrabajo !== "Pendiente de aceptación" || pr.estadoPresupuesto === "Esperando presupuesto" || autoEnProcesoHecho.current.has(pr.id)) return;
+      autoEnProcesoHecho.current.add(pr.id); cambios.push(pr);
+    });
+    cambios.forEach((pr) => updateProyectoInline(pr.id, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), enProcesoAuto: "planning" }));
+  }, [planFabApp, proyectos, uxExpedientes, currentUser]);
   const meterObraEnPlanning = async (proyectoId, fecha) => {
     const p = proyectos.find((x) => x.id === proyectoId); if (!p) return false;
     if (p.estadoTrabajo !== "En proceso") { const ok = await iniciarFabricacionObra(proyectoId); if (!ok) return false; }
@@ -45934,7 +45949,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       if (avanzadasAD.current.has(pid)) return;
       avanzadasAD.current.add(pid);
       // también las que ya estaban «Listo para reparto» (terminadas desde Control del día antes de paletizar): se dan de baja del planning
-      if ((estado === "En proceso" || estado === "Listo para reparto/recogida") && onMoverEstado) {
+      if ((estado === "En proceso" || estado === "Listo para reparto/recogida" || estado === "Pendiente de aceptación") && onMoverEstado) {
         try { // el planning de Fábrica la pone en verde en el día que tenía
           const kk = String(key || pid).replace(/[.#$\/\[\]]/g, "_"); const dd = (planFabAD && planFabAD.dias) || {}; const ee = extraAD || {};
           let dia = Object.keys(dd).sort().find((f) => clave && dd[f] && dd[f][clave]) || Object.keys(ee).sort().find((f) => ee[f] && ee[f][kk]) || new Date().toLocaleDateString("sv-SE");
@@ -45942,7 +45957,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           fbSet(ref(fbDb, `planFabricaHechas/${kk}`), { nombre: nombre || "", pres: fo && fo.pres ? fo.pres : [], dia, en: Date.now() }).catch(() => {});
         } catch (e) { /* nada */ }
       }
-      if (estado === "En proceso" && onMoverEstado) onMoverEstado(pid, "Listo para reparto/recogida"); // paletizada y en su almacén: sigue su camino (reparto / recogida / montaje)
+      if ((estado === "En proceso" || estado === "Pendiente de aceptación") && onMoverEstado) onMoverEstado(pid, "Listo para reparto/recogida"); // paletizada y en su almacén: sigue su camino (reparto / recogida / montaje). También si nadie la pasó a «En proceso»
     });
   });
   const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
