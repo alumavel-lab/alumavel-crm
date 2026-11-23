@@ -43246,7 +43246,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
     const response = await fetch("/.netlify/functions/anthropic-proxy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+      body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
     });
     if (!response.ok) { if ([502, 503, 504, 413].includes(response.status) && file) lento = true; else throw new Error("respuesta no válida (" + response.status + ")"); }
     else {
@@ -43257,7 +43257,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
     }
   } catch (e) { if (file && /Failed to fetch|NetworkError|network|timeout/i.test(String((e && e.message) || e))) lento = true; else throw e; }
   // el mismo lector rápido (no «piensa»: todo el espacio es para la lista), pero sin el límite de tiempo
-  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 32000, 120, "claude-haiku-4-5-20251001");
+  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 32000, 120, "claude-sonnet-5");
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");
