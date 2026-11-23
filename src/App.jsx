@@ -55240,9 +55240,17 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
     // si la línea del albarán DICE su expediente/obra (698, 710…), solo va a pedidos de ESA obra: nunca a otra solo porque la medida coincide
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || portalMal(a, l, c.p) || (numsDe(a.expediente).size > 0 && !obraOk(a, l, c.p)) || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (c.otroProv && !estricto && vent !== "solo") || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || portalMal(a, l, c.p) || (numsDe(a.expediente).size > 0 && !obraOk(a, l, c.p) && bloquePedido[kBloque(a)] !== c.p.id) || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (c.otroProv && !estricto && vent !== "solo") || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
+  // BLOQUE ENTERO A UN PEDIDO: los compactos de un mismo bloque del albarán («EXP 633 P12») que casan casi todos (≥2 y ≥60 %) con UN pedido
+  // pendiente son de ese pedido aunque el pedido no tenga apuntado su expediente. Coincidencias sueltas (1 de 5) en otros pedidos no cuentan.
+  const kBloque = (a) => String(a.expediente || "").toUpperCase().replace(/\s+/g, " ").trim();
+  const bloquePedido = {};
+  { const grupos = {}; resto.forEach((a) => { if (!(a.ancho && a.alto) || !numsDe(a.expediente).size) return; (grupos[kBloque(a)] = grupos[kBloque(a)] || []).push(a); });
+    Object.entries(grupos).forEach(([k, xs]) => { let mejor = null;
+      cands.forEach((c) => { const n = xs.filter((a) => c.ls.some((l) => medidaOk(a, l) && !portalMal(a, l, c.p))).length; if (!mejor || n > mejor.n) mejor = { id: c.p.id, n }; });
+      if (mejor && mejor.n >= 2 && mejor.n >= 0.6 * xs.length) bloquePedido[k] = mejor.id; }); }
   asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
   asignar(true, true, true); // 1º: misma obra Y misma vivienda (1K, 1B…), medida parecida
   asignar(true); // 2º: misma medida (±3) Y misma obra
@@ -55331,6 +55339,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       let donde = "";
       if (conMed.length && !hs.length) { tipo = "sinpedido"; donde = "NINGÚN pedido del CRM tiene estas medidas: falta subir el pedido de esta obra/portal"; }
       else if (hs.length && hs.every((h) => h.rec || h.np === 0)) { tipo = "recibido"; donde = `Sus medidas están en ${hs.map(txtH).join(", ")}, pero ya constan como LLEGADAS (¿este albarán ya se subió antes, o se dio por llegado a mano?)`; }
+      else if (hs.length && hs.every((h) => h.n <= 1) && conMed.length >= 3) { tipo = "sinpedido"; donde = `Solo coinciden medidas SUELTAS (1 de ${conMed.length}) en pedidos de otras obras (${hs.map((h) => h.num).join(", ")}): casi seguro FALTA el pedido de esta obra/portal en el CRM`; }
       else if (hs.length) donde = `Sus medidas están en ${hs.map(txtH).join(", ")}: el pedido está pendiente pero no se ha repartido aquí. Mándale foto de esto a Claude`;
       const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
       return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo: donde || motivo };
