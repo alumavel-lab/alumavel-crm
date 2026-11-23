@@ -9073,7 +9073,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   }
 
   return (
-    <div className="p-8 max-w-6xl overflow-x-hidden">
+    <div className="p-4 lg:p-6 overflow-x-hidden" /* lista de proyectos a TODO el ancho de la pantalla (antes 1152 px y salía la barra para mover a los lados) */>
       <Header
         icon={<Briefcase size={20} className="text-[#2E8B57]" />}
         title="Proyectos / Obras"
@@ -9239,7 +9239,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         </div>
       </details>
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm [&_td]:px-2 [&_th]:px-2 [&_td]:py-2 [&_th]:py-2">
           <thead>
             <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
               <th className="px-4 py-3 font-semibold">Nº</th>
