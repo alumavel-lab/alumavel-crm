@@ -55239,7 +55239,8 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
   const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || portalMal(a, l, c.p) || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (c.otroProv && !estricto && vent !== "solo") || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    // si la línea del albarán DICE su expediente/obra (698, 710…), solo va a pedidos de ESA obra: nunca a otra solo porque la medida coincide
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || portalMal(a, l, c.p) || (numsDe(a.expediente).size > 0 && !obraOk(a, l, c.p)) || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (c.otroProv && !estricto && vent !== "solo") || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
   asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
