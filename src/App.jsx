@@ -43216,6 +43216,20 @@ async function uxLeerPackingPdfSinIA(file) {
     return { proveedor, numeroAlbaran: "", pagina: 0, paginasTotal: 0, lineas: r.lineas, sinIA: true, aviso, resumen: `${r.lineas.length} líneas · ${r.unidades} cristales · ${r.caballetes} caballetes${r.total === r.unidades && !r.descuadres.length ? " · ✓ cuadra con el total del packing" : ""}` };
   } catch (e) { return null; }
 }
+// PDF ESCANEADO DE VARIAS PÁGINAS: cada página se convierte en una imagen y se lee POR SEPARADO (25 páginas de golpe hacía que el lector
+// se comiera cabeceras y líneas, y cada vez leía una cantidad distinta)
+async function uxPaginasPdfComoImagen(file) {
+  const lib = await cargarPdfJs();
+  const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const out = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    const pg = await doc.getPage(n); const vp = pg.getViewport({ scale: 1.8 });
+    const cv = document.createElement("canvas"); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    out.push({ n, dataUrl: cv.toDataURL("image/jpeg", 0.82), total: doc.numPages });
+  }
+  return out;
+}
 async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   // 0º: si es un PACKING LIST de Tvitec en PDF con texto, se lee exacto sin IA
   if (file && mediaType === "application/pdf") { const pk = await uxLeerPackingPdfSinIA(file); if (pk) return pk; }
@@ -55392,6 +55406,29 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
+        // PDF de varias páginas (y que no es un packing de texto): página a página, de 3 en 3, y en orden
+        let porPaginas = null;
+        if (mediaType === "application/pdf") { try { const pk = await uxLeerPackingPdfSinIA(file); if (!pk) { const pgs = await uxPaginasPdfComoImagen(file); if (pgs.length > 2) porPaginas = pgs; } } catch (e) { porPaginas = null; } }
+        if (porPaginas) {
+          const res = new Array(porPaginas.length);
+          for (let i = 0; i < porPaginas.length; i += 3) {
+            setAlbMsg(`Leyendo el albarán página a página: ${Math.min(i + 3, porPaginas.length)} de ${porPaginas.length}…`);
+            await Promise.all(porPaginas.slice(i, i + 3).map(async (pg, j) => {
+              let r = null; for (let intento = 0; intento < 2 && !r; intento++) { try { r = await uxLeerAlbaranConClaude(pg.dataUrl, "image/jpeg", null); } catch (e) { r = null; } }
+              res[i + j] = r || { lineas: [], cabeceras: [], error: true };
+            }));
+          }
+          res.forEach((info, k) => {
+            const nPag = porPaginas[k].n;
+            if (info.error) avisosLect.push(`⚠ No he podido leer la página ${nPag}: vuelve a subir el albarán`);
+            lineas = lineas.concat(toArray(info.lineas).map((l, i) => ({ ...l, _pag: nPag, _ord: nPag * 1000 + i })));
+            cabsAlb = cabsAlb.concat(toArray(info.cabeceras).map((c, i) => ({ ...c, _pag: nPag, _i: i })));
+            proveedor = proveedor || info.proveedor || ""; paginas.push(nPag);
+          });
+          paginasTotal = Math.max(paginasTotal, porPaginas.length); docs.push(file);
+          setAlbMsg("");
+          continue;
+        }
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas).map((l, i) => ({ ...l, _pag: info.pagina || 0, _ord: lineas.length + i }))); proveedor = proveedor || info.proveedor || ""; docs.push(file);
         cabsAlb = cabsAlb.concat(toArray(info.cabeceras).map((c, i) => ({ ...c, _pag: info.pagina || 0, _i: i })));
