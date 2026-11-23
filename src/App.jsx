@@ -7676,7 +7676,13 @@ export default function App() {
               const pr = proyectos.find((x) => x.id === id);
               // un solo guardado: el albarán firmado y (si toca) el cambio de estado
               if (entregar) moverEstadoProyecto(id, "Entregado", { albaranEntrega });
-              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso"].includes(pr.estadoTrabajo)) moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: new Date().toISOString().slice(0, 10) });
+              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)) {
+                // FIRMAR LA CARGA = PALETIZAR: la obra sale del planning de Fábrica y sigue su camino, aunque nadie la hubiera pasado a fabricación
+                const hoyC = new Date().toISOString().slice(0, 10);
+                moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: hoyC, ...(pr.fechaTerminadoFabrica ? {} : { fechaTerminadoFabrica: hoyC }) });
+                const claveH = (k) => k.replace(/[.#$/[\]]/g, "_");
+                [`p-${pr.id}`, ...(pr.uxcarExpedienteId ? [`u-${pr.uxcarExpedienteId}`] : [])].forEach((k) => fbSet(ref(fbDb, `planFabricaHechas/${claveH(k)}`), { nombre: `#${pr.numero} ${pr.nombre || ""}`.slice(0, 80), pres: [], dia: hoyC, en: Date.now(), desdeAlbaran: true }).catch(() => {}));
+              }
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
@@ -7856,7 +7862,13 @@ export default function App() {
               const pr = proyectos.find((x) => x.id === id);
               // un solo guardado: el albarán firmado y (si toca) el cambio de estado
               if (entregar) moverEstadoProyecto(id, "Entregado", { albaranEntrega });
-              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso"].includes(pr.estadoTrabajo)) moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: new Date().toISOString().slice(0, 10) });
+              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)) {
+                // FIRMAR LA CARGA = PALETIZAR: la obra sale del planning de Fábrica y sigue su camino, aunque nadie la hubiera pasado a fabricación
+                const hoyC = new Date().toISOString().slice(0, 10);
+                moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: hoyC, ...(pr.fechaTerminadoFabrica ? {} : { fechaTerminadoFabrica: hoyC }) });
+                const claveH = (k) => k.replace(/[.#$/[\]]/g, "_");
+                [`p-${pr.id}`, ...(pr.uxcarExpedienteId ? [`u-${pr.uxcarExpedienteId}`] : [])].forEach((k) => fbSet(ref(fbDb, `planFabricaHechas/${claveH(k)}`), { nombre: `#${pr.numero} ${pr.nombre || ""}`.slice(0, 80), pres: [], dia: hoyC, en: Date.now(), desdeAlbaran: true }).catch(() => {}));
+              }
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
