@@ -31986,6 +31986,7 @@ function IncidenciaDetail({ onHacerPresupuesto = null, onFechaGarantia = null, i
               <Mail size={14} /> Sin email
             </span>
           )}
+          {onHacerPresupuesto && <button type="button" onClick={onHacerPresupuesto} title={incidencia.presupuestoPedido ? `Ya se abrió un presupuesto el ${fmtDate(incidencia.presupuestoPedido)}` : "Abre un presupuesto nuevo relleno con esta incidencia"} className="flex items-center gap-1.5 text-sm font-bold text-emerald-800 border-2 border-emerald-500 bg-emerald-50 px-3.5 py-2 rounded-md hover:bg-emerald-100"><FileText size={14} /> Pasar a presupuesto{incidencia.presupuestoPedido ? " ✓" : ""}</button>}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
             <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
