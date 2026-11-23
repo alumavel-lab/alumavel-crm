@@ -55353,6 +55353,8 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       else if (hs.length && hs.every((h) => h.rec || h.np === 0)) { tipo = "recibido"; donde = `Sus medidas están en ${hs.map(txtH).join(", ")}, pero ya constan como LLEGADAS (¿este albarán ya se subió antes, o se dio por llegado a mano?)`; }
       else if (hs.length && hs.every((h) => h.n <= 1) && conMed.length >= 3) { tipo = "sinpedido"; donde = `Solo coinciden medidas SUELTAS (1 de ${conMed.length}) en pedidos de otras obras (${hs.map((h) => h.num).join(", ")}): casi seguro FALTA el pedido de esta obra/portal en el CRM`; }
       else if (hs.length) donde = `Sus medidas están en ${hs.map(txtH).join(", ")}: el pedido está pendiente pero no se ha repartido aquí. Mándale foto de esto a Claude`;
+      const pedObra = (xs.find((a) => a && a._pedObra) || {})._pedObra;
+      if (pedObra) { tipo = "medidas"; donde = `Su pedido es ${pedObra}: revisa ese pedido`; }
       const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
       return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo: donde || motivo };
     });
@@ -55435,6 +55437,28 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const r0 = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const rc = repartirEnPedidosCrm(r0.sobran);
       const r = { ...r0, sobran: rc.sobran, crm: rc.crm, reparados };
+      // PEDIDO DE ESA OBRA/PORTAL POR SU TEXTO (nº de expediente + portal en la referencia o en el nombre del PDF: «compactos 698 p5.pdf»).
+      // Si el pedido NO tiene medidas leídas (solo el PDF), el bloque entero se da por llegado a ese pedido. Si las tiene y no casan, se avisa.
+      {
+        const T = (t) => String(t || "").toUpperCase();
+        const numsB = (t) => { const out = new Set(); T(t).replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
+        const portalB = (t) => { const m = T(t).match(/(?:^|[^A-Z0-9])P\s?-?\s?(\d{1,2})(?![0-9.])/); return m ? String(parseInt(m[1], 10)) : ""; };
+        const txtPed = (p) => T([p.numero, p.referencia, p.obra, p.descripcion, ...uxDocsPedido(p).map((d) => d && (d.nombre || d.name || "")), ...toArray(p.expedientes).map((x) => [x && x.numero, x && x.vivienda, x && x.referencia, x && x.presupuesto].filter(Boolean).join(" "))].filter(Boolean).join(" · ").replace(/[_\-.]/g, " "));
+        const grupos = {}; toArray(r.sobran).forEach((a) => { const k = String(a.expediente || "").trim(); if (k) (grupos[k] = grupos[k] || []).push(a); });
+        const quitar = new Set();
+        Object.entries(grupos).forEach(([k, xs]) => {
+          const ns = [...numsB(k)]; if (!ns.length) return; const pt = portalB(k);
+          const cs = pend.filter((p) => { const t = txtPed(p); if (!ns.some((n) => new RegExp(`(^|[^0-9])${n}([^0-9]|$)`).test(t))) return false; if (!pt) return true; const tp = portalB(t); return tp === pt || new RegExp(`(^|[^A-Z0-9])P\\s?0?${pt}([^0-9]|$)`).test(t); });
+          if (!cs.length) return;
+          const p = cs[0]; const ls = uxLineasPedidas(p); const sinMedidas = ls.every((l) => !(l.ancho && l.alto));
+          if (cs.length === 1 && sinMedidas && !r.reparto.some((x) => x.p.id === p.id)) {
+            const llegado = { ...((p.recepcion && p.recepcion.lineas) || {}) }; ls.forEach((l) => { llegado[l.key] = l.pedido; });
+            r.reparto = [...r.reparto, { p, llegado, cab: {}, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), completo: true, faltan: 0, faltanTxt: [], total: ls.length, porDocumento: k }];
+            xs.forEach((a) => quitar.add(a));
+          } else xs.forEach((a) => { a._pedObra = `${cs.map((q) => q.numero).join(", ")}${sinMedidas ? " (solo PDF, sin medidas)" : " (sus medidas NO coinciden con el albarán)"}`; });
+        });
+        if (quitar.size) r.sobran = toArray(r.sobran).filter((a) => !quitar.has(a));
+      }
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; }); toArray(r.crm).forEach((x) => { sel[`crm:${x.p.id}`] = true; });
       setAlbSel(sel); setAlbRes({ ...r, lineas, lineasCrudas, cabsAlb, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
