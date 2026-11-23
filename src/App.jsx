@@ -55428,10 +55428,11 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         let ultExp = ""; lineas = lineas.map((l) => { const ex = String(l.expediente || "").trim(); if (ex) { ultExp = ex; return l; } return ultExp && (l.ancho || l.alto || l.codigo) ? { ...l, expediente: ultExp, expHeredado: true } : l; });
       }
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
-      // «REPARADO SIN CARGO»: vuelven de reparar, NO son material nuevo de ningún pedido → aparte, no se reparten
+      // «REPARADO SIN CARGO»: compactos que vinieron rotos y vuelven reparados. SÍ son de su pedido (p. ej. P02.316 y P02.321 de «633 P12»):
+      // se reparten como los demás. Si esa línea ya constaba como llegada, no se cuenta dos veces (sale en «ya constan LLEGADAS»)
       const esReparadoAlb = (l) => !!l && (l.reparado === true || /reparad|sin\s*cargo/i.test(`${l.descripcion || ""} ${l.codigo || ""}`));
       const reparados = lineas.filter(esReparadoAlb);
-      const r0 = uxRepartirAlbaran(pend, lineas.filter((l) => !esReparadoAlb(l)), proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
+      const r0 = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const rc = repartirEnPedidosCrm(r0.sobran);
       const r = { ...r0, sobran: rc.sobran, crm: rc.crm, reparados };
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; }); toArray(r.crm).forEach((x) => { sel[`crm:${x.p.id}`] = true; });
@@ -55635,7 +55636,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 </div>
               );
             })()}
-            {toArray(albRes.reparados).length > 0 && <div className="rounded border-2 border-sky-300 bg-sky-50 px-2 py-1 text-xs text-sky-900"><b>🔧 {albRes.reparados.reduce((t, a) => t + (parseFloat(a.cantidad) || 1), 0)} «REPARADO SIN CARGO»</b>: vuelven de reparar, no son material nuevo de ningún pedido y <b>no se reparten</b> ({[...new Set(albRes.reparados.map((a) => String(a.expediente || "").trim()).filter(Boolean))].slice(0, 6).join(" · ") || "sin referencia"}).</div>}
+            {toArray(albRes.reparados).length > 0 && <div className="rounded border-2 border-sky-300 bg-sky-50 px-2 py-1 text-xs text-sky-900"><b>🔧 {albRes.reparados.reduce((t, a) => t + (parseFloat(a.cantidad) || 1), 0)} «REPARADO SIN CARGO»</b>: vuelven reparados y <b>se reparten a su pedido como los demás</b> (si ya constaban como llegados, no se cuentan dos veces) ({[...new Set(albRes.reparados.map((a) => String(a.expediente || "").trim()).filter(Boolean))].slice(0, 6).join(" · ") || "sin referencia"}).</div>}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
               {toArray(albRes.sobran).some((a) => a && a.caballete) && <label className="basis-full flex items-center gap-2 text-sm font-semibold text-slate-800"><input type="checkbox" checked={meterSinPedido} onChange={(e) => setMeterSinPedido(e.target.checked)} className="w-4 h-4" /> Meter también en el almacén (pendientes de ubicar, en su caballete) los {albRes.sobran.reduce((t, a) => t + (a.caballete ? a.q : 0), 0)} cristales SIN PEDIDO, marcados «⚠ SIN PEDIDO»</label>}
