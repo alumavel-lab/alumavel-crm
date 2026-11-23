@@ -5772,10 +5772,24 @@ export default function App() {
     const patch = { ...extra, estadoTrabajo: estado };
     if (estado === "Listo para reparto/recogida") patch.fechaTerminadoFabrica = hoy;
     if (estado === "Entregado") patch.fechaEntregado = hoy;
+    // SI SE SALTA UN PASO, LOS ANTERIORES SE DAN POR HECHOS: aceptada → en fabricación → fabricada → cargada → entregada
+    const ordenE = ["Pendiente de aceptación", "En proceso", "Listo para reparto/recogida", "Albarán de carga firmado", "Entregado"];
+    const iN = ordenE.indexOf(estado);
+    if (iN >= 1) {
+      if (p.estadoPresupuesto !== "Presupuesto aceptado") { patch.estadoPresupuesto = "Presupuesto aceptado"; if (!p.fechaAceptado) patch.fechaAceptado = hoy; }
+      if (!p.fechaEnProceso && !patch.fechaEnProceso) patch.fechaEnProceso = Date.now();
+    }
+    if (iN >= 2) {
+      if (!p.fechaTerminadoFabrica && !patch.fechaTerminadoFabrica) patch.fechaTerminadoFabrica = hoy;
+      // fuera del planning de Fábrica (como al paletizar)
+      const claveH = (k) => k.replace(/[.#$/[\]]/g, "_");
+      [`p-${p.id}`, ...(p.uxcarExpedienteId ? [`u-${p.uxcarExpedienteId}`] : [])].forEach((k) => fbGet(ref(fbDb, `planFabricaHechas/${claveH(k)}`)).then((sn) => { if (!sn.exists()) return fbSet(ref(fbDb, `planFabricaHechas/${claveH(k)}`), { nombre: `#${p.numero} ${p.nombre || ""}`.slice(0, 80), pres: [], dia: hoy, en: Date.now(), porSalto: estado }); return null; }).catch(() => {}));
+    }
+    if (iN >= 4 && !p.fechaCarga && !patch.fechaCarga) patch.fechaCarga = hoy;
     updateProyectoInline(proyectoId, patch);
     if (p.origen === "portalUxcar" && p.uxcarExpedienteId) {
       const exp = uxExpedientes.find((e) => e.id === p.uxcarExpedienteId);
-      const est = estado === "Entregado" ? "entregado" : estado === "Listo para reparto/recogida" ? "terminado" : estado === "En proceso" && exp && ["terminado", "entregado"].includes(exp.estado) ? "produccion" : null;
+      const est = estado === "Entregado" ? "entregado" : (estado === "Listo para reparto/recogida" || estado === "Albarán de carga firmado") ? "terminado" : estado === "En proceso" && exp && ["terminado", "entregado"].includes(exp.estado) ? "produccion" : null;
       if (exp && est && exp.estado !== est) uxActualizar(exp, est === "entregado" ? { estado: est, fechaEntregado: hoy } : est === "produccion" ? { estado: est } : { estado: est, fechaTerminado: hoy });
     }
     showToast(`#${p.numero}: ${estado}`);
