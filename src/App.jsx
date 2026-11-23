@@ -43223,7 +43223,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. BLOQUES DE PEDIDO (Dealux y otros): una línea «Pedido Nº 26012778 Fecha … Ref/Obra: VALENCIA - EXP. 633 P12» es la CABECERA de un bloque: ese Ref/Obra es el "expediente" de las líneas que van DEBAJO de ella (hasta la siguiente cabecera), NUNCA de las de encima. Las líneas que hay al principio de una página ANTES de cualquier cabecera son la continuación del bloque de la página anterior: déjales "expediente" vacío "" (yo lo relleno). La línea «Obra: VALENCIA - EXP 633 P1|VALENCIA - EXP 633 P2|…» de arriba de cada página es la lista de todas las obras del albarán: NO la uses como expediente de ninguna línea. "codigo" = la columna Ref. de la línea (la ventana: V07.317, P02.316, V13.312), tal cual. Si la cantidad es negativa (abono, -1,0), ponla negativa. Si la línea dice «REPARADO», «REPARADO SIN CARGO» o «SIN CARGO», pon "reparado": true en esa línea (y en "descripcion" copia también ese texto). Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. BLOQUES DE PEDIDO (Dealux y otros): cada línea «Pedido Nº 26013110 Fecha … Ref/Obra: VLC - EXP 698 P5» es una CABECERA: devuélvela como UNA LÍNEA MÁS de "lineas", EN SU SITIO (en el mismo orden en que aparece en la hoja, entre las líneas de material), con "cabecera": "VLC - EXP 698 P5" (el texto que va tras Ref/Obra), cantidad 0 y sin medidas. En las líneas de material deja "expediente" vacío: yo le pongo a cada una la cabecera que tenga ENCIMA. NO cambies el orden de las líneas ni juntes cabeceras. La línea «Obra: VALENCIA - EXP 633 P1|VALENCIA - EXP 633 P2|…» de arriba de cada página es la lista de todas las obras del albarán: NO la uses como expediente de ninguna línea. "codigo" = la columna Ref. de la línea (la ventana: V07.317, P02.316, V13.312), tal cual. Si la cantidad es negativa (abono, -1,0), ponla negativa. Si la línea dice «REPARADO», «REPARADO SIN CARGO» o «SIN CARGO», pon "reparado": true en esa línea (y en "descripcion" copia también ese texto). Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":"","cabecera":"","reparado":false}]}';
   // 1º lectura rápida. Un PACKING LIST con muchos cristales tarda más de lo que deja Netlify (error 504/502):
   // entonces se lee EN SEGUNDO PLANO (sin límite de tiempo, el CRM va preguntando hasta que está)
   let texto = "";
@@ -43253,7 +43253,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
-    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ reparado: l.reparado === true || /reparad|sin\s*cargo/i.test(String(l.descripcion || "")), ventana: (String(l.codigo || "").trim().toUpperCase().replace(/,/g, ".").match(/^[A-Z]\d{1,2}(?:\.\d{3})+$/) || [""])[0], codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
+    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ cabecera: String(l.cabecera || "").trim(), reparado: l.reparado === true || /reparad|sin\s*cargo/i.test(String(l.descripcion || "")), ventana: (String(l.codigo || "").trim().toUpperCase().replace(/,/g, ".").match(/^[A-Z]\d{1,2}(?:\.\d{3})+$/) || [""])[0], codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
   };
 }
 
@@ -55363,7 +55363,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     const prev = anadir && albRes ? albRes : null;
     setAlbLeyendo(true); setAlbMsg(""); if (!prev) setAlbRes(null);
     try {
-      let lineas = prev ? [...prev.lineas] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
+      let lineas = prev ? [...(prev.lineasCrudas || prev.lineas)] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
       const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0; const avisosLect = [];
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
@@ -55380,8 +55380,17 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       // LAS PÁGINAS EN ORDEN (las fotos pueden subirse desordenadas) y la obra de cada bloque baja a las líneas siguientes, también a las de
       // la página siguiente: «Ref/Obra: … P12» al final de la página 9 es de los compactos que salen arriba de la página 10
       if (lineas.every((l) => (l._pag || 0) > 0)) lineas = [...lineas].sort((x, y) => (x._pag - y._pag) || ((x._ord || 0) - (y._ord || 0)));
-      lineas = lineas.map((l) => (l.expHeredado ? { ...l, expediente: "", expHeredado: false } : l)); // se recalcula con todas las páginas juntas
-      { let ultExp = ""; lineas = lineas.map((l) => { const ex = String(l.expediente || "").trim(); if (ex) { ultExp = ex; return l; } return ultExp && (l.ancho || l.alto || l.codigo) ? { ...l, expediente: ultExp, expHeredado: true } : l; }); }
+      const lineasCrudas = lineas; // tal cual se leyeron (con las cabeceras), para poder añadir más páginas y volver a calcular
+      if (lineasCrudas.some((l) => l && l.cabecera)) {
+        // CABECERAS LEÍDAS EN SU SITIO: cada línea de material es de la ÚLTIMA cabecera que tiene ENCIMA (aunque esté en la página anterior).
+        // Lo decide el CRM, no el lector (que se lo ponía a las líneas de arriba)
+        let ult = ""; const out = [];
+        lineasCrudas.forEach((l) => { if (!l) return; if (l.cabecera) { ult = String(l.cabecera).trim(); return; } out.push(ult ? { ...l, expediente: ult, expHeredado: true } : l); });
+        lineas = out;
+      } else {
+        lineas = lineas.map((l) => (l.expHeredado ? { ...l, expediente: "", expHeredado: false } : l)); // se recalcula con todas las páginas juntas
+        let ultExp = ""; lineas = lineas.map((l) => { const ex = String(l.expediente || "").trim(); if (ex) { ultExp = ex; return l; } return ultExp && (l.ancho || l.alto || l.codigo) ? { ...l, expediente: ultExp, expHeredado: true } : l; });
+      }
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
       // «REPARADO SIN CARGO»: vuelven de reparar, NO son material nuevo de ningún pedido → aparte, no se reparten
       const esReparadoAlb = (l) => !!l && (l.reparado === true || /reparad|sin\s*cargo/i.test(`${l.descripcion || ""} ${l.codigo || ""}`));
@@ -55390,7 +55399,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const rc = repartirEnPedidosCrm(r0.sobran);
       const r = { ...r0, sobran: rc.sobran, crm: rc.crm, reparados };
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; }); toArray(r.crm).forEach((x) => { sel[`crm:${x.p.id}`] = true; });
-      setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
+      setAlbSel(sel); setAlbRes({ ...r, lineas, lineasCrudas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
       if (!r.reparto.length && !toArray(r.crm).length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
