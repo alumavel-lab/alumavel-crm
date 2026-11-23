@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  RefreshCw,
+  RefreshCw, Landmark,
   Users, Briefcase, Search, Plus, X, Pencil, Trash2, ChevronLeft,
   Building2, ChevronDown, Phone, Mail, MapPin, Euro, Clock, FileText, CheckCircle2,
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
@@ -133,6 +133,7 @@ const MODULOS_DISPONIBLES = [
   { id: "proyectos", label: "Proyectos / Obras" },
   { id: "clientes", label: "Clientes" },
   { id: "leads", label: "Leads / Prospección" },
+  { id: "licitaciones", label: "Licitaciones públicas" },
   { id: "proveedores", label: "Proveedores" },
   { id: "stock", label: "Gestión de Stock" },
   { id: "pedidos", label: "Pedidos" },
@@ -2243,7 +2244,7 @@ export default function App() {
       asignadoPor: currentUser?.id || null,
       asignadoPorNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
       requiereConfirmacion: !!data.requiereConfirmacion,
-      fechaLimite: data.fechaLimite || "",
+      fechaLimite: data.fechaLimite || fechaLimitePorDefecto(),
       salaId: data.salaId || null,
       salaNombre: data.salaNombre || "",
       estado: "Pendiente",
@@ -4044,7 +4045,7 @@ export default function App() {
     let idParaAbrir = null;
     if (data.id) {
       const anterior = presupuestos.find((p) => p.id === data.id);
-      const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
+      const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente", ...(!anterior?.hechoPorId && currentUser ? { hechoPorId: currentUser.id, hechoPorNombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() } : {}) };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
       copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === data.id));
@@ -4059,7 +4060,7 @@ export default function App() {
       }
       idParaAbrir = data.id;
     } else {
-      const np = { estado: "Pendiente", ...data, id: uid(), creadoEn: Date.now() };
+      const np = { estado: "Pendiente", ...data, id: uid(), creadoEn: Date.now(), ...(currentUser ? { hechoPorId: currentUser.id, hechoPorNombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() } : {}) }; // quién lo hace: el usuario con el que se ha entrado
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
       idParaAbrir = np.id;
@@ -6025,6 +6026,9 @@ export default function App() {
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
   // OPERARIO DE LA LÍNEA: usuario (no administrador) con su puesto de la línea marcado → solo ve lo suyo (sin avisos generales)
   const soloOperario = !isAdmin && !!currentUser && (toArray(currentUser.puestosLinea).filter(Boolean).length > 0 || !!currentUser.puestoFijo);
+  // Licitaciones en plazo sin mirar (para el aviso rojo del menú)
+  const [licPendientes, setLicPendientes] = useState(0);
+  useEffect(() => { if (!currentUser) return undefined; return onValue(ref(fbDb, "licitaciones/items"), (snap) => setLicPendientes(licPendientesMenu(snap.val())), () => {}); }, [currentUser && currentUser.id]);
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     // Si en su ficha tiene un puesto de la línea (fijo o marcado en «Pantallas y puestos de la Línea»), ve «Línea (pistola)» aunque no se le marcara el módulo
@@ -6035,6 +6039,60 @@ export default function App() {
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
     return modulosPermitidos.includes(id);
   };
+  // UNA VEZ (protocolo de oficina, 22/11/2026): las tareas pendientes que se crearon sin fecha límite pasan a tener el viernes 27/11/2026,
+  // para que entren en el aviso de vencidas. Lo hace la primera sesión de administrador que abra el CRM; las hechas no se tocan.
+  const fechasTareasHechas = useRef(false);
+  useEffect(() => {
+    if (!isAdmin || loading || fechasTareasHechas.current) return;
+    const sinFecha = tareas.filter((t) => t && !t.fechaLimite && t.estado !== "Hecha");
+    if (!sinFecha.length) return;
+    fechasTareasHechas.current = true;
+    const ids = new Set(sinFecha.map((t) => t.id));
+    saveTareas(tareas.map((t) => (t && ids.has(t.id) ? { ...t, fechaLimite: "2026-11-27", fechaLimitePuestaAuto: true } : t)));
+    showToast(`${sinFecha.length} tarea${sinFecha.length === 1 ? "" : "s"} sin fecha: puesta${sinFecha.length === 1 ? "" : "s"} para el viernes 27/11`);
+  }, [isAdmin, loading, tareas]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cfgTareasAuto = useObjetoFb("config/tareasAuto");
+  const guardarCfgTareasAuto = (cfg) => fbSet(ref(fbDb, "config/tareasAuto"), JSON.parse(JSON.stringify(cfg))).then(() => showToast("Tareas automáticas guardadas")).catch((e) => showToast("No se pudo guardar: " + e.message, "error"));
+  useEffect(() => {
+    // lo hacen el administrador y los responsables elegidos (ids fijos por presupuesto/pedido: si dos lo hacen a la vez, no se duplica)
+    const c = cfgTareasAuto || {};
+    if (!currentUser || loading || !c.desde || !(isAdmin || currentUser.id === c.presupuestos || currentUser.id === c.pedidos)) return;
+    const desdeTs = new Date(c.desde + "T00:00:00").getTime();
+    const porId = new Map(tareas.map((t) => [t && t.id, t]));
+    const nombreU = (id) => { const u = toArray(usuarios).find((x) => x && x.id === id); return u ? `${u.nombre} ${u.apellidos || ""}`.trim() : ""; };
+    const nuevas = []; const cerrar = new Set();
+    const grupoPres = new Set([c.presupuestos, ...toArray(c.cogenPresupuestos)].filter(Boolean));
+    const quienPres = (x) => (x && x.hechoPorId && grupoPres.has(x.hechoPorId) ? x.hechoPorId : c.presupuestos); // el presupuesto dice quién lo hace
+    const mover = new Map(); // id tarea → usuario al que pasa
+    const revisar = (tipo, lista, pendiente, fechaDe, responsable, dias, titulo) => {
+      const vivos = new Set();
+      toArray(lista).forEach((x) => {
+        if (!x || !x.id) return;
+        const id = `auto-${tipo}-${x.id}`; vivos.add(id);
+        const t = porId.get(id);
+        const resp = typeof responsable === "function" ? responsable(x) : responsable;
+        if (t && t.estado !== "Hecha" && resp && t.asignadoA !== resp && tipo === "pres") mover.set(id, resp);
+        if (pendiente(x)) {
+          if (!t && resp && fechaDe(x) >= desdeTs) nuevas.push({ id, titulo: titulo(x), descripcion: "Tarea automática: se cierra sola cuando esté hecho.", asignadoA: resp, asignadoANombre: nombreU(resp), asignadoPor: null, asignadoPorNombre: "CRM (automática)", requiereConfirmacion: false, fechaLimite: sumarDiasHoy(dias), salaId: null, salaNombre: "", estado: "Pendiente", fechaCreacion: Date.now(), fechaCompletada: null, automatica: { tipo, refId: x.id } });
+        } else if (t && t.estado !== "Hecha") cerrar.add(id);
+      });
+      // si el presupuesto o pedido se ha borrado, su tarea también se cierra
+      tareas.forEach((t) => { if (t && t.automatica && t.automatica.tipo === tipo && t.estado !== "Hecha" && !vivos.has(t.id)) cerrar.add(t.id); });
+    };
+    revisar("pres", presupuestos, autoPresupuestoPendiente, (x) => x.creadoEn || (x.fechaEnvio ? new Date(x.fechaEnvio + "T12:00:00").getTime() : 0), c.presupuestos ? quienPres : "", c.diasPresupuestos ?? 2,
+      (x) => `Enviar presupuesto ${x.numero || ""}${x.clienteNombre ? ` · ${x.clienteNombre}` : ""}`.trim());
+    revisar("ped", pedidos, autoPedidoPendiente, (x) => x.creadoEn || (x.fechaCompra ? new Date(x.fechaCompra + "T12:00:00").getTime() : 0), c.pedidos, c.diasPedidos ?? 2,
+      (x) => { const prov = (toArray(proveedores).find((q) => q.id === x.proveedorId) || {}).nombre || x.proveedorExterno || ""; const pr = toArray(proyectos).find((q) => q.id === x.proyectoId); return `Hacer pedido #${x.numero || ""}${prov ? ` · ${prov}` : ""}${pr ? ` · obra #${pr.numero}` : ""}`; });
+    if (!nuevas.length && !cerrar.size && !mover.size) return;
+    saveTareas([...nuevas, ...tareas.map((t) => {
+      if (!t) return t;
+      let n = t;
+      if (mover.has(t.id)) n = { ...n, asignadoA: mover.get(t.id), asignadoANombre: nombreU(mover.get(t.id)) };
+      if (cerrar.has(t.id)) n = { ...n, estado: "Hecha", fechaCompletada: Date.now(), cerradaAuto: true };
+      return n;
+    })]);
+  }, [cfgTareasAuto, presupuestos, pedidos, tareas, loading, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [nuevaTareaAbierta, setNuevaTareaAbierta] = useState(false); // «+ Nueva tarea» directa (barra lateral y módulo Tareas)
   const misTareasPendientes = tareas.filter((t) =>
     (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
     (t.asignadoPor === currentUser?.id && t.estado === "Pendiente de confirmar")
@@ -6239,6 +6297,19 @@ export default function App() {
             }`}
           >
             <UserPlus size={16} /> Leads / Prospección
+          </button>
+          )}
+          {tieneAcceso("licitaciones") && (
+          <button
+            onClick={() => setModulo("licitaciones")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "licitaciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Landmark size={16} /> Licitaciones
+            {licPendientes > 0 && (
+              <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center" title="En plazo y sin mirar todavía">{licPendientes}</span>
+            )}
           </button>
           )}
           {tieneAcceso("proyectos") && (
@@ -6508,6 +6579,14 @@ export default function App() {
             )}
           </button>
           )}
+          {tieneAcceso("tareas") && (
+          <button
+            onClick={() => setNuevaTareaAbierta(true)}
+            className="w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 rounded-md text-xs font-semibold transition text-emerald-300 hover:bg-white/5"
+          >
+            + Nueva tarea
+          </button>
+          )}
         </nav>
         <div className="px-5 py-3 border-t border-white/10">
           <div className="flex items-center gap-2 mb-2">
@@ -6538,14 +6617,19 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
-        {/* Incidencias de fábrica abiertas: las ve TODO EL MUNDO (en grande el encargado / jefe de línea) para que todos actúen */}
-        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={incidenciasFabrica} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
+        {/* Incidencias de fábrica abiertas: las ven quienes trabajan en fábrica (en grande el encargado / jefe de línea).
+            Protocolo de oficina (nov 2026): a la oficina y a los administradores ya no les salen; solo las que tengan asignadas a ellos. Siguen en el módulo «Incidencias de fábrica». */}
+        {currentUser && <PanelIncidenciasEncargado compacto={!currentUser.encargadoLinea} incidencias={(currentUser.encargadoLinea || soloOperario || (!isAdmin && !!areasUsuario.fabrica)) ? incidenciasFabrica : incidenciasFabrica.filter((i) => i && i.asignadoA === currentUser.id)} currentUser={currentUser} onAsignar={asignarIncFab} onResolver={resolverIncFab} onFechaLlegada={async (id, f) => {
           actualizarIncFab(id, { llegaPrevista: f || "" }); if (!f) return;
           // la OBRA de la incidencia se pone en el planning ese día (cuando llega lo que faltaba)
           const inc = incidenciasFabrica.find((x) => x.id === id); if (!inc || !inc.obra) return;
           try { const sn = (await fbGet(ref(fbDb, "controlDiaVentanasObra"))).val() || {}; const e = Object.values(sn).find((x) => x && String(x.nombre || "").trim() === String(inc.obra || "").trim());
             if (!e) return; const ids = e.tipo === "u" ? [`u-${e.id}`, ...(e.proyectoId ? [`p-${e.proyectoId}`] : [])] : e.tipo === "p" ? [`p-${e.id}`] : [];
             ids.forEach((oid) => moverDiaPlanningFab(oid, f)); if (ids.length) showToast(`${inc.obra}: puesta en el planning el ${fmtDate(f)}`); } catch (er) { /* sin planning */ } }} onIr={veFabrica ? () => setModulo("incfabrica") : null} />}
+        {/* Avisos de la línea de fábrica: antes al administrador; ahora al encargado / jefe de línea (protocolo de oficina, nov 2026); fuera del bloque de abajo para que le salgan aunque tenga puesto en la línea */}
+        {currentUser && currentUser.encargadoLinea && <AvisoSoldaduraLinea />}
+        {currentUser && currentUser.encargadoLinea && <AvisoFaltaMaterialLinea />}
+        {currentUser && currentUser.encargadoLinea && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {/* Los avisos de arriba NO salen al operario de la línea (usuario con su puesto): solo ve lo suyo */}
         {!soloOperario && <>
         {(() => {
@@ -6583,12 +6667,9 @@ export default function App() {
             . Toca para verlo →
           </button>
         )}
-        {isAdmin && <AvisoSoldaduraLinea />}
-        {isAdmin && <AvisoFaltaMaterialLinea />}
-        {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
           if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
-          const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === currentUser.id));
+          const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && i.asignadoA === currentUser.id); // solo las tuyas (también el administrador)
           if (abiertasF.length === 0) return null;
           const vencidas = abiertasF.filter((i) => i.venceTs < Date.now()).length;
           const sinAsignar = isAdmin ? abiertasF.filter((i) => !i.asignadoA).length : 0;
@@ -6598,7 +6679,7 @@ export default function App() {
               className={`w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition ${vencidas > 0 ? "bg-rose-100 text-rose-800 hover:bg-rose-200" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
             >
               <AlertOctagon size={15} />
-              {isAdmin ? "Incidencias de fábrica" : "Tienes incidencias de fábrica"}: {abiertasF.length} abierta{abiertasF.length === 1 ? "" : "s"}
+              Tienes incidencias de fábrica: {abiertasF.length} abierta{abiertasF.length === 1 ? "" : "s"}
               {vencidas > 0 && ` · ${vencidas} fuera de plazo`}
               {sinAsignar > 0 && ` · ${sinAsignar} sin asignar`}
               . Toca para verlas →
@@ -6622,6 +6703,27 @@ export default function App() {
           );
         })()}
         {(() => {
+          // TAREAS VENCIDAS: a la persona (las suyas) y a quien supervisa tareas (las de todo el equipo)
+          if (!currentUser || modulo === "tareas" || !tieneAcceso("tareas")) return null;
+          const mias = tareas.filter((t) => t.asignadoA === currentUser.id && tareaVencida(t));
+          const revisados = revisaA(currentUser);
+          const equipo = tareas.filter((t) => t.asignadoA !== currentUser.id && revisados.has(t.asignadoA) && tareaVencida(t));
+          if (!mias.length && !equipo.length) return null;
+          const nombres = [...new Set(equipo.map((t) => String(t.asignadoANombre || "").split(" ")[0]).filter(Boolean))];
+          return (
+            <button
+              onClick={() => { tareasFiltroInicial.actual = mias.length ? null : "equipo"; setModulo("tareas"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-100 text-rose-800 hover:bg-rose-200"
+            >
+              <ClipboardList size={15} />
+              {mias.length > 0 && `Tienes ${mias.length} tarea${mias.length === 1 ? "" : "s"} vencida${mias.length === 1 ? "" : "s"}`}
+              {mias.length > 0 && equipo.length > 0 && " · "}
+              {equipo.length > 0 && `${equipo.length} tarea${equipo.length === 1 ? "" : "s"} vencida${equipo.length === 1 ? "" : "s"} del equipo (${nombres.join(", ")})`}
+              . Toca para verlas →
+            </button>
+          );
+        })()}
+        {(() => {
           if (!currentUser || modulo === "pedidos" || (modulo === "fabrica")) return null;
           const aPedidos = tieneAcceso("pedidos");
           const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
@@ -6632,24 +6734,14 @@ export default function App() {
           if (!resp && !veFabrica && !soloUx) return null;
           return (
             <button
-              onClick={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
+              onClick={() => { if (!isAdmin) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
             >
               ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →{isAdmin && (() => { const hoyD = new Date().toISOString().slice(0, 10); const v = Object.values(vistasDiscApp || {}).filter((x) => x && String(x.fecha || "").slice(0, 10) === hoyD).sort((p, q) => String(q.fecha).localeCompare(String(p.fecha))); return v.length ? <span className="ml-2 font-normal text-orange-700">· {v.map((x) => `${x.nombre} lo abrió a las ${new Date(x.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`).join(" · ")}</span> : null; })()}
             </button>
           );
         })()}
-        {(() => {
-          if (!currentUser || modulo === "pedidos") return null;
-          const aPedidos = tieneAcceso("pedidos");
-          const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
-          const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
-          if (modulo === "uxcar" && soloUx) return null;
-          if (!resp && !soloUx) return null; // la ventana que insiste solo sale a administrador, responsable de pedidos y Uxcar: NO a quien trabaja en fábrica / puestos de línea
-          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
-          const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
-          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
-        })()}
+        {/* La ventana de discrepancias que volvía cada 15 minutos se quitó (protocolo de oficina, nov 2026): queda solo la franja naranja de arriba. */}
         {(() => {
           // CABALLETES POR RECLAMAR: los que salieron con un cliente y ya tenían que haber vuelto (fecha prevista pasada)
           if (!currentUser || !(isAdmin || veFabrica || tieneAcceso("albaranes"))) return null;
@@ -7079,6 +7171,7 @@ export default function App() {
             }}
           />
         )}
+        {modulo === "licitaciones" && <LicitacionesModulo currentUser={currentUser} usuarios={usuarios} />}
         {modulo === "leads" && (
           <LeadsModulo
             leads={leads}
@@ -7440,6 +7533,18 @@ export default function App() {
             onMarcarHecha={marcarTareaHecha}
             onConfirmar={confirmarTarea}
             onDelete={deleteTarea}
+            onNueva={() => setNuevaTareaAbierta(true)}
+            cfgAuto={cfgTareasAuto}
+            onGuardarCfgAuto={isAdmin ? guardarCfgTareasAuto : null}
+            filtroInicial={tareasFiltroInicial.actual}
+          />
+        )}
+        {nuevaTareaAbierta && (
+          <CrearTareaModal
+            usuarios={usuarios}
+            currentUser={currentUser}
+            onClose={() => setNuevaTareaAbierta(false)}
+            onCrear={(data) => { crearTarea(data); setNuevaTareaAbierta(false); }}
           />
         )}
         {modulo === "ingresos" && (
@@ -7736,7 +7841,7 @@ export default function App() {
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
-        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
+        {modulo === "condiciones" && <CondicionesModulo puestosUsuario={isAdmin ? [] : [...new Set([currentUser && currentUser.puestoFijo, ...toArray(currentUser && currentUser.puestosLinea), ...toArray(currentUser && currentUser.puestosPrep)].filter(Boolean))]} isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} usuarioId={currentUser ? currentUser.id : ""} usuarios={usuarios} />}
         {modulo === "uxcar" && (
           <UxcarModulo
             incidenciasUx={incidenciasUx} stockUx={stockUxAuto} nombreUsuarioUx={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Ecowin PVC"}
@@ -23021,9 +23126,10 @@ const discrepanciasPedido = (p) => {
   if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return [];
   const f = String(p.fechaRecibido || p.fechaRecepcion || "").slice(0, 10);
   const viejo = !!f && (Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000 > 90; // pedidos recibidos hace más de 3 meses: no se avisa
+  const deUxcar = !!p.uxcarPedidoId || p.origen === "portalUxcar"; // protocolo de oficina (nov 2026): en lo de Uxcar basta con la baja de fábrica
   return toArray(p.lineas).map((l) => {
     const ofi = ofiRecibida(p, l), fab = !!l.confirmadoFabrica;
-    if (fab && !ofi) return { l, tipo: "fabrica" };
+    if (fab && !ofi) return deUxcar ? null : { l, tipo: "fabrica" };
     if (ofi && !fab && !viejo) return { l, tipo: "oficina" };
     return null;
   }).filter(Boolean);
@@ -23036,56 +23142,6 @@ const discrepanciasParaMi = (disc, { fabrica, oficina, uxcar }) => toArray(disc)
   return { ...x, items };
 }).filter((x) => x.items.length > 0);
 const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
-// Aviso que INSISTE: mientras haya un pedido que una parte da por llegado y la otra no, sale una ventana que pregunta por qué no se ha marcado
-// y vuelve a salir cada 15 minutos (y al entrar) hasta que se resuelva. «Más tarde» solo la aplaza.
-const MIN_INSISTE_DISCREPANCIA = 15;
-function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor, onDarDeBaja }) {
-  const [abierto, setAbierto] = useState(true);
-  const hay = disc.length > 0;
-  useEffect(() => {
-    if (!hay) { setAbierto(false); return undefined; }
-    const t = setInterval(() => setAbierto(true), MIN_INSISTE_DISCREPANCIA * 60 * 1000);
-    return () => clearInterval(t);
-  }, [hay]);
-  useEffect(() => { if (hay) setAbierto(true); }, [disc.length]);
-  if (!hay || !abierto) return null;
-  const dias = (p) => { const f = String(p.fechaRecibido || p.fechaRecepcion || p.fechaCompra || "").slice(0, 10); return f ? Math.max(0, Math.floor((Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000)) : null; };
-  return (
-    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl w-full max-w-xl max-h-[85vh] flex flex-col border-4 border-orange-500">
-        <div className="px-5 pt-4 pb-2">
-          <h3 className="font-bold text-orange-700 text-lg">⚠ Material que una parte da por llegado y la otra no</h3>
-          <p className="text-xs text-slate-500 mt-1">No se quita hasta que fábrica y oficina coincidan. Avisa a la otra parte y averigua por qué no se ha marcado.</p>
-        </div>
-        <div className="px-5 py-2 overflow-y-auto space-y-2">
-          {disc.map(({ p, items }) => {
-            const d = dias(p);
-            const faltaOficina = items.filter((x) => x.tipo === "fabrica").length;
-            const faltaFabrica = items.filter((x) => x.tipo === "oficina").length;
-            return (
-              <div key={p.id} className="border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 text-sm">
-                <div className="font-bold text-slate-800">Pedido #{p.numero} · {nombreProveedor(p)}{p.tipoUxcar ? ` · Uxcar (${p.tipoUxcar})` : ""}{d != null ? <span className="font-normal text-xs text-slate-500"> · {d} día{d === 1 ? "" : "s"}</span> : null}</div>
-                {faltaOficina > 0 && (p.uxcarPedidoId
-                  ? <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>Uxcar no ha subido su albarán</b>. Uxcar: ¿ha llegado o falta algo?</div>
-                  : <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>)}
-                {faltaFabrica > 0 && <div className="text-orange-800">{p.uxcarPedidoId ? "Uxcar" : "Oficina"} lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
-                {faltaFabrica > 0 && onDarDeBaja && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button onClick={() => { if (window.confirm(`¿Dar de baja el pedido #${p.numero}? Se da por llegado TODO lo pendiente igual que con el albarán (cristales a Fábrica, persianas al almacén, stock, y el portal de Uxcar si es suyo). Si ya lo habías colocado a mano, se duplicaría. Desaparece de Materiales pendientes.`)) onDarDeBaja(p.id); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Dar de baja: ha llegado todo</button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap justify-end gap-2">
-          <button onClick={() => setAbierto(false)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">Más tarde (vuelve a avisar en {MIN_INSISTE_DISCREPANCIA} min)</button>
-          <button onClick={() => { setAbierto(false); onIr(); }} className="text-sm font-semibold text-white bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg">Resolverlo ahora →</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarPedido, onIrAlbaran, onDarDeBaja }) {
   const grupos = discrepanciasTodas(pedidos);
   const prov = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "—";
@@ -31035,18 +31091,23 @@ function ChatModulo({ usuarios, currentUser, proyectos, onCrearTarea }) {
 }
 
 function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, onClose, onCrear }) {
-  const [asignadoA, setAsignadoA] = useState("");
-  const [titulo, setTitulo] = useState(mensaje.texto.slice(0, 80));
-  const [descripcion, setDescripcion] = useState(mensaje.texto);
+  const directa = !mensaje; // «Nueva tarea» directa (sin venir de un mensaje del chat)
+  const puedeAOtros = esSupervisorTareas(currentUser); // sin «Supervisa tareas», solo a uno mismo
+  const [asignadoA, setAsignadoA] = useState(puedeAOtros ? "" : (currentUser?.id || ""));
+  const [titulo, setTitulo] = useState(mensaje ? String(mensaje.texto || "").slice(0, 80) : "");
+  const [descripcion, setDescripcion] = useState(mensaje ? String(mensaje.texto || "") : "");
   const [fechaLimite, setFechaLimite] = useState("");
   const [requiereConfirmacion, setRequiereConfirmacion] = useState(true);
   const [error, setError] = useState("");
 
-  const candidatos = usuarios.filter((u) => u.id !== currentUser?.id);
+  const candidatos = puedeAOtros
+    ? toArray(usuarios).filter((u) => u && (u.id === currentUser?.id || !esOperarioLinea(u)))
+    : toArray(usuarios).filter((u) => u && u.id === currentUser?.id);
 
   const submit = () => {
     if (!asignadoA) { setError("Elige a quién se la asignas."); return; }
     if (!titulo.trim()) { setError("Ponle un título a la tarea."); return; }
+    if (!fechaLimite) { setError("Pon la fecha límite: toda tarea lleva fecha."); return; }
     const usuario = usuarios.find((u) => u.id === asignadoA);
     onCrear({
       titulo: titulo.trim(),
@@ -31055,21 +31116,21 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
       asignadoANombre: usuario ? `${usuario.nombre} ${usuario.apellidos || ""}`.trim() : "",
       requiereConfirmacion,
       fechaLimite,
-      salaId,
-      salaNombre,
+      salaId: salaId || null,
+      salaNombre: salaNombre || "",
     });
   };
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg p-5 max-w-md w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-display font-bold text-slate-800 mb-3">Crear tarea desde este mensaje</h3>
+        <h3 className="font-display font-bold text-slate-800 mb-3">{directa ? "Nueva tarea" : "Crear tarea desde este mensaje"}</h3>
         {error && <p className="text-xs text-rose-600 font-semibold mb-3">⚠ {error}</p>}
         <div className="space-y-3">
           <Field label="Asignar a" required>
             <Select value={asignadoA} onChange={(e) => setAsignadoA(e.target.value)}>
-              <option value="">Elige un compañero...</option>
-              {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+              {puedeAOtros && <option value="">Elige a quién...</option>}
+              {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}{u.id === currentUser?.id ? " (yo)" : ""}</option>)}
             </Select>
           </Field>
           <Field label="Título" required>
@@ -31078,7 +31139,7 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
           <Field label="Descripción">
             <TextArea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} />
           </Field>
-          <Field label="Fecha límite (opcional)">
+          <Field label="Fecha límite" required>
             <TextInput type="date" value={fechaLimite} onChange={(e) => setFechaLimite(e.target.value)} />
           </Field>
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -31097,22 +31158,98 @@ function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, o
 
 /* ================= TAREAS ================= */
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete }) {
-  const [filtro, setFiltro] = useState("asignadas");
+// Tarea vencida: pendiente y con la fecha límite ya pasada (hoy aún no cuenta como vencida). Las que esperan confirmación no cuentan: ya están hechas.
+const tareaVencida = (t) => !!t && t.estado === "Pendiente" && !!t.fechaLimite && String(t.fechaLimite).slice(0, 10) < new Date().toLocaleDateString("sv-SE");
+// «Puede asignar tareas a otros» (campo supervisaTareas; de serie, todos; se quita a mano en la ficha de usuario). Quien no lo tiene solo se crea tareas a sí mismo. El administrador siempre.
+// Las vencidas de los demás solo le avisan a quien los tiene marcados en «Revisa las tareas de» (revisaTareasDe): lo marca Miguel, para que no le salga todo a todos.
+const revisaA = (u) => new Set(toArray(u && u.revisaTareasDe));
+const tareasFiltroInicial = { actual: null };
+// TAREAS AUTOMÁTICAS (protocolo de oficina): presupuesto sin enviar → tarea a su responsable; pedido sin hacer → tarea a su responsable.
+// Quién y en cuántos días se elige en Tareas → «Tareas automáticas» (config/tareasAuto). Solo cuenta lo que entra DESDE que se activa (no lo antiguo).
+// La tarea se cierra SOLA cuando el presupuesto se envía o el pedido se hace (o se cancela / se borra): no hay que cerrarla dos veces.
+const autoPedidoPendiente = (pd) => !!pd && !pd.envioConfirmado && !pd.uxcarPedidoId && pd.origen !== "portalUxcar" && (!pd.estado || ["En espera", "Pendiente", "Solicitado"].includes(pd.estado));
+const autoPresupuestoPendiente = (pr) => !!pr && (!pr.estado || pr.estado === "Pendiente") && !(pr.firma && pr.firma.estado);
+const sumarDiasHoy = (n) => { const d = new Date(); d.setDate(d.getDate() + (parseInt(n, 10) || 0)); return d.toLocaleDateString("sv-SE"); }; // el aviso de vencidas del equipo abre Tareas directamente en esa pestaña
+const esSupervisorTareas = (u) => !!u && (u.rol === "Administrador" || u.supervisaTareas !== false);
+// Operario de la línea (tiene puesto en fábrica): no entra en la lista para asignarle tareas de oficina
+const esOperarioLinea = (u) => !!u && u.rol !== "Administrador" && (!!u.puestoFijo || toArray(u.puestosLinea).filter(Boolean).length > 0);
+// Fecha límite para las tareas que se crean solas sin fecha (llamadas, incidencias…): mañana. Toda tarea lleva fecha.
+const fechaLimitePorDefecto = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("sv-SE"); };
 
-  const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
-  const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
-  const lista = filtro === "asignadas" ? asignadas : creadas;
+// Configuración de las tareas automáticas (solo administrador)
+function TareasAutoConfig({ cfg, usuarios, onGuardar, tareas = [] }) {
+  const [f, setF] = useState(() => ({ presupuestos: "", pedidos: "", diasPresupuestos: 2, diasPedidos: 2, ...(cfg || {}) }));
+  useEffect(() => { setF((x) => ({ ...x, ...(cfg || {}) })); }, [JSON.stringify(cfg || {})]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lista = toArray(usuarios).filter((u) => u && u.id && !esOperarioLinea(u)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+  const sel = (k) => (
+    <select value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+      <option value="">Nadie (desactivado)</option>
+      {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</option>)}
+    </select>
+  );
+  const dias = (k) => <input type="number" min="0" value={f[k] ?? 2} onChange={(e) => setF({ ...f, [k]: e.target.value === "" ? "" : Number(e.target.value) })} className="w-16 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />;
+  return (
+    <details className="mb-5 bg-white border border-slate-200 rounded-lg p-4" open={!(cfg && cfg.desde)}>
+      <summary className="cursor-pointer font-semibold text-slate-800 text-sm">Tareas automáticas {cfg && cfg.desde ? `(activas desde el ${fmtDate(cfg.desde)})` : "(sin activar)"}</summary>
+      <div className="mt-3 space-y-3 text-sm text-slate-700">
+        <p className="text-xs text-slate-500">Cuando entra un presupuesto o un pedido, se le crea una tarea a su responsable. Se cierra sola cuando el presupuesto se envía al cliente o el pedido se hace (o se cancela). Solo cuenta lo que entre desde que se activa, no lo antiguo. Los pedidos de Uxcar no, porque ya vienen hechos.</p>
+        <div className="flex flex-wrap items-center gap-2"><b className="w-40">Presupuesto sin enviar →</b> {sel("presupuestos")} <span>plazo</span> {dias("diasPresupuestos")} <span>días</span></div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><b className="w-40">También los hacen:</b>
+          {lista.filter((u) => u.id !== f.presupuestos).map((u) => (
+            <label key={u.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.cogenPresupuestos).includes(u.id)} onChange={(e) => setF({ ...f, cogenPresupuestos: e.target.checked ? [...toArray(f.cogenPresupuestos), u.id] : toArray(f.cogenPresupuestos).filter((x) => x !== u.id) })} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-500 -mt-1">Entran a nombre del responsable. Si uno de los marcados crea o edita el presupuesto con su usuario, queda grabado en el presupuesto que lo hace él y la tarea pasa a su nombre sola.</p>
+        {(() => {
+          // Últimos 7 días: presupuestos enviados por cada uno y los que tiene pendientes
+          const hace7 = Date.now() - 7 * 86400000;
+          const pres = toArray(tareas).filter((t) => t && t.automatica && t.automatica.tipo === "pres");
+          const porPersona = {};
+          pres.forEach((t) => { const k = t.asignadoANombre || "—"; const r = porPersona[k] || (porPersona[k] = { hechos: 0, pendientes: 0 }); if (t.estado === "Hecha" && (t.fechaCompletada || 0) >= hace7) r.hechos++; if (t.estado !== "Hecha") r.pendientes++; });
+          const filas = Object.entries(porPersona);
+          if (!filas.length) return null;
+          return (
+            <div className="bg-slate-50 border border-slate-200 rounded-md p-3">
+              <div className="font-semibold mb-1">Presupuestos por persona (últimos 7 días)</div>
+              {filas.map(([n, r]) => <div key={n} className="text-xs">{n}: <b>{r.hechos}</b> enviados · {r.pendientes} pendientes ahora</div>)}
+            </div>
+          );
+        })()}
+        <div className="flex flex-wrap items-center gap-2"><b className="w-40">Pedido sin hacer →</b> {sel("pedidos")} <span>plazo</span> {dias("diasPedidos")} <span>días</span></div>
+        <button onClick={() => onGuardar({ ...f, desde: f.desde || new Date().toLocaleDateString("sv-SE") })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold px-4 py-2 rounded-md">Guardar</button>
+      </div>
+    </details>
+  );
+}
+
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
+  const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
+  useEffect(() => { tareasFiltroInicial.actual = null; }, []);
+
+  const orden = (a, b) => (tareaVencida(b) - tareaVencida(a)) || ((b.fechaCreacion || 0) - (a.fechaCreacion || 0)); // las vencidas, arriba
+  const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort(orden);
+  const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort(orden);
+  const misRevisados = revisaA(currentUser);
+  const revisaAlguien = misRevisados.size > 0;
+  const vencidasEquipo = revisaAlguien ? tareas.filter((t) => tareaVencida(t) && t.asignadoA !== currentUser?.id && misRevisados.has(t.asignadoA)).sort((a, b) => String(a.fechaLimite).localeCompare(String(b.fechaLimite))) : [];
+  const lista = filtro === "asignadas" ? asignadas : filtro === "equipo" ? vencidasEquipo : creadas;
 
   const badgeEstado = (t) => {
     if (t.estado === "Hecha") return <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Hecha</Badge>;
     if (t.estado === "Pendiente de confirmar") return <Badge className="bg-amber-50 text-amber-700 ring-amber-200">Pendiente de confirmar</Badge>;
+    if (tareaVencida(t)) return <Badge className="bg-rose-100 text-rose-700 ring-rose-300">Vencida</Badge>;
     return <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Pendiente</Badge>;
   };
 
   return (
     <div className="p-8 max-w-4xl">
-      <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti`} />
+      <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti${asignadas.filter(tareaVencida).length ? ` · ${asignadas.filter(tareaVencida).length} vencida(s)` : ""}`} />
+      {onGuardarCfgAuto && <TareasAutoConfig cfg={cfgAuto} usuarios={usuarios} onGuardar={onGuardarCfgAuto} tareas={tareas} />}
+      {onNueva && (
+        <div className="mb-4">
+          <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">+ Nueva tarea</button>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-5">
         <button onClick={() => setFiltro("asignadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "asignadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
@@ -31121,25 +31258,31 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
         <button onClick={() => setFiltro("creadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "creadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
           Creadas por mí ({creadas.length})
         </button>
+        {revisaAlguien && (
+          <button onClick={() => setFiltro("equipo")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "equipo" ? "bg-rose-600 text-white" : "bg-white border border-rose-300 text-rose-700"}`}>
+            Vencidas del equipo ({vencidasEquipo.length})
+          </button>
+        )}
       </div>
 
       <div className="space-y-3">
         {lista.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-slate-400 text-sm">
-            {filtro === "asignadas" ? "No tienes tareas asignadas." : "No has creado ninguna tarea todavía. Puedes crear una desde cualquier mensaje del Chat."}
+            {filtro === "asignadas" ? "No tienes tareas asignadas." : filtro === "equipo" ? "Nadie del equipo tiene tareas vencidas." : "No has creado ninguna tarea todavía. Usa «+ Nueva tarea» o créala desde un mensaje del Chat."}
           </div>
         )}
         {lista.map((t) => (
-          <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-4">
+          <div key={t.id} className={`bg-white border rounded-lg p-4 ${tareaVencida(t) ? "border-rose-300" : "border-slate-200"}`}>
             <div className="flex items-start justify-between gap-3 mb-1.5">
               <h3 className="font-semibold text-slate-800 text-sm">{t.titulo}</h3>
               {badgeEstado(t)}
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
             <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
-              {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
+              {t.automatica && <span className="text-sky-600 font-semibold">Automática{t.cerradaAuto ? " · se cerró sola" : ""}{t.automatica.tipo === "pres" && t.asignadoANombre ? ` · lo hace ${t.asignadoANombre}` : ""}</span>}
+              {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : filtro === "equipo" ? <span>Para: {t.asignadoANombre} · De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
               {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
-              {t.fechaLimite && <span>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
+              {t.fechaLimite && <span className={tareaVencida(t) ? "text-rose-600 font-semibold" : ""}>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
               <span>Creada: {new Date(t.fechaCreacion).toLocaleDateString("es-ES")}</span>
             </div>
             <div className="flex gap-2">
@@ -33450,6 +33593,290 @@ const enlaceWhatsappLead = (l) => {
   const telConPrefijo = tel.startsWith("+") ? tel.replace("+", "") : (tel.startsWith("34") ? tel : `34${tel}`);
   return `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(mensajeWhatsappLead(l))}`;
 };
+
+// ===================== LICITACIONES PÚBLICAS =====================
+// Las trae cada mañana la función "avisos-licitaciones-background" (Plataforma de Contratación
+// del Sector Público, Estado y autonómicas) a "licitaciones/items". Aquí el equipo las estudia,
+// las descarta o hace el seguimiento del presupuesto hasta saber si se gana o se pierde.
+// Lo que se marca aquí (seguimiento, responsable, notas...) la función no lo pisa nunca.
+const LIC_ESTADOS = {
+  nueva: { label: "Por estudiar", color: "bg-sky-100 text-sky-800" },
+  estudiando: { label: "Estudiando pliego", color: "bg-indigo-100 text-indigo-800" },
+  presupuestando: { label: "Presupuestando", color: "bg-amber-100 text-amber-800" },
+  presentada: { label: "Oferta enviada", color: "bg-violet-100 text-violet-800" },
+  ganada: { label: "Ganada", color: "bg-emerald-100 text-emerald-800" },
+  perdida: { label: "Perdida", color: "bg-rose-100 text-rose-800" },
+  descartada: { label: "Descartada", color: "bg-slate-200 text-slate-600" },
+};
+const LIC_GRUPOS = {
+  A: { label: "Suministro de carpintería", corto: "A · Suministro", color: "bg-emerald-600 text-white" },
+  B: { label: "Obra / servicio de carpintería", corto: "B · Obra carpintería", color: "bg-sky-600 text-white" },
+  C: { label: "La carpintería es una parte", corto: "C · Parte de obra", color: "bg-slate-400 text-white" },
+};
+// Cómo nos presentamos a cada licitación (por defecto, solos)
+const LIC_COMO = ["Solos", "UTE con Doranjo SL", "Doranjo se presenta, nosotros suministramos"];
+const LIC_PEQUENA = 100000; // "Pequeñas": hasta este importe (sin IVA)
+// Provincia de cada licitación: por el código NUTS del lugar de ejecución y, si no viene, por el
+// código postal del organismo (ojo: un organismo estatal puede tener la sede en Madrid aunque la obra sea en otro sitio).
+const LIC_NUTS = { ES111: "A Coruña", ES112: "Lugo", ES113: "Ourense", ES114: "Pontevedra", ES120: "Asturias", ES130: "Cantabria", ES211: "Álava", ES212: "Gipuzkoa", ES213: "Bizkaia", ES220: "Navarra", ES230: "La Rioja", ES241: "Huesca", ES242: "Teruel", ES243: "Zaragoza", ES300: "Madrid", ES411: "Ávila", ES412: "Burgos", ES413: "León", ES414: "Palencia", ES415: "Salamanca", ES416: "Segovia", ES417: "Soria", ES418: "Valladolid", ES419: "Zamora", ES421: "Albacete", ES422: "Ciudad Real", ES423: "Cuenca", ES424: "Guadalajara", ES425: "Toledo", ES431: "Badajoz", ES432: "Cáceres", ES511: "Barcelona", ES512: "Girona", ES513: "Lleida", ES514: "Tarragona", ES521: "Alicante", ES522: "Castellón", ES523: "Valencia", ES531: "Baleares", ES532: "Baleares", ES533: "Baleares", ES611: "Almería", ES612: "Cádiz", ES613: "Córdoba", ES614: "Granada", ES615: "Huelva", ES616: "Jaén", ES617: "Málaga", ES618: "Sevilla", ES620: "Murcia", ES630: "Ceuta", ES640: "Melilla" };
+const LIC_CP = ["", "Álava", "Albacete", "Alicante", "Almería", "Ávila", "Badajoz", "Baleares", "Barcelona", "Burgos", "Cáceres", "Cádiz", "Castellón", "Ciudad Real", "Córdoba", "A Coruña", "Cuenca", "Girona", "Granada", "Guadalajara", "Gipuzkoa", "Huelva", "Huesca", "Jaén", "León", "Lleida", "La Rioja", "Lugo", "Madrid", "Málaga", "Murcia", "Navarra", "Ourense", "Asturias", "Palencia", "Las Palmas", "Pontevedra", "Salamanca", "S. C. Tenerife", "Cantabria", "Segovia", "Sevilla", "Soria", "Tarragona", "Teruel", "Toledo", "Valencia", "Valladolid", "Bizkaia", "Zamora", "Zaragoza", "Ceuta", "Melilla"];
+// Zonas por tiempo aproximado en carretera desde la fábrica de María (Almería)
+const LIC_ZONAS = [
+  { id: 1, label: "Cerca (hasta 2 h)", provs: ["Almería", "Granada", "Murcia"], color: "bg-emerald-100 text-emerald-800" },
+  { id: 2, label: "Hasta 3 h", provs: ["Jaén", "Málaga", "Albacete", "Alicante"], color: "bg-lime-100 text-lime-800" },
+  { id: 3, label: "Hasta 5 h", provs: ["Córdoba", "Sevilla", "Cádiz", "Huelva", "Ciudad Real", "Valencia", "Cuenca", "Castellón", "Toledo", "Madrid"], color: "bg-amber-100 text-amber-800" },
+  { id: 4, label: "Lejos", provs: [], color: "bg-slate-100 text-slate-600" },
+  // Melilla: aparte, se haría con Doranjo SL (constructora de allí)
+  { id: 5, label: "Melilla · con Doranjo", provs: ["Melilla"], color: "bg-violet-100 text-violet-800" },
+];
+const licProvincia = (l) => {
+  if (l.nuts && LIC_NUTS[String(l.nuts).slice(0, 5)]) return { prov: LIC_NUTS[String(l.nuts).slice(0, 5)], seguro: true };
+  const n = parseInt(String(l.cp || "").slice(0, 2), 10);
+  if (n >= 1 && n <= 52) return { prov: LIC_CP[n], seguro: false };
+  return { prov: "", seguro: false };
+};
+const licZona = (l) => { const { prov } = licProvincia(l); if (/melilla/i.test(`${prov} ${l.ciudad || ""} ${l.provincia || ""}`)) return 5; if (!prov) return null; return (LIC_ZONAS.find((z) => z.provs.includes(prov)) || LIC_ZONAS[3]).id; };
+const licHoy = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Madrid" });
+const licDias = (f) => (f ? Math.round((new Date(f + "T12:00:00") - new Date(licHoy() + "T12:00:00")) / 864e5) : null);
+const licEnPlazo = (l) => l.estado === "PUB" && l.fin && l.fin >= licHoy();
+const licSeg = (l) => l.seguimiento || "nueva";
+const licFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
+const licEur = (n) => (n ? Number(n).toLocaleString("es-ES", { maximumFractionDigits: 0 }) + " €" : "—");
+// Cuenta para el aviso del menú: en plazo, grupos A/B y sin mirar todavía
+const licPendientesMenu = (items) => toArray(items).filter((l) => l && licEnPlazo(l) && licSeg(l) === "nueva" && l.grupo !== "C").length;
+
+function LicitacionesModulo({ currentUser, usuarios }) {
+  const [items, setItems] = useState(null);
+  const [estado, setEstado] = useState({});
+  const [pestana, setPestana] = useState("estudiar");
+  const [grupos, setGrupos] = useState({ A: true, B: true, C: false });
+  const [q, setQ] = useState("");
+  const [soloPvc, setSoloPvc] = useState(false);
+  const [soloPequenas, setSoloPequenas] = useState(false);
+  const [zonaMax, setZonaMax] = useState(4); // 1 = solo cerca … 4 = toda España
+  const [abierta, setAbierta] = useState(null);
+  const [dias, setDias] = useState("3");
+  const [lanzando, setLanzando] = useState(false);
+  const [msg, setMsg] = useState("");
+  useEffect(() => onValue(ref(fbDb, "licitaciones/items"), (s) => setItems(s.val() || {}), () => setItems({})), []);
+  useEffect(() => onValue(ref(fbDb, "licitaciones/estado"), (s) => setEstado(s.val() || {}), () => {}), []);
+  const yo = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "";
+
+  const guardar = (l, cambios, texto) => {
+    const hist = toArray(l.historial);
+    const h = texto ? [...hist, { fecha: new Date().toISOString(), quien: yo, texto }] : hist;
+    return fbUpdate(ref(fbDb, `licitaciones/items/${l.id}`), { ...cambios, historial: h, modificadoEn: new Date().toISOString(), modificadoPor: yo }).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const cambiarEstado = (l, nuevo, extra = {}) => {
+    if (nuevo === licSeg(l)) return;
+    guardar(l, { seguimiento: nuevo, ...extra, ...(nuevo === "presentada" && !l.fechaOferta ? { fechaOferta: licHoy() } : {}) }, `Estado: ${LIC_ESTADOS[licSeg(l)].label} → ${LIC_ESTADOS[nuevo].label}${extra.motivoDescarte ? ` (${extra.motivoDescarte})` : ""}`);
+  };
+  // "Oferta enviada": a partir de aquí empieza el seguimiento del presupuesto (todo dentro de Licitaciones).
+  const marcarEnviada = (l) => {
+    const imp = window.prompt("Importe ofertado (€ sin IVA):", l.importeOferta || "");
+    if (imp === null) return;
+    const refP = window.prompt("Nº o referencia de nuestro presupuesto (opcional):", l.presupuestoRef || "");
+    if (refP === null) return;
+    cambiarEstado(l, "presentada", { importeOferta: imp.replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", "."), presupuestoRef: refP.trim(), fechaOferta: l.fechaOferta || licHoy(), responsable: l.responsable || yo });
+  };
+  const descartar = (l) => {
+    const motivo = window.prompt("¿Por qué no nos interesa? (opcional: lejos, poco importe, no es PVC/aluminio, piden clasificación...)", "");
+    if (motivo === null) return;
+    cambiarEstado(l, "descartada", { motivoDescarte: motivo.trim() });
+  };
+  const buscarAhora = async () => {
+    setLanzando(true); setMsg("");
+    try {
+      const r = await fetch(`/.netlify/functions/avisos-licitaciones-background?dias=${dias}&sinCorreo=1`, { method: "POST" });
+      setMsg(r.status === 202 || r.ok ? "Buscando en la Plataforma de Contratación… Las licitaciones irán apareciendo solas (unos minutos; con muchos días, hasta 10-15)." : `No se pudo lanzar (${r.status}).`);
+    } catch (e) { setMsg("No se pudo lanzar: " + e.message); }
+    setLanzando(false);
+  };
+
+  const lista = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return toArray(items).filter((l) => l && l.id).filter((l) => {
+      const s = licSeg(l);
+      if (pestana === "estudiar" && !(licEnPlazo(l) && ["nueva", "estudiando"].includes(s))) return false;
+      if (pestana === "marcha" && !["presupuestando", "presentada"].includes(s)) return false;
+      if (pestana === "resultado" && !["ganada", "perdida"].includes(s)) return false;
+      if (pestana === "descartadas" && s !== "descartada") return false;
+      if (pestana !== "todas" && pestana !== "descartadas" && pestana !== "resultado" && pestana !== "marcha" && !grupos[l.grupo || "C"]) return false;
+      if (soloPvc && !l.pvc) return false;
+      if (soloPequenas && !(parseFloat(l.importe) > 0 && parseFloat(l.importe) <= LIC_PEQUENA)) return false;
+      if (zonaMax === 5) { if (licZona(l) !== 5) return false; } else if (zonaMax < 4) { const z = licZona(l); if (z == null || z > zonaMax) return false; }
+      if (t && ![l.titulo, l.organo, l.ciudad, l.provincia, licProvincia(l).prov, l.expediente, l.notas, l.responsable, l.comoVamos].some((x) => String(x || "").toLowerCase().includes(t))) return false;
+      return true;
+    }).sort((a, b) => (pestana === "estudiar" ? String(a.grupo).localeCompare(String(b.grupo)) : 0) || String(a.fin || "9").localeCompare(String(b.fin || "9")));
+  }, [items, pestana, grupos, q, soloPvc, soloPequenas, zonaMax]);
+
+  const todas = toArray(items).filter((l) => l && l.id);
+  const cuenta = {
+    estudiar: todas.filter((l) => licEnPlazo(l) && ["nueva", "estudiando"].includes(licSeg(l)) && grupos[l.grupo || "C"]).length,
+    marcha: todas.filter((l) => ["presupuestando", "presentada"].includes(licSeg(l))).length,
+    resultado: todas.filter((l) => ["ganada", "perdida"].includes(licSeg(l))).length,
+    descartadas: todas.filter((l) => licSeg(l) === "descartada").length,
+    todas: todas.length,
+  };
+  const ganadas = todas.filter((l) => licSeg(l) === "ganada"), perdidas = todas.filter((l) => licSeg(l) === "perdida");
+  const enCurso = estado.enCurso && Date.now() - new Date(estado.enCurso).getTime() < 16 * 6e4;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Landmark size={22} /> Licitaciones públicas</h2>
+          <p className="text-sm text-slate-500">Carpintería de PVC, aluminio y metálica en toda España (Plataforma de Contratación del Estado y plataformas autonómicas). Se actualiza sola cada mañana de lunes a viernes.</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {enCurso ? <span className="text-amber-700 font-semibold flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Buscando ahora…</span>
+              : estado.terminada ? <>Última actualización: {new Date(estado.terminada).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}{estado.nuevas != null ? ` · ${estado.nuevas} nuevas` : ""}</> : "Todavía no se ha hecho ninguna búsqueda: pulsa «Actualizar ahora» (la primera vez, mejor 45 días)."}
+            {estado.error && <span className="block text-rose-600">Último error: {estado.error}</span>}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={dias} onChange={(e) => setDias(e.target.value)} className="border border-slate-300 rounded-md px-2 py-2 text-sm" title="Cuántos días hacia atrás revisar">
+            <option value="1">Último día</option><option value="3">Últimos 3 días</option><option value="7">Última semana</option><option value="15">Últimos 15 días</option><option value="45">Últimos 45 días</option>
+          </select>
+          <button onClick={buscarAhora} disabled={lanzando || enCurso} className="flex items-center gap-1.5 bg-[#2E8B57] hover:bg-[#256f46] disabled:opacity-50 text-white text-sm font-semibold px-3 py-2 rounded-md">
+            <RefreshCw size={15} className={lanzando || enCurso ? "animate-spin" : ""} /> Actualizar ahora
+          </button>
+        </div>
+      </div>
+      {msg && <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2">{msg}</div>}
+
+      <div className="flex flex-wrap gap-1 border-b border-slate-200">
+        {[["estudiar", "Por estudiar"], ["marcha", "En marcha (presupuesto)"], ["resultado", "Ganadas / perdidas"], ["descartadas", "Descartadas"], ["todas", "Todas"]].map(([k, t]) => (
+          <button key={k} onClick={() => setPestana(k)} className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px ${pestana === k ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500"}`}>{t} ({cuenta[k]})</button>
+        ))}
+      </div>
+      {pestana === "resultado" && (ganadas.length + perdidas.length > 0) && (
+        <div className="text-sm text-slate-600">Ganadas {ganadas.length} ({licEur(ganadas.reduce((a, l) => a + (parseFloat(l.importeOferta) || 0), 0))} ofertado) · Perdidas {perdidas.length} · Ratio {Math.round((100 * ganadas.length) / (ganadas.length + perdidas.length))}%</div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {pestana === "estudiar" && Object.entries(LIC_GRUPOS).map(([g, x]) => (
+          <button key={g} onClick={() => setGrupos({ ...grupos, [g]: !grupos[g] })} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${grupos[g] ? x.color + " border-transparent" : "bg-white text-slate-500 border-slate-300"}`}>{x.corto}</button>
+        ))}
+        <button onClick={() => setSoloPequenas(!soloPequenas)} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${soloPequenas ? "bg-amber-500 text-white border-transparent" : "bg-white text-slate-500 border-slate-300"}`} title="Para empezar: contratos pequeños, menos papeles y menos riesgo">Pequeñas (hasta {licEur(LIC_PEQUENA)})</button>
+        <select value={zonaMax} onChange={(e) => setZonaMax(parseInt(e.target.value, 10))} className="text-xs border border-slate-300 rounded-full px-2 py-1 bg-white" title="Distancia desde la fábrica (María, Almería)">
+          <option value={4}>Toda España</option><option value={1}>Cerca de fábrica (hasta 2 h)</option><option value={2}>Hasta 3 h</option><option value={3}>Hasta 5 h</option><option value={5}>Melilla (con Doranjo)</option>
+        </select>
+        <label className="text-xs flex items-center gap-1 text-slate-600"><input type="checkbox" checked={soloPvc} onChange={(e) => setSoloPvc(e.target.checked)} /> Solo las que dicen PVC</label>
+        <div className="relative ml-auto">
+          <Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar: ventanas, Ourense, colegio…" className="border border-slate-300 rounded-md pl-7 pr-2 py-1.5 text-sm w-64" />
+        </div>
+      </div>
+      {pestana === "estudiar" && <p className="text-xs text-slate-500">A = suministro (o suministro y colocación) de carpintería: lo que más nos encaja · B = obra o servicio cuyo objeto es la carpintería (hace falta ir como contratista) · C = obra general o lote de materiales donde la carpintería es una parte (oculto por defecto).</p>}
+
+      {items === null ? <div className="text-slate-500 text-sm flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Cargando…</div>
+        : lista.length === 0 ? <div className="text-slate-500 text-sm bg-slate-50 border border-slate-200 rounded-md p-6 text-center">No hay licitaciones en esta vista.</div>
+        : (
+        <div className="space-y-2">
+          {lista.map((l) => {
+            const d = licDias(l.fin), s = licSeg(l), abiertaEsta = abierta === l.id;
+            const nueva = s === "nueva" && l.primeraVez && Date.now() - new Date(l.primeraVez).getTime() < 3 * 864e5;
+            return (
+              <div key={l.id} className={`bg-white border rounded-lg ${d != null && d <= 7 && licEnPlazo(l) && !["descartada", "presentada", "ganada", "perdida"].includes(s) ? "border-rose-300" : "border-slate-200"}`}>
+                <div className="p-3 flex flex-wrap gap-3 items-start">
+                  <div className="w-24 shrink-0 text-center">
+                    <div className={`text-xs font-bold rounded px-1 py-0.5 ${!licEnPlazo(l) ? "bg-slate-100 text-slate-500" : d <= 7 ? "bg-rose-600 text-white" : d <= 14 ? "bg-amber-400 text-white" : "bg-slate-100 text-slate-700"}`}>
+                      {!l.fin ? "sin fecha" : !licEnPlazo(l) ? "cerrada" : d === 0 ? "cierra HOY" : d === 1 ? "cierra mañana" : `${d} días`}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{licFecha(l.fin)}{l.hora ? ` ${l.hora}` : ""}</div>
+                  </div>
+                  <div className="flex-1 min-w-[260px]">
+                    <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${(LIC_GRUPOS[l.grupo] || LIC_GRUPOS.C).color}`}>{(LIC_GRUPOS[l.grupo] || LIC_GRUPOS.C).corto}</span>
+                      {l.pvc && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">PVC</span>}
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${LIC_ESTADOS[s].color}`}>{LIC_ESTADOS[s].label}</span>
+                      {nueva && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white">NUEVA</span>}
+                      {(() => { const z = licZona(l), pr = licProvincia(l); return pr.prov ? <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${LIC_ZONAS[(z || 4) - 1].color}`} title={pr.seguro ? "Lugar de ejecución" : "Por el código postal del organismo: puede no ser el lugar de la obra"}>{pr.prov}{pr.seguro ? "" : " ?"} · {LIC_ZONAS[(z || 4) - 1].label}</span> : null; })()}
+                      <span className="text-xs text-slate-500">{l.tipo} · {licEur(l.importe)} sin IVA</span>
+                    </div>
+                    <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-left text-sm font-semibold text-slate-800 hover:text-[#2E8B57]">{String(l.titulo || "").slice(0, abiertaEsta ? 2000 : 220)}{!abiertaEsta && String(l.titulo || "").length > 220 ? "…" : ""}</button>
+                    <div className="text-xs text-slate-500 mt-0.5">{l.organo}{l.ciudad || l.provincia ? ` — ${l.ciudad || l.provincia}` : ""} · Exp. {l.expediente}{l.responsable ? ` · Lleva: ${l.responsable}` : ""}{l.comoVamos && l.comoVamos !== "Solos" ? ` · ${l.comoVamos}` : ""}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {l.enlace && <a href={l.enlace} target="_blank" rel="noreferrer" className="text-xs font-semibold text-sky-700 border border-sky-200 hover:bg-sky-50 rounded px-2 py-1.5 flex items-center gap-1"><Globe size={13} /> Pliego</a>}
+                    {["nueva", "estudiando"].includes(s) && <button onClick={() => cambiarEstado(l, "presupuestando", l.responsable ? {} : { responsable: yo })} className="text-xs font-semibold bg-[#2E8B57] hover:bg-[#256f46] text-white rounded px-2 py-1.5 flex items-center gap-1"><CheckCircle2 size={13} /> Me interesa</button>}
+                    {["estudiando", "presupuestando"].includes(s) && <button onClick={() => marcarEnviada(l)} className="text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded px-2 py-1.5 flex items-center gap-1"><Send size={13} /> Oferta enviada</button>}
+                    {s === "presentada" && <><button onClick={() => cambiarEstado(l, "ganada")} className="text-xs font-semibold bg-emerald-600 text-white rounded px-2 py-1.5">Ganada</button><button onClick={() => cambiarEstado(l, "perdida")} className="text-xs font-semibold bg-rose-600 text-white rounded px-2 py-1.5">Perdida</button></>}
+                    {s !== "descartada" && !["ganada", "perdida", "presentada"].includes(s) && <button onClick={() => descartar(l)} className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-100 rounded px-2 py-1.5 flex items-center gap-1"><X size={13} /> Descartar</button>}
+                    {s === "descartada" && <button onClick={() => cambiarEstado(l, "nueva", { motivoDescarte: "" })} className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-100 rounded px-2 py-1.5">Recuperar</button>}
+                    <button onClick={() => setAbierta(abiertaEsta ? null : l.id)} className="text-xs text-slate-500 hover:text-slate-800 px-1">{abiertaEsta ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>
+                  </div>
+                </div>
+                {abiertaEsta && <LicitacionFicha l={l} usuarios={usuarios} onEstado={(n) => (n === "descartada" ? descartar(l) : n === "presentada" ? marcarEnviada(l) : cambiarEstado(l, n))} onGuardar={(c, t) => guardar(l, c, t)} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LicitacionFicha({ l, usuarios, onEstado, onGuardar }) {
+  const [f, setF] = useState({ comoVamos: l.comoVamos || "Solos", responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" });
+  useEffect(() => { setF({ comoVamos: l.comoVamos || "Solos", responsable: l.responsable || "", importeOferta: l.importeOferta || "", fechaOferta: l.fechaOferta || "", presupuestoRef: l.presupuestoRef || "", notas: l.notas || "" }); }, [l.id]);
+  const cambiado = Object.keys(f).some((k) => String(f[k] || "") !== String(l[k] || (k === "comoVamos" ? "Solos" : "")));
+  const s = licSeg(l);
+  const nombres = toArray(usuarios).map((u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim()).filter(Boolean);
+  return (
+    <div className="border-t border-slate-100 bg-slate-50 p-3 grid md:grid-cols-2 gap-4 text-sm">
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-500 uppercase">Seguimiento</div>
+        <div className="flex flex-wrap gap-1">
+          {Object.entries(LIC_ESTADOS).map(([k, x]) => (
+            <button key={k} onClick={() => onEstado(k)} className={`text-xs px-2 py-1 rounded border ${s === k ? x.color + " border-transparent font-bold" : "bg-white border-slate-300 text-slate-600"}`}>{x.label}</button>
+          ))}
+        </div>
+        {s === "descartada" && l.motivoDescarte && <div className="text-xs text-slate-500">Motivo del descarte: {l.motivoDescarte}</div>}
+        <div className="grid grid-cols-2 gap-2">
+          <label className="text-xs text-slate-500 col-span-2">Cómo vamos
+            <select value={f.comoVamos} onChange={(e) => setF({ ...f, comoVamos: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800">
+              {LIC_COMO.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-slate-500">Responsable
+            <input list={`lic-resp-${l.id}`} value={f.responsable} onChange={(e) => setF({ ...f, responsable: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+            <datalist id={`lic-resp-${l.id}`}>{nombres.map((n) => <option key={n} value={n} />)}</datalist>
+          </label>
+          <label className="text-xs text-slate-500">Nº / referencia de nuestro presupuesto
+            <input value={f.presupuestoRef} onChange={(e) => setF({ ...f, presupuestoRef: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+          <label className="text-xs text-slate-500">Importe ofertado (€ sin IVA)
+            <input type="number" value={f.importeOferta} onChange={(e) => setF({ ...f, importeOferta: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+          <label className="text-xs text-slate-500">Fecha de envío de la oferta
+            <input type="date" value={f.fechaOferta} onChange={(e) => setF({ ...f, fechaOferta: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+          </label>
+        </div>
+        <label className="text-xs text-slate-500 block">Notas (qué pide el pliego, garantías, si admite PVC, visita de obra…)
+          <textarea rows={3} value={f.notas} onChange={(e) => setF({ ...f, notas: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-sm text-slate-800" />
+        </label>
+        <button disabled={!cambiado} onClick={() => onGuardar({ ...f }, "Datos de seguimiento actualizados")} className="flex items-center gap-1 bg-[#2E8B57] disabled:opacity-40 text-white text-xs font-semibold px-3 py-1.5 rounded"><Save size={13} /> Guardar</button>
+      </div>
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-500 uppercase">Datos de la licitación</div>
+        <div className="text-xs text-slate-600 space-y-0.5">
+          <div>Órgano: {l.organo || "—"}</div>
+          <div>Lugar: {[l.ciudad, l.provincia].filter(Boolean).join(" · ") || "—"}</div>
+          <div>Tipo: {l.tipo} · Importe: {licEur(l.importe)} sin IVA</div>
+          <div>Cierre de ofertas: {licFecha(l.fin)} {l.hora || ""}</div>
+          <div>Expediente: {l.expediente} · CPV: {toArray(l.cpvs).join(", ") || "—"}</div>
+          <div>Encontrada: {l.primeraVez ? new Date(l.primeraVez).toLocaleDateString("es-ES") : "—"} · Fuente: {l.origen === "autonomicas" ? "plataforma autonómica" : "Plataforma del Estado"}</div>
+        </div>
+        <div className="text-xs font-semibold text-slate-500 uppercase pt-1">Historial</div>
+        <div className="text-xs text-slate-600 space-y-0.5 max-h-40 overflow-auto">
+          {toArray(l.historial).length === 0 ? <div className="text-slate-400">Sin movimientos todavía.</div>
+            : toArray(l.historial).slice().reverse().map((h, i) => <div key={i}>{new Date(h.fecha).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })} · {h.quien || "—"} · {h.texto}</div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onConvertirCliente, onSubirPresupuesto }) {
   const [q, setQ] = useState("");
@@ -40196,7 +40623,7 @@ function PresupuestoDetail({ ingresosPresu = [], puedeEliminar, onRecrearProyect
             <h1 className="font-display text-2xl font-extrabold text-slate-900">{presupuesto.numero}</h1>
             <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[estadoActual]}>{estadoActual}</Badge>
           </div>
-          <p className="text-slate-500 text-sm">{presupuesto.clienteNombre} · {fmtDate(presupuesto.fechaEnvio)}</p>
+          <p className="text-slate-500 text-sm">{presupuesto.clienteNombre} · {fmtDate(presupuesto.fechaEnvio)}{presupuesto.hechoPorNombre ? ` · lo hace ${presupuesto.hechoPorNombre}` : ""}</p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           {enlaceLlamar(presupuesto) && (
@@ -41068,9 +41495,15 @@ const uxEstadoMat = (exp, k) => {
   if (k === "vidrios" || k === "compactos") {
     const ux = e === "recibido";
     const fab = uxEnAlmacen(exp, k);
-    if (ux && fab) return "recibido";
+    // Protocolo de oficina (nov 2026): basta con fábrica, ya no se espera la confirmación de Uxcar. Pero tiene que estar TODO lo pedido:
+    // si fábrica solo tiene una parte, sigue «en_fabrica» (amarillo) y la obra no sale como lista para fabricar.
+    if (fab) {
+      if (ux || uxAlmacenGlobal.resumen) return "recibido"; // en el portal de Uxcar solo hay el resumen (sin cantidades): ahí basta con que fábrica lo tenga
+      const c = uxCantidadesObra(exp);
+      const completo = k === "vidrios" ? c.pedCris > 0 && c.hayCris >= c.pedCris : c.pedPers > 0 && c.hayPers >= c.pedPers;
+      return completo ? "recibido" : "en_fabrica";
+    }
     if (ux) return "llegado_ux";
-    if (fab) return "en_fabrica"; // la fábrica ya lo tiene (puede seguir trabajando), pero hasta que Uxcar lo confirme (a mano o con albarán) no queda verde
   }
   return e;
 };
@@ -41099,7 +41532,7 @@ const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
   if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
   else if (est === "recibido") r = { t: "✓ Ha llegado todo: Uxcar y fábrica lo han confirmado", c: "text-emerald-700" };
   else if (est === "llegado_ux") r = { t: "Uxcar ha confirmado su albarán · falta que lo confirme la fábrica", c: "text-amber-700 font-semibold" };
-  else if (est === "en_fabrica") r = { t: "Ya está en el almacén de la fábrica · falta el albarán de Uxcar", c: "text-amber-700 font-semibold" };
+  else if (est === "en_fabrica") r = { t: "Fábrica tiene una parte · falta material", c: "text-amber-700 font-semibold" };
   else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
   else if (peds.some((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy())) r = { t: `⚠ Retrasado: debía llegar el ${uxFecha(peds.filter((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy()).map((p) => p.llegadaPrevista).sort()[0])}`, c: "text-rose-700 font-semibold" };
   else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
@@ -41350,7 +41783,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
                 <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
                 <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
                 <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
-                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "llegado_ux" || st === "en_fabrica" ? "text-amber-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`} title={st === "llegado_ux" ? "Uxcar ha confirmado su albarán; falta la fábrica" : st === "en_fabrica" ? "Ya está en la fábrica; falta el albarán de Uxcar" : undefined}>{st === "recibido" ? "✓ Llegado" : st === "llegado_ux" ? "Uxcar ✓ · falta fábrica" : st === "en_fabrica" ? "Fábrica ✓ · falta Uxcar" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
+                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "llegado_ux" || st === "en_fabrica" ? "text-amber-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`} title={st === "llegado_ux" ? "Uxcar ha confirmado su albarán; falta la fábrica" : st === "en_fabrica" ? "Fábrica tiene una parte; falta material por llegar" : undefined}>{st === "recibido" ? "✓ Llegado" : st === "llegado_ux" ? "Uxcar ✓ · falta fábrica" : st === "en_fabrica" ? "Fábrica: falta parte" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(e.fechaAlta)}</td>
                 <td className="px-3 py-2"><UxEstado estado={e.estado} /></td>
                 <td className="px-3 py-2 whitespace-nowrap font-semibold">{uxFecha(e.fechaEntrega)}</td>
@@ -41368,8 +41801,8 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
           <p><b className="text-rose-600">✗ Sin pedir</b> — Uxcar todavía no ha hecho el pedido de ese material.</p>
           <p><b className="text-sky-700">Pedido</b> — el pedido ya está hecho en el portal, pero el material todavía no ha llegado a ninguna parte.</p>
           <p><b className="text-amber-700">Uxcar ✓ · falta fábrica</b> — Uxcar dice que lo ha recibido, pero Ecowin PVC aún no lo ha recibido en su almacén.</p>
-          <p><b className="text-amber-700">Fábrica ✓ · falta Uxcar</b> — ya está en el almacén de la fábrica y se puede trabajar con ello; falta que Uxcar lo confirme, a mano con su botón o subiendo el albarán. Es el cruce entre las dos partes.</p>
-          <p><b className="text-emerald-700">✓ Llegado</b> — confirmado por las dos partes: Uxcar y la fábrica. Solo entonces queda verde.</p>
+          <p><b className="text-amber-700">Fábrica: falta parte</b> — ya hay material en el almacén de la fábrica, pero no todo lo pedido.</p>
+          <p><b className="text-emerald-700">✓ Llegado</b> — ya está en el almacén de la fábrica. Basta con que lo dé de baja fábrica: Uxcar no tiene que confirmarlo.</p>
           <p><b className="text-slate-500">No lleva</b> — el expediente no tiene persianas.</p>
           <p className="text-slate-500">El punto de la columna Material resume ambos: rojo = falta todo, amarillo = falta algo, verde = persianas y cristales llegados.</p>
         </div>
@@ -53163,7 +53596,7 @@ function RevisionExpedientesUx({ uxExpedientes, cristales, persianas }) {
       };
       [["vidrios", "Cristales", ev], ["compactos", "Persianas", ec]].forEach(([k, n, est]) => {
         if (est === "llegado_ux") { const pos = posibles(); avisos.push(`${n}: Uxcar lo confirmó y no encuentro el material en los almacenes con sus números (busco EXP ${[K.d, ...(K.exps || [])].filter(Boolean).join(", ")}${K.pptos.size ? ` · ppto ${[...K.pptos].join(", ")}` : ""}).${pos ? ` Hay ${pos}: si es el suyo, el número está mal en el almacén o en el expediente.` : " Comprueba que ha llegado y que está ubicado."}`); }
-        if (est === "en_fabrica") avisos.push(`${n}: la fábrica ya lo tiene en el almacén, pero Uxcar no ha confirmado su albarán.`);
+        if (est === "en_fabrica") avisos.push(`${n}: la fábrica tiene una parte en el almacén, pero falta material por llegar.`);
       });
       if (avisos.length) out.push({ e, avisos });
     });
@@ -55587,7 +56020,7 @@ function CondicionesDoc({ doc, marca, onVolver, acciones }) {
 
 // Lista de documentos (CRM y portal)
 function CondicionesLista({ docs, onAbrir, vacio }) {
-  const lista = toArray(docs).slice().sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || String(a.titulo).localeCompare(String(b.titulo)));
+  const lista = toArray(docs).slice().sort((a, b) => (!!b._primero - !!a._primero) || (a.orden ?? 99) - (b.orden ?? 99) || String(a.titulo).localeCompare(String(b.titulo)));
   if (lista.length === 0) return <p className="text-sm text-slate-500">{vacio || "Todavía no hay documentos."}</p>;
   return (
     <div className="grid gap-2 max-w-4xl">
@@ -55595,7 +56028,7 @@ function CondicionesLista({ docs, onAbrir, vacio }) {
         <button key={d.id} onClick={() => onAbrir(d.id)} className="text-left bg-white border border-slate-200 rounded-lg px-4 py-3 hover:border-[#2E8B57] flex items-center gap-3">
           <FileText size={18} className="text-[#2E8B57] shrink-0" />
           <div className="min-w-0">
-            <div className="font-semibold text-slate-800 truncate">{d.titulo}</div>
+            <div className="font-semibold text-slate-800 truncate">{d.tituloLista || d.titulo}</div>
             <div className="text-xs text-slate-400">Actualizado el {fmtDate(d.actualizado || d.fecha)}{d.archivoUrl ? " · PDF adjunto" : ""}</div>
           </div>
           <ChevronRight size={16} className="ml-auto text-slate-300" />
@@ -55606,7 +56039,7 @@ function CondicionesLista({ docs, onAbrir, vacio }) {
 }
 
 // Formulario (solo administrador)
-function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
+function CondicionesForm({ inicial, para, onCancel, onGuardar, usuarios = [] }) {
   const [f, setF] = useState(() => ({ titulo: "", contenido: "", enlace: "", orden: "", ...(inicial || {}), para: (inicial && inicial.para) || para }));
   const [archivo, setArchivo] = useState(null);
   const [guardando, setGuardando] = useState(false);
@@ -55643,6 +56076,17 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
           <p className="text-[11px] text-slate-400 mt-1">Quien tenga un puesto asignado verá los documentos marcados para su puesto. Si no marcas ninguno, es un documento GENERAL y lo ve todo el mundo.</p>
         </div>
       )}
+      {f.para === "equipo" && toArray(usuarios).length > 0 && (
+        <div className="text-sm bg-violet-50 border border-violet-200 rounded-md p-3">
+          <span className="font-semibold text-slate-700">Ficha personal: ¿de quién es?</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {toArray(usuarios).filter((u) => u && u.id).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((u) => (
+              <label key={u.id} className="flex items-center gap-1.5"><input type="checkbox" checked={toArray(f.personas).includes(u.id)} onChange={(e) => set("personas", e.target.checked ? [...toArray(f.personas), u.id] : toArray(f.personas).filter((x) => x !== u.id))} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">Si marcas a alguien, es su ficha: solo la ve esa persona (y los administradores), aunque tenga otros puestos. Si no marcas a nadie, se aplica lo de los puestos.</p>
+        </div>
+      )}
       <label className="block text-sm"><span className="font-semibold text-slate-700">Texto</span>
         <textarea value={f.contenido} onChange={(e) => set("contenido", e.target.value)} rows={16} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono" />
         <span className="text-[11px] text-slate-400">## Título de apartado · - punto · - [ ] casilla · 1. paso · **negrita** · tablas con | columna | columna |</span></label>
@@ -55665,8 +56109,12 @@ function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
 }
 
 // Módulo del CRM
-function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
+function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [], usuarioId = "", usuarios = [] }) {
   const restringido = !isAdmin && toArray(puestosUsuario).length > 0; // con puesto asignado: solo ve lo de su puesto
+  // Ficha personal (protocolo de oficina): un documento con «personas» solo lo ve esa persona y el administrador
+  const esFicha = (d) => toArray(d && d.personas).length > 0;
+  const esMia = (d) => esFicha(d) && toArray(d.personas).includes(usuarioId);
+  const nombreDe = (id) => { const u = toArray(usuarios).find((x) => x && x.id === id); return u ? (`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || "") : ""; };
   const [docs, setDocs] = useState({ equipo: null, uxcar: null });
   const [para, setPara] = useState("equipo");
   const [vista, setVista] = useState("lista"); // lista | ver | editar | nuevo
@@ -55680,7 +56128,11 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
   const avisar = (m) => { setAviso(m); setTimeout(() => setAviso(""), 2600); };
   const paraVer = restringido ? "equipo" : para;
   // sin puestos marcados = documento GENERAL (lo ven todos): así no desaparecen para los operarios los documentos que ya había
-  const lista = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => !toArray(d.puestos).length || toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))) : docs[para];
+  const listaBase = restringido && docs.equipo ? toArray(docs.equipo).filter((d) => esMia(d) || (!esFicha(d) && (!toArray(d.puestos).length || toArray(d.puestos).some((q) => toArray(puestosUsuario).includes(q))))) : docs[para];
+  // las fichas de otros no las ve nadie más que el administrador; la tuya sale la primera
+  const lista = listaBase === null || listaBase === undefined ? listaBase
+    : toArray(listaBase).filter((d) => isAdmin || !esFicha(d) || esMia(d))
+      .map((d) => (esFicha(d) ? { ...d, _primero: esMia(d), tituloLista: esMia(d) ? `Tu ficha · ${d.titulo}` : `${d.titulo} (ficha de ${toArray(d.personas).map(nombreDe).filter(Boolean).join(", ") || "—"})` } : d));
   const abierto = toArray(lista).find((d) => d.id === abiertoId);
 
   const guardar = async (f, archivo) => {
@@ -55693,6 +56145,7 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
         fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
         archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "", version: f.version || 1,
         puestos: f.para === "equipo" ? toArray(f.puestos) : [],
+        personas: f.para === "equipo" ? toArray(f.personas) : [],
       };
       if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
       const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
@@ -55761,9 +56214,9 @@ function CondicionesModulo({ isAdmin, usuario, puestosUsuario = [] }) {
       {lista === null ? (
         <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
       ) : vista === "nuevo" ? (
-        <CondicionesForm para={para} onCancel={() => setVista("lista")} onGuardar={guardar} />
+        <CondicionesForm para={para} usuarios={usuarios} onCancel={() => setVista("lista")} onGuardar={guardar} />
       ) : vista === "editar" && abierto ? (
-        <CondicionesForm inicial={{ ...abierto, para }} para={para} onCancel={() => setVista("ver")} onGuardar={guardar} />
+        <CondicionesForm inicial={{ ...abierto, para }} para={para} usuarios={usuarios} onCancel={() => setVista("ver")} onGuardar={guardar} />
       ) : vista === "ver" && abierto ? (
         <CondicionesDoc doc={abierto} marca={para} onVolver={() => setVista("lista")}
           acciones={isAdmin && (<>
@@ -56167,7 +56620,7 @@ Abrid el pedido en **Pedidos**, subid la foto o el PDF del **albarán** y el CRM
 En la pestaña **Incidencias** podéis avisar de cualquier problema (material roto, que no llega, un error en un expediente): elegid el expediente si es de uno, contad qué ha pasado y, si queréis, añadid una **foto**. Ecowin PVC la ve al momento y la marca como resuelta, con su respuesta.
 
 ## Discrepancias
-Cuando llega vuestro pedido, el chico de Uxcar lo **da de baja** en el portal, igual que hace fábrica. Si algo no coincide con lo pedido (falta, roto o de más), aparece en la pestaña **Discrepancias**. Revisadlo allí y avisad a Ecowin PVC. Cada uno ve solo **sus** pedidos: los pedidos que hace Ecowin PVC por su cuenta no salen en el portal.
+Cuando llega vuestro pedido, lo **da de baja fábrica** y con eso basta: no tenéis que confirmarlo vosotros. Si algo no coincide con lo pedido (falta, roto o de más), aparece en la pestaña **Discrepancias**. Revisadlo allí y avisad a Ecowin PVC. Cada uno ve solo **sus** pedidos: los pedidos que hace Ecowin PVC por su cuenta no salen en el portal.
 
 ## Comprobar y avisar
 - [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
@@ -57938,6 +58391,7 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
     return (
       <UsuarioForm
         initial={editing}
+        usuarios={usuarios}
         onCancel={() => setView("list")}
         onSave={async (data) => { const ok = await onUpsert(data); if (ok) setView("list"); return ok; }}
         onEnviarCambioPassword={onEnviarCambioPassword}
@@ -64383,7 +64837,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   );
 }
 
-function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
+function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword, usuarios = [] }) {
   const [f, setF] = useState(
     initial ? { ...initial, password: "" } : { id: null, nombre: "", apellidos: "", email: "", password: "", telefono: "", rol: "Usuario", modulos: MODULOS_DISPONIBLES.map((m) => m.id) }
   );
@@ -64517,6 +64971,18 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             <span><b>Responsable de pedidos</b>: puede hacer pedidos a proveedores y aprobar las solicitudes de los empleados. Si no está marcado, en Pedidos solo puede <b>solicitar</b> pedidos.</span>
           </label>
         )}
+        <label className="flex items-start gap-2 text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3 cursor-pointer">
+          <input type="checkbox" checked={f.rol === "Administrador" || f.supervisaTareas !== false} disabled={f.rol === "Administrador"} onChange={(e) => setF({ ...f, supervisaTareas: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+          <span><b>Puede asignar tareas a otros</b> (de serie, todos): puede darle tareas a otros de la oficina. Si lo quitas, solo podrá crearse tareas a sí mismo.</span>
+        </label>
+        <div className="text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3">
+          <b>Revisa las tareas de:</b> le avisa cuando a estas personas se les vence una tarea y las ve en Tareas → «Vencidas del equipo». Si no marcas a nadie, no revisa a nadie.
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            {toArray(usuarios).filter((u) => u && u.id && u.id !== f.id && !esOperarioLinea(u)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((u) => (
+              <label key={u.id} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={toArray(f.revisaTareasDe).includes(u.id)} onChange={(e) => setF({ ...f, revisaTareasDe: e.target.checked ? [...toArray(f.revisaTareasDe), u.id] : toArray(f.revisaTareasDe).filter((x) => x !== u.id) })} /> {`${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email}</label>
+            ))}
+          </div>
+        </div>
         {f.rol !== "Administrador" && (
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-sky-50 border border-sky-200 rounded-md p-3 cursor-pointer">
             <input type="checkbox" checked={!!f.verTodosLeads} onChange={(e) => setF({ ...f, verTodosLeads: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />

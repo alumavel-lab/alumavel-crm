@@ -21,6 +21,11 @@
   # Todos los días a las 07:00 UTC, igual que los demás avisos.
   schedule = "0 7 * * *"
 
+[functions."avisos-licitaciones"]
+  # Licitaciones públicas de carpintería en toda España, de lunes a viernes a las
+  # 6:20 UTC (7:20 en invierno, 8:20 en verano). Lanza "avisos-licitaciones-background".
+  schedule = "20 6 * * 1-5"
+
 [functions."aviso-fabrica-diario"]
   # De lunes a viernes a las 7:00 de la mañana (hora de España), al entrar a trabajar
   # (horario de 7 a 15): lo que hay que preparar para el siguiente día de trabajo
