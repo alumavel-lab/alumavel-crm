@@ -31477,6 +31477,7 @@ function IncidenciasModulo({ onHacerPresupuesto = null, onFechaGarantia = null, 
         nextNumero={nextNumero}
         usuarios={usuarios}
         onFechaGarantia={onFechaGarantia}
+        onHacerPresupuesto={onHacerPresupuesto}
         onCancel={() => setView(editId ? "detail" : "list")}
         onSave={onUpsert}
       />
@@ -31663,7 +31664,7 @@ const archivoIncidenciaDataUrl = (file) => new Promise((resolve, reject) => {
   r.onload = (e) => { const img = new Image(); img.onerror = reject; img.onload = () => { const max = 1000; let { width, height } = img; if (width > height && width > max) { height = Math.round(height * (max / width)); width = max; } else if (height > max) { width = Math.round(width * (max / height)); height = max; } const c = document.createElement("canvas"); c.width = width; c.height = height; c.getContext("2d").drawImage(img, 0, 0, width, height); resolve(c.toDataURL("image/jpeg", 0.7)); }; img.src = e.target.result; };
   r.readAsDataURL(file);
 });
-function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [], onFechaGarantia = null }) {
+function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios = [], onFechaGarantia = null, onHacerPresupuesto = null }) {
   // FOTOS Y DOCUMENTOS desde el alta: lo que tenga que ver el que va a hacer la reparación
   const [adjuntos, setAdjuntos] = useState([]);
   const [subiendoAdj, setSubiendoAdj] = useState(false);
@@ -31709,6 +31710,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       <button onClick={onCancel} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
       <div className="flex items-center gap-3 mb-6">
         <h1 className="font-display text-2xl font-extrabold text-slate-900">{initial ? `Editar incidencia #${initial.numero}` : "Alta de incidencia"}</h1>
+        {initial && onHacerPresupuesto && <button type="button" onClick={() => { if (window.confirm("Se abre un presupuesto nuevo con los datos GUARDADOS de esta incidencia.\n\nSi has cambiado algo aquí, cancela y pulsa antes «Guardar».")) onHacerPresupuesto(initial); }} className="ml-auto order-last inline-flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-md border-2 border-emerald-500 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"><FileText size={15} /> Pasar a presupuesto{initial.presupuestoPedido ? " ✓" : ""}</button>}
         {!initial && <Badge className="bg-slate-100 text-slate-500 ring-slate-200 font-mono-num">Nº {nextNumero()} (automático)</Badge>}
       </div>
 
