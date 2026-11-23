@@ -8818,6 +8818,12 @@ function faseObra(p, pedidos, uxExpedientes = []) {
     const ex = p.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e && e.id === p.uxcarExpedienteId) : null;
     const st = (k) => (ex && ex.materiales && ex.materiales[k] && ex.materiales[k].estado) || "";
     if (["vidrios", "compactos"].some((k) => ["pedido", "recibido"].includes(st(k)))) return { txt: "Material pedido según Uxcar · falta el pedido en el CRM", cls: "bg-orange-100 text-orange-800" };
+    // ¿Hay pedidos de cristal/compacto que llevan el nº de presupuesto de esta obra pero están unidos a OTRA obra (o a ninguna)?
+    const dg = String(presupuestoDeObra(p) || p.presupuestoNumero || "").split("-")[0].replace(/\D/g, "");
+    if (dg.length >= 3) {
+      const suyos = toArray(pedidos).filter((pd) => pd && pd.proyectoId !== p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd) && [pd.comentarios, pd.referencia, pd.obra, pd.descripcion, pd.numeroPedidoProveedor, ...toArray(pd.documentos).map((d) => d && d.nombre), ...toArray(pd.lineas).map((l) => `${(l && l.referencia) || ""} ${(l && l.descripcion) || ""}`)].filter(Boolean).join(" ").replace(/(\d)\.(?=\d{3})/g, "$1").includes(dg));
+      if (suyos.length) return { txt: `Pedido${suyos.length === 1 ? "" : "s"} ${suyos.map((pd) => "#" + pd.numero).join(", ")} con el ppto ${dg} pero SIN UNIR a esta obra`, cls: "bg-orange-100 text-orange-800" };
+    }
     return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
   }
   const llegado = cp.every((pd) => llegadoParaObra(pd));
