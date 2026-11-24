@@ -38543,6 +38543,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
               <th className="px-4 py-3 font-semibold">Forma de pago</th>
               <th className="px-4 py-3 font-semibold">Proyecto</th>
+              <th className="px-4 py-3 font-semibold text-right" title="Importe del proyecto (o del presupuesto si aún no hay proyecto) · cobrado hasta ahora · lo que falta">Obra: importe · cobrado · falta</th>
               <th className="px-4 py-3 font-semibold">Justificante</th>
               <th className="px-4 py-3 font-semibold"></th>
             </tr>
@@ -38568,6 +38569,9 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                       <VincularProyectoSelect proyectos={proyectos} presupuestos={toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado")} onVincular={(id) => { if (String(id).startsWith("pre:")) onUpsert({ ...i, proyectoId: null, presupuestoId: String(id).slice(4) }); else onVincular(i.id, id); }} />
                     )}
                   </td>
+                  <td className="px-4 py-3 text-right font-mono-num whitespace-nowrap">{(() => { const pre = !proyecto && i.presupuestoId ? toArray(presupuestos).find((x) => x && x.id === i.presupuestoId) : null; const imp = proyecto ? (parseFloat(proyecto.importePresupuesto) || 0) : pre ? (parseFloat(pre.importe) || 0) : 0; if (!proyecto && !pre) return <span className="text-slate-300">—</span>;
+                    const cob = toArray(ingresos).filter((x) => x && (proyecto ? x.proyectoId === proyecto.id : (!x.proyectoId && x.presupuestoId === pre.id))).reduce((t, x) => t + (parseFloat(x.importe) || 0), 0); const falta = Math.round((imp - cob) * 100) / 100;
+                    return <div className="text-xs leading-tight"><div className="font-bold text-slate-800">{imp ? money(imp) : "sin importe"}</div><div className="text-emerald-700">cobrado {money(cob)}</div><div className={falta > 0.01 ? "text-rose-700 font-semibold" : "text-emerald-700 font-semibold"}>{!imp ? "" : falta > 0.01 ? `falta ${money(falta)}` : falta < -0.01 ? `${money(-falta)} de más` : "✓ pagado"}</div></div>; })()}</td>
                   <td className="px-4 py-3 min-w-[180px]">
                     <JustificantesIngreso compacto justificantes={i.justificantes} onChange={onJustificantes ? (next) => onJustificantes(i.id, next) : null} />
                   </td>
@@ -38579,7 +38583,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
               );
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400 text-sm">No hay entradas de dinero registradas.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400 text-sm">No hay entradas de dinero registradas.</td></tr>
             )}
           </tbody>
         </table>
