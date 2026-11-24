@@ -38448,7 +38448,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
   }
 
   return (
-    <div className="p-8">
+    <div className="p-4 lg:p-6">
       <Header
         icon={<Wallet size={20} className="text-[#2E8B57]" />}
         title="Entrada de dinero"
@@ -38533,8 +38533,8 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cliente o concepto..." className={inputCls + " pl-9"} />
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm [&_td]:px-2 [&_th]:px-2 [&_td]:py-2 [&_th]:py-2">
           <thead>
             <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
               <th className="px-4 py-3 font-semibold">Fecha</th>
@@ -38559,7 +38559,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                   <td className="px-4 py-3 text-slate-500">{i.formaPago || "—"}</td>
                   <td className="px-4 py-3">
                     {proyecto ? (
-                      <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {proyecto.nombre}</Badge>
+                      <span title={`#${proyecto.numero} — ${proyecto.nombre}`}><Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {String(proyecto.nombre || "").length > 40 ? String(proyecto.nombre).slice(0, 40).trim() + "…" : proyecto.nombre}</Badge></span>
                     ) : i.presupuestoId ? (() => { const pre = toArray(presupuestos).find((x) => x && x.id === i.presupuestoId); return (
                       <div className="space-y-1">
                         <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Presupuesto {pre ? pre.numero : "?"}{pre && (pre.referencia || pre.descripcion) ? ` — ${String(pre.referencia || pre.descripcion).slice(0, 40)}` : ""} · sin proyecto todavía</Badge>
