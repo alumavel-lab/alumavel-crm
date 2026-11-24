@@ -38565,7 +38565,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                         <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Presupuesto {pre ? pre.numero : "?"}{pre && (pre.referencia || pre.descripcion) ? ` — ${String(pre.referencia || pre.descripcion).slice(0, 40)}` : ""} · sin proyecto todavía</Badge>
                         <div className="text-[11px] text-slate-500">Pasa solo a su proyecto cuando se cree.</div>
                       </div>); })() : (
-                      <VincularProyectoSelect proyectos={proyectos} onVincular={(proyectoId) => onVincular(i.id, proyectoId)} />
+                      <VincularProyectoSelect proyectos={proyectos} presupuestos={toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado")} onVincular={(id) => { if (String(id).startsWith("pre:")) onUpsert({ ...i, proyectoId: null, presupuestoId: String(id).slice(4) }); else onVincular(i.id, id); }} />
                     )}
                   </td>
                   <td className="px-4 py-3 min-w-[180px]">
@@ -38634,12 +38634,13 @@ function AsignarEntradaFila({ ingreso, proyectos, clientes, saldos, onAsignar, o
   );
 }
 
-function VincularProyectoSelect({ proyectos, onVincular }) {
+function VincularProyectoSelect({ proyectos, presupuestos = [], onVincular }) {
   const [sel, setSel] = useState("");
   return (
     <div className="flex items-center gap-1.5">
       <Select value={sel} onChange={(e) => setSel(e.target.value)} className="max-w-[160px] !py-1 !text-xs">
         <option value="">Vincular a...</option>
+        {toArray(presupuestos).map((pr) => <option key={`pre-${pr.id}`} value={`pre:${pr.id}`}>📄 Presupuesto {pr.numero} — {pr.clienteNombre || ""}{pr.referencia || pr.descripcion ? ` · ${String(pr.referencia || pr.descripcion).slice(0, 30)}` : ""}</option>)}
         {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
       </Select>
       <button
@@ -38742,7 +38743,8 @@ function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel
     if (!f.importe || parseFloat(f.importe) <= 0) { setErrorMsg("El importe tiene que ser mayor que 0."); return; }
     if (!f.fecha) { setErrorMsg("Falta la fecha (es obligatoria)."); return; }
     setErrorMsg("");
-    onSave({ ...f, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null, presupuestoId: f.proyectoId ? null : (f.presupuestoId || null) });
+    const { _vinc, ...fLimpio } = f; void _vinc;
+    onSave({ ...fLimpio, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null, presupuestoId: f.proyectoId ? null : (f.presupuestoId || null) });
   };
 
   return (
@@ -38790,13 +38792,25 @@ function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel
 
         <JustificantesIngreso justificantes={f.justificantes} onChange={(next) => setF((prev) => ({ ...prev, justificantes: next }))} />
 
-        <Field label="Proyecto o presupuesto (si aún no hay proyecto, elige su presupuesto)">
-          <Select value={f.proyectoId ? f.proyectoId : f.presupuestoId ? `pre:${f.presupuestoId}` : ""} onChange={(e) => { const v = e.target.value; if (v.startsWith("pre:")) setF({ ...f, proyectoId: "", presupuestoId: v.slice(4) }); else setF({ ...f, proyectoId: v, presupuestoId: "" }); }}>
-            <option value="">Sin proyecto ni presupuesto todavía</option>
-            {toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado").sort((a, b) => String(b.numero || "").localeCompare(String(a.numero || ""), "es", { numeric: true })).map((pr) => <option key={`pre-${pr.id}`} value={`pre:${pr.id}`} data-buscar={`${pr.numero || ""} ${String(pr.numero || "").replace(/\./g, "")} ${pr.descripcion || ""} ${pr.clienteNombre || ""}`}>📄 Presupuesto {pr.numero}{pr.descripcion ? ` — ${pr.descripcion}` : ""}{pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""} (sin proyecto){pr.importe ? ` · ${money(pr.importe)}` : ""}</option>)}
-            {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
-          </Select>
-          <p className="text-xs text-slate-400 mt-1">{f.presupuestoId && !f.proyectoId ? "📄 Queda apuntada a ese presupuesto. Cuando se cree su proyecto, pasa sola a él y se resta de lo pendiente de cobrar." : "Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura."} Escribe el nº de presupuesto o el cliente para buscar.</p>
+        <Field label="Vincular esta entrada a">
+          {(() => { const modo = f._vinc || (f.presupuestoId && !f.proyectoId ? "pre" : "pro"); return (<>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button type="button" onClick={() => setF({ ...f, _vinc: "pre", proyectoId: "" })} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${modo === "pre" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>📄 Un presupuesto (aún sin proyecto)</button>
+            <button type="button" onClick={() => setF({ ...f, _vinc: "pro", presupuestoId: "" })} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${modo === "pro" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>🏗 Un proyecto</button>
+          </div>
+          {modo === "pre" ? (
+            <Select value={f.presupuestoId ? `pre:${f.presupuestoId}` : ""} onChange={(e) => { const v = e.target.value; setF({ ...f, proyectoId: "", presupuestoId: v.startsWith("pre:") ? v.slice(4) : "" }); }}>
+              <option value="">Elige el presupuesto…</option>
+              {toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado").sort((a, b) => String(b.numero || "").localeCompare(String(a.numero || ""), "es", { numeric: true })).map((pr) => <option key={`pre-${pr.id}`} value={`pre:${pr.id}`} data-buscar={`${pr.numero || ""} ${String(pr.numero || "").replace(/\./g, "")} ${pr.descripcion || ""} ${pr.clienteNombre || ""}`}>📄 Presupuesto {pr.numero}{pr.descripcion ? ` — ${pr.descripcion}` : ""}{pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""} (sin proyecto){pr.importe ? ` · ${money(pr.importe)}` : ""}</option>)}
+            </Select>
+          ) : (
+            <Select value={f.proyectoId || ""} onChange={(e) => setF({ ...f, proyectoId: e.target.value, presupuestoId: "" })}>
+              <option value="">Elige el proyecto…</option>
+              {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
+            </Select>
+          )}
+          <p className="text-xs text-slate-400 mt-1">{modo === "pre" ? "📄 Queda apuntada a ese presupuesto. Cuando se cree su proyecto, pasa sola a él y se resta de lo pendiente de cobrar." : "Se resta de lo pendiente de cobrar de ese proyecto."}</p>
+          </>); })()}
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
