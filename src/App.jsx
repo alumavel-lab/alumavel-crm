@@ -7265,6 +7265,7 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
+            presupuestosTodos={presupuestos}
             uxExpedientes={uxExpedientes}
             onBorrarDuplicados={borrarProyectosDuplicados}
             onBorrarDuplicadosMapa={borrarDuplicadosMapa}
@@ -8907,7 +8908,7 @@ function faseObra(p, pedidos, uxExpedientes = []) {
   if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
   return { txt: "Pedido en espera · sin enviar", cls: "bg-amber-100 text-amber-800" };
 }
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
+function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
   const [qExp, setQExp] = useState(""); const [qPres, setQPres] = useState(""); // buscadores aparte: nº de expediente y nº de presupuesto
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -9001,7 +9002,9 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
   // COBROS por obra: lo apuntado con «Meter dinero» (entradas de dinero del proyecto) y lo que queda por cobrar
   const cobradoPorProy = useMemo(() => { const m = new Map(); toArray(ingresos).forEach((i) => { if (i && i.proyectoId) m.set(i.proyectoId, (m.get(i.proyectoId) || 0) + (parseFloat(i.importe) || 0)); }); return m; }, [ingresos]);
-  const cobroDe = (p) => { const imp = parseFloat(p.importePresupuesto) || 0; const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
+  // IMPORTE DE LA OBRA: el del proyecto; si está a 0, el de su presupuesto (proyectos creados sin copiar el importe)
+  const importeObra = (p) => { const i0 = parseFloat(p.importePresupuesto) || 0; if (i0) return i0; const pre = toArray(presupuestosTodos).find((x) => x && (x.proyectoCreadoId === p.id || (p.presupuestoId && x.id === p.presupuestoId))) || (p.presupuestoNumero ? toArray(presupuestosTodos).find((x) => x && String(x.numero) === String(p.presupuestoNumero)) : null); return (pre && parseFloat(pre.importe)) || 0; };
+  const cobroDe = (p) => { const imp = importeObra(p); const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
   const sumaCobros = (lista) => lista.reduce((a, p) => { const c = cobroDe(p); return { imp: a.imp + c.imp, cob: a.cob + c.cob, debe: a.debe + Math.max(0, c.debe), n: a.n + 1 }; }, { imp: 0, cob: 0, debe: 0, n: 0 });
   const filasLista = useMemo(() => {
     const base = soloDup ? filtered.filter(esDup) : filtered;
@@ -9381,7 +9384,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     })()}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : p.estadoLogistica ? p.estadoLogistica : <span className="text-[11px] font-semibold text-rose-600" title="Falta elegir la salida (reparto, recogida o instalación): ábrelo y elige">⚠ Sin salida</span>)}</td>
-                  <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
+                  <td className="px-4 py-3 text-right font-mono-num">{money(importeObra(p))}{!(parseFloat(p.importePresupuesto) || 0) && importeObra(p) ? <div className="text-[10px] text-amber-700" title="El proyecto tiene el importe a 0: sale el de su presupuesto. Ponlo en el proyecto (Editar).">(del presupuesto)</div> : null}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
                   <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : (["Entregado", "Cancelado"].includes(p.estadoTrabajo) ? "—" : <span className="text-[11px] font-semibold text-rose-600" title="Pon una fecha prevista (luego se puede cambiar)">⚠ Sin fecha</span>)}</td>
                   <td className="px-4 py-3">
                     {diff === null ? <span className="text-slate-300">—</span> : diff === 0 ? (
@@ -38569,7 +38572,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                       <VincularProyectoSelect proyectos={proyectos} presupuestos={toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado")} onVincular={(id) => { if (String(id).startsWith("pre:")) onUpsert({ ...i, proyectoId: null, presupuestoId: String(id).slice(4) }); else onVincular(i.id, id); }} />
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono-num whitespace-nowrap">{(() => { const pre = !proyecto && i.presupuestoId ? toArray(presupuestos).find((x) => x && x.id === i.presupuestoId) : null; const imp = proyecto ? (parseFloat(proyecto.importePresupuesto) || 0) : pre ? (parseFloat(pre.importe) || 0) : 0; if (!proyecto && !pre) return <span className="text-slate-300">—</span>;
+                  <td className="px-4 py-3 text-right font-mono-num whitespace-nowrap">{(() => { const pre = !proyecto && i.presupuestoId ? toArray(presupuestos).find((x) => x && x.id === i.presupuestoId) : null; const preDeProy = proyecto && !(parseFloat(proyecto.importePresupuesto) || 0) ? toArray(presupuestos).find((x) => x && (x.proyectoCreadoId === proyecto.id || (proyecto.presupuestoNumero && String(x.numero) === String(proyecto.presupuestoNumero)))) : null; const imp = proyecto ? ((parseFloat(proyecto.importePresupuesto) || 0) || (preDeProy && parseFloat(preDeProy.importe)) || 0) : pre ? (parseFloat(pre.importe) || 0) : 0; if (!proyecto && !pre) return <span className="text-slate-300">—</span>;
                     const cob = toArray(ingresos).filter((x) => x && (proyecto ? x.proyectoId === proyecto.id : (!x.proyectoId && x.presupuestoId === pre.id))).reduce((t, x) => t + (parseFloat(x.importe) || 0), 0); const falta = Math.round((imp - cob) * 100) / 100;
                     return <div className="text-xs leading-tight"><div className="font-bold text-slate-800">{imp ? money(imp) : "sin importe"}</div><div className="text-emerald-700">cobrado {money(cob)}</div><div className={falta > 0.01 ? "text-rose-700 font-semibold" : "text-emerald-700 font-semibold"}>{!imp ? "" : falta > 0.01 ? `falta ${money(falta)}` : falta < -0.01 ? `${money(-falta)} de más` : "✓ pagado"}</div></div>; })()}</td>
                   <td className="px-4 py-3 min-w-[180px]">
