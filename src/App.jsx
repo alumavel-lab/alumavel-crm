@@ -33608,6 +33608,69 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
   );
 }
 
+
+// LEER UN PRESUPUESTO DE EDMO (PDF con texto): cada ventana empieza en «Mod: v01 … Medidas: …» y sigue con Color, Descripción y la tabla
+// «Importe /Ud · Unidades · TOTAL». El DIBUJO va a la izquierda de ese bloque: se recorta de la página.
+const nEdmo = (t) => parseFloat(String(t || "").replace(/\./g, "").replace(",", ".")) || 0;
+// paginas: [{ lineas: [{ y, x, t }] }] (de arriba abajo). Devuelve las ventanas con su sitio en la página para recortar el dibujo
+function ventanasDeLineasEdmo(paginas) {
+  const out = [];
+  paginas.forEach((pg, ip) => {
+    const L = pg.lineas;
+    L.forEach((l, i) => {
+      const m = l.t.match(/Mod:\s*(\S+).*?Medidas:\s*([\d.]+)\s*mm\s*X\s*([\d.]+)\s*mm/i); if (!m) return;
+      let j = i + 1; const blk = [];
+      while (j < L.length && !/Mod:\s*\S+.*Medidas:/i.test(L[j].t) && !/Base Imponible|Calle Comercio|Forma de pago/i.test(L[j].t)) { blk.push(L[j]); j++; }
+      const color = ((blk.map((x) => x.t).join(" \n ").match(/Color:\s*(.+?)\s+Unidades/i) || [])[1] || "").trim();
+      const iD = blk.findIndex((x) => /^Descripci[oó]n:/i.test(x.t)), iI = blk.findIndex((x) => /Importe\s*\/\s*Ud/i.test(x.t));
+      const descL = blk.slice(iD >= 0 ? iD + 1 : 0, iI >= 0 ? iI : blk.length).map((x) => x.t);
+      // la frase principal acaba en «Instalación incluida.» / «No se incluye el montaje.»; lo que va en las líneas de después son los extras
+      const iFin = descL.findIndex((t) => /Instalaci[oó]n incluida|No se incluye el\s*(montaje)?/i.test(t));
+      const corteL = iFin >= 0 ? (/No se incluye el\s*$/i.test(descL[iFin]) ? iFin + 1 : iFin) : descL.length - 1;
+      const principal = descL.slice(0, corteL + 1).join(" ").replace(/\s+/g, " ").replace(/\.(?=[A-ZÁÉÍÓÚ])/g, ". ").trim();
+      const extras = descL.slice(corteL + 1).map((t) => t.trim()).filter(Boolean).join(", ");
+      const numL = (iI >= 0 ? blk.slice(iI + 1) : blk).find((x) => /\d,\d{2}\s*€.*\d,\d{2}\s*€/.test(x.t));
+      const nm = numL ? numL.t.match(/(\d[\d.]*,\d{2})\s*€\s*(\d+(?:[.,]\d+)?)\s*(\d[\d.]*,\d{2})\s*€/) : null;
+      const precio = nm ? nEdmo(nm[1]) : 0, uds = nm ? (nEdmo(nm[2]) || 1) : 1, total = nm ? nEdmo(nm[3]) : 0;
+      const ancho = nEdmo(m[2]), alto = nEdmo(m[3]);
+      let breve = principal.replace(/\s*No se incluye el montaje\.?/i, " (sin montaje)").replace(/de dimensiones\s*[\d.]+\s*mm\.?\s*de ancho\s*x\s*[\d.]+\s*mm\.?\s*de alto\.?/i, `de ${ancho} x ${alto} mm.`).replace(/\s+\./g, ".").replace(/\s{2,}/g, " ").trim();
+      if (extras) breve += ` Incluye: ${extras}.`;
+      out.push({ mod: m[1].toUpperCase(), uds, precio, total, color, ancho, alto, descripcion: `${m[1].toUpperCase()} · ${breve}`, pagina: ip, yArriba: l.y + 14, yAbajo: numL ? numL.y - 14 : (blk.length ? blk[blk.length - 1].y - 10 : l.y - 120), xTexto: l.x });
+    });
+  });
+  return out;
+}
+async function leerPresupuestoEdmo(bytes) {
+  const lib = await cargarPdfJs();
+  const doc = await lib.getDocument({ data: bytes }).promise;
+  const paginas = []; let texto = "";
+  for (let n = 1; n <= doc.numPages; n++) {
+    const pg = await doc.getPage(n); const tc = await pg.getTextContent(); const porY = new Map();
+    tc.items.forEach((it) => { if (!it.str || !it.str.trim()) return; const y = Math.round(it.transform[5]); const k = [...porY.keys()].find((yy) => Math.abs(yy - y) <= 2); const kk = k !== undefined ? k : y; if (!porY.has(kk)) porY.set(kk, []); porY.get(kk).push({ x: it.transform[4], s: it.str }); });
+    const lineas = [...porY.entries()].sort((a, b) => b[0] - a[0]).map(([y, its]) => ({ y, x: Math.min(...its.map((q) => q.x)), t: its.sort((a, b) => a.x - b.x).map((q) => q.s).join(" ").replace(/\s+/g, " ").trim() }));
+    paginas.push({ pg, lineas }); texto += lineas.map((l) => l.t).join("\n") + "\n";
+  }
+  const ventanas = ventanasDeLineasEdmo(paginas);
+  // recortar los dibujos (una vez por página)
+  const lienzos = {};
+  for (const v of ventanas) {
+    try {
+      const { pg } = paginas[v.pagina]; const vp1 = pg.getViewport({ scale: 1 }); const esc = 2;
+      if (!lienzos[v.pagina]) { const vp = pg.getViewport({ scale: esc }); const cv = document.createElement("canvas"); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height); await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise; lienzos[v.pagina] = cv; }
+      const cv = lienzos[v.pagina];
+      const x0 = Math.round(25 * esc), x1 = Math.round(Math.max(120, (v.xTexto || 250) - 4) * esc);
+      const y0 = Math.max(0, Math.round((vp1.height - v.yArriba) * esc)), y1 = Math.min(cv.height, Math.round((vp1.height - v.yAbajo) * esc));
+      if (x1 - x0 > 20 && y1 - y0 > 20) { const c2 = document.createElement("canvas"); c2.width = x1 - x0; c2.height = y1 - y0; const g = c2.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c2.width, c2.height); g.drawImage(cv, x0, y0, c2.width, c2.height, 0, 0, c2.width, c2.height);
+        // quitar el blanco de alrededor
+        const dd = g.getImageData(0, 0, c2.width, c2.height).data; let mnx = c2.width, mny = c2.height, mxx = -1, mxy = -1;
+        for (let yy = 0; yy < c2.height; yy += 2) for (let xx = 0; xx < c2.width; xx += 2) { const k = (yy * c2.width + xx) * 4; if (dd[k] < 235 || dd[k + 1] < 235 || dd[k + 2] < 235) { if (xx < mnx) mnx = xx; if (yy < mny) mny = yy; if (xx > mxx) mxx = xx; if (yy > mxy) mxy = yy; } }
+        let fin = c2;
+        if (mxx > mnx && mxy > mny) { const pad = 6; const w = Math.min(c2.width, mxx - mnx + 2 * pad), h = Math.min(c2.height, mxy - mny + 2 * pad); const c3 = document.createElement("canvas"); c3.width = w; c3.height = h; const g3 = c3.getContext("2d"); g3.fillStyle = "#fff"; g3.fillRect(0, 0, w, h); g3.drawImage(c2, Math.max(0, mnx - pad), Math.max(0, mny - pad), w, h, 0, 0, w, h); fin = c3; }
+        v.dibujo = fin.toDataURL("image/jpeg", 0.82); }
+    } catch (e) { v.dibujo = ""; }
+  }
+  return { ventanas, texto, numero: ((texto.match(/N[uú]mero:\s*([\d.]+)\s*Versi[oó]n:\s*(\d+)/i) || []).slice(1).join("-")) };
+}
 // FACTURA CON EL FORMATO DE SIEMPRE (el Excel de oficina): líneas (unidades, descripción, precio), título, retención 5 %, pago a cuenta, IVA.
 // TOTAL BRUTO = suma de líneas · BASE = bruto − retención · IVA = base × IVA % · SUBTOTAL = base + IVA · A PAGAR = subtotal − pago a cuenta
 const calcFactura = (f) => {
@@ -33630,8 +33693,8 @@ function imprimirFacturaFormato(fac, cliente) {
   const filas = [
     `<tr class="vacia"><td></td><td></td><td></td><td></td></tr>`,
     fac.tituloFactura ? `<tr class="titulo"><td></td><td><b>${e(fac.tituloFactura)}</b></td><td></td><td></td></tr>` : "",
-    ...lineas.map((l) => `<tr><td class="c">${e(l.uds)}</td><td>${e(l.descripcion).replace(/\n/g, "<br>")}</td><td class="r">${m(l.precio)}</td><td class="r">${m((parseFloat(l.uds) || 0) * (parseFloat(l.precio) || 0))}</td></tr>`),
-    ...Array.from({ length: Math.max(0, 8 - lineas.length) }, () => `<tr class="vacia"><td></td><td></td><td></td><td></td></tr>`),
+    ...lineas.map((l) => `<tr><td class="c">${e(l.uds)}</td><td>${l.dibujoUrl ? `<div class="dl"><img class="dib" src="${e(l.dibujoUrl)}" alt="" /><div>${e(l.descripcion).replace(/\n/g, "<br>")}</div></div>` : e(l.descripcion).replace(/\n/g, "<br>")}</td><td class="r">${m(l.precio)}</td><td class="r">${m((parseFloat(l.uds) || 0) * (parseFloat(l.precio) || 0))}</td></tr>`),
+    ...Array.from({ length: Math.max(0, (lineas.some((l) => l.dibujoUrl) ? 1 : 8) - lineas.length) }, () => `<tr class="vacia"><td></td><td></td><td></td><td></td></tr>`),
     `<tr><td></td><td class="banco">DATOS BANCARIOS. -SANTANDER - ES25 0049 2632 7222 1404 8201</td><td></td><td></td></tr>`,
   ].join("");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Factura ${e(fac.numero)}</title><style>
@@ -33643,6 +33706,7 @@ function imprimirFacturaFormato(fac, cliente) {
   .numf span b{display:inline-block;min-width:90px;text-align:center;border-bottom:1px solid #222;font-weight:normal}
   table.l{width:100%;border-collapse:collapse} table.l th{background:#E8E3F0;border:1.5px solid #222;font-weight:normal;padding:2px}
   table.l td{border:1px solid #222;padding:8px 6px;vertical-align:middle} table.l td.c{text-align:center} table.l td.r{text-align:right;white-space:nowrap}
+  .dl{display:flex;gap:10px;align-items:center} img.dib{width:120px;max-height:120px;object-fit:contain;flex:none} tr{page-break-inside:avoid}
   tr.vacia td{height:24px} tr.titulo td{text-align:center;height:30px} .banco{color:#C00;font-weight:bold;text-align:center}
   table.t{width:100%;border-collapse:collapse;margin-top:14px} table.t th,table.t td{border:1.5px solid #222;text-align:center;padding:2px 4px;font-size:11px}
   table.t th{background:#E8E3F0;font-weight:normal} .neg{font-weight:bold} .pie{margin-top:40px;font-size:10px}
@@ -33730,9 +33794,34 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
   const [retencion, setRetencion] = useState(!!initial?.retencion);
   const [pagoCuenta, setPagoCuenta] = useState(initial?.pagoCuenta || "");
   const [errorMsg, setErrorMsg] = useState("");
+  const [leyendoPres, setLeyendoPres] = useState(""); const inputPresRef = useRef(null);
 
   const trabajosCliente = proyectos.filter((p) => p.clienteId === clienteId);
   const calc = calcFactura({ lineas, ivaPct, retencion, pagoCuenta });
+  // PDF DEL PRESUPUESTO de las obras marcadas (el firmado si lo hay)
+  const pdfsPresupuesto = proyectosIds.map((pid) => proyectos.find((x) => x.id === pid)).filter(Boolean).map((p) => {
+    const docs = toArray(p.documentos).filter((d) => d && d.url && /presupuesto|ppto/i.test(d.nombre || "") && !/listado|dibujos|mosquit|hoja de corte|an[aá]lisis/i.test(d.nombre || ""));
+    return { p, doc: docs.find((d) => /firmad|aceptad/i.test(d.nombre || "")) || docs[0] || null };
+  });
+  // Lee el presupuesto de Edmo: una línea por ventana (descripción breve + precio) con su dibujo
+  const leerPresupuesto = async (fuente) => {
+    setErrorMsg(""); setLeyendoPres("Leyendo el presupuesto…");
+    try {
+      const bytes = fuente.file ? new Uint8Array(await fuente.file.arrayBuffer()) : await bytesDeArchivoGuardado(fuente.url);
+      const r = await leerPresupuestoEdmo(bytes);
+      if (!r.ventanas.length) throw new Error("no encuentro ventanas con «Mod: … Medidas: …» (¿es un presupuesto de Edmo con texto, no escaneado?)");
+      setLeyendoPres(`Guardando ${r.ventanas.length} dibujos…`);
+      const nuevas = [];
+      for (const v of r.ventanas) {
+        let url = "";
+        if (v.dibujo) { try { const blob = await (await fetch(v.dibujo)).blob(); url = await subirArchivoAStorage(new File([blob], `dibujo-${v.mod}.jpg`, { type: "image/jpeg" }), "facturas-dibujos"); } catch (e) { url = ""; } }
+        nuevas.push({ id: uid(), uds: v.uds, descripcion: v.descripcion, precio: v.precio, dibujoUrl: url, ...(fuente.proyectoId ? { proyectoId: fuente.proyectoId } : {}) });
+      }
+      setLineas((ls) => [...ls.filter((l) => (String(l.descripcion || "").trim() || parseFloat(l.precio)) && !(fuente.proyectoId && l.proyectoId === fuente.proyectoId && !l.dibujoUrl)), ...nuevas]);
+      if (!tituloFactura && r.numero) setTituloFactura(`Presupuesto ${r.numero}`);
+      setLeyendoPres(`✓ ${nuevas.length} ventanas leídas${nuevas.some((x) => !x.dibujoUrl) ? " (alguna sin dibujo)" : ""}. Revisa las líneas.`);
+    } catch (e) { setLeyendoPres(""); setErrorMsg(`No se pudo leer el presupuesto: ${(e && e.message) || e}`); }
+  };
   const numDup = String(numero || "").trim() && toArray(facturasTodas).some((x) => x && x.id !== initial?.id && String(x.numero).trim() === String(numero).trim());
 
   const toggleProyecto = (pid) => {
@@ -33796,6 +33885,19 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
             </div>)}
         </div>
 
+        <div className="rounded-md border-2 border-[#5B3F7E]/40 bg-violet-50 p-3 text-sm space-y-2">
+          <div className="font-bold text-[#5B3F7E]">📐 Rellenar la factura desde el presupuesto de Edmo (cada ventana con su dibujo, descripción breve e importe)</div>
+          <div className="flex flex-wrap gap-2">
+            {pdfsPresupuesto.map(({ p, doc }) => doc
+              ? <button key={p.id} type="button" disabled={!!leyendoPres && !leyendoPres.startsWith("✓")} onClick={() => leerPresupuesto({ url: doc.url, proyectoId: p.id })} className="px-3 py-1.5 rounded-md bg-[#5B3F7E] text-white font-semibold disabled:opacity-50">Leer «{String(doc.nombre).slice(0, 40)}» (#{p.numero})</button>
+              : <span key={p.id} className="text-xs text-amber-800">#{p.numero}: no tiene el PDF del presupuesto en sus documentos</span>)}
+            <button type="button" onClick={() => inputPresRef.current && inputPresRef.current.click()} className="px-3 py-1.5 rounded-md border-2 border-[#5B3F7E] text-[#5B3F7E] font-semibold">📎 Subir el PDF del presupuesto</button>
+            <input ref={inputPresRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { const fl = e.target.files && e.target.files[0]; e.target.value = ""; if (fl) leerPresupuesto({ file: fl, proyectoId: proyectosIds.length === 1 ? proyectosIds[0] : "" }); }} />
+          </div>
+          {leyendoPres && <div className="text-xs font-semibold text-[#5B3F7E]">{leyendoPres}</div>}
+          {!proyectosIds.length && <div className="text-xs text-slate-500">Marca arriba la obra para leer su presupuesto, o súbelo con el botón.</div>}
+        </div>
+
         <Field label="Título (sale en negrita encima de las líneas, opcional)"><TextInput value={tituloFactura} onChange={(e) => setTituloFactura(e.target.value)} placeholder="ej. Pvc Lote 1" /></Field>
 
         <div className="overflow-x-auto">
@@ -33805,7 +33907,7 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
               {lineas.map((l) => (
                 <tr key={l.id} className="align-top">
                   <td className="p-1"><input type="number" step="any" value={l.uds} onChange={(e) => upL(l.id, { uds: e.target.value })} className={inp} /></td>
-                  <td className="p-1"><textarea rows={2} value={l.descripcion} onChange={(e) => upL(l.id, { descripcion: e.target.value })} className={inp} placeholder="Ventana interior Pvc S8000 en color Blanco de 1000 mm de ancho x 1200 mm de alto. Cristal…" /></td>
+                  <td className="p-1">{l.dibujoUrl ? <div className="flex items-start gap-1 mb-1"><a href={l.dibujoUrl} target="_blank" rel="noreferrer"><img src={l.dibujoUrl} alt="dibujo" className="h-16 max-w-[220px] object-contain border border-slate-200 rounded bg-white" /></a><button type="button" onClick={() => upL(l.id, { dibujoUrl: "" })} className="text-[10px] underline text-slate-400">quitar dibujo</button></div> : null}<textarea rows={2} value={l.descripcion} onChange={(e) => upL(l.id, { descripcion: e.target.value })} className={inp} placeholder="Ventana interior Pvc S8000 en color Blanco de 1000 mm de ancho x 1200 mm de alto. Cristal…" /></td>
                   <td className="p-1"><input type="number" step="0.01" value={l.precio} onChange={(e) => upL(l.id, { precio: e.target.value })} className={inp + " text-right"} /></td>
                   <td className="p-1 text-right font-mono-num pt-2">{money((parseFloat(l.uds) || 0) * (parseFloat(l.precio) || 0))}</td>
                   <td className="p-1"><button type="button" onClick={() => setLineas((ls) => ls.filter((x) => x.id !== l.id))} className="text-slate-300 hover:text-rose-600 pt-1"><X size={15} /></button></td>
