@@ -31994,9 +31994,10 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           {adjuntos.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
               {adjuntos.map((x) => (
-                <div key={x.id} className="relative w-24">
+                <div key={x.id} className="relative w-32">
                   {x.tipo === "imagen" ? <img src={x.dataUrl} alt={x.nombre} className="w-24 h-20 object-cover rounded border border-slate-200" /> : <div className="w-24 h-20 flex items-center justify-center rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 text-center p-1 break-all">📄 {x.nombre}</div>}
                   <button type="button" onClick={() => setAdjuntos((a) => a.filter((y) => y.id !== x.id))} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-600 text-white text-xs leading-5" title="Quitar">×</button>
+                  <ComentarioFoto valor={x.comentario || ""} onGuardar={(txt) => setAdjuntos((a) => a.map((y) => (y.id === x.id ? { ...y, comentario: txt } : y)))} />
                 </div>
               ))}
             </div>
