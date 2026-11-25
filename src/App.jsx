@@ -38563,11 +38563,11 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                   <td className="px-4 py-3 text-slate-500">{i.formaPago || "—"}</td>
                   <td className="px-4 py-3">
                     {proyecto ? (
-                      <span title={`#${proyecto.numero} — ${proyecto.nombre}`}><Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {String(proyecto.nombre || "").length > 40 ? String(proyecto.nombre).slice(0, 40).trim() + "…" : proyecto.nombre}</Badge></span>
+                      <span className="inline-flex flex-wrap items-center gap-1"><span title={`#${proyecto.numero} — ${proyecto.nombre}`}><Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {String(proyecto.nombre || "").length > 40 ? String(proyecto.nombre).slice(0, 40).trim() + "…" : proyecto.nombre}</Badge></span><button type="button" onClick={() => { if (window.confirm(`¿Desvincular esta entrada de ${money(i.importe)} de la obra #${proyecto.numero}?\n\nLuego la vinculas a la obra o presupuesto correcto con «Vincular a…».`)) onUpsert({ ...i, proyectoId: null, presupuestoId: null, vinculado: false }); }} className="text-[11px] font-semibold underline text-slate-500 hover:text-rose-600">cambiar</button></span>
                     ) : i.presupuestoId ? (() => { const pre = toArray(presupuestos).find((x) => x && x.id === i.presupuestoId); return (
                       <div className="space-y-1">
                         <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Presupuesto {pre ? pre.numero : "?"}{pre && (pre.referencia || pre.descripcion) ? ` — ${String(pre.referencia || pre.descripcion).slice(0, 40)}` : ""} · sin proyecto todavía</Badge>
-                        <div className="text-[11px] text-slate-500">Pasa solo a su proyecto cuando se cree.</div>
+                        <div className="text-[11px] text-slate-500">Pasa solo a su proyecto cuando se cree. <button type="button" onClick={() => { if (window.confirm("¿Desvincular esta entrada de ese presupuesto? Luego la vinculas al correcto con «Vincular a…».")) onUpsert({ ...i, proyectoId: null, presupuestoId: null, vinculado: false }); }} className="font-semibold underline hover:text-rose-600">cambiar</button></div>
                       </div>); })() : (
                       <VincularProyectoSelect proyectos={proyectos} presupuestos={toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado")} onVincular={(id) => { if (String(id).startsWith("pre:")) onUpsert({ ...i, proyectoId: null, presupuestoId: String(id).slice(4) }); else onVincular(i.id, id); }} />
                     )}
