@@ -11453,6 +11453,8 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
                     <FileText size={14} className="text-slate-400" /> {d.nombre}
                   </a>
                   {fechaDoc(d) && <span className="text-[11px] text-slate-400 whitespace-nowrap" title="Fecha en que se subió">{fechaDoc(d)}</span>}
+                  {d.comentario ? <span className="text-[11px] text-slate-600 italic max-w-[14rem] truncate" title={d.comentario}>💬 {d.comentario}</span> : null}
+                  <button type="button" title="Escribir o cambiar un comentario de este documento" onClick={() => { const t = window.prompt(`Comentario de «${d.nombre}»:`, d.comentario || ""); if (t === null) return; guardarDocumentosObra(documentosObraRef.current.lista.map((x) => (x.id === d.id ? { ...x, comentario: t.trim() } : x))); }} className="text-[11px] text-slate-400 hover:text-sky-700 px-0.5">💬</button>
                   <button type="button" title="Quitar este documento de la obra (por si se subió por error)"
                     onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
                     className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
@@ -26428,11 +26430,12 @@ function AdjuntosPicker({ lista, onCambiar, titulo = "📷 Añadir fotos, PDF o 
       {toArray(lista).length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {toArray(lista).map((x) => (
-            <div key={x.id} className="relative w-24">
+            <div key={x.id} className="relative w-32">
               <a href={x.dataUrl} download={x.nombre} target="_blank" rel="noreferrer" title={x.nombre}>
                 {x.tipo === "imagen" ? <img src={x.dataUrl} alt={x.nombre} className="w-24 h-20 object-cover rounded border border-slate-200" /> : <div className="w-24 h-20 flex items-center justify-center rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 text-center p-1 break-all">📄 {x.nombre}</div>}
               </a>
               <button type="button" onClick={() => { if (window.confirm(`¿Quitar «${x.nombre}»?`)) onCambiar(toArray(lista).filter((y) => y.id !== x.id)); }} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-rose-600 text-white text-xs leading-5" title="Quitar">×</button>
+              <ComentarioFoto valor={x.comentario || ""} onGuardar={(txt) => onCambiar(toArray(lista).map((y) => (y.id === x.id ? { ...y, comentario: txt } : y)))} />
             </div>
           ))}
         </div>
