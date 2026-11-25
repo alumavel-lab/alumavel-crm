@@ -4363,6 +4363,7 @@ export default function App() {
       presupuestoNumero: String(presupuesto.numero || ""), // el nº del presupuesto pasa a la obra (es obligatorio en la ficha de la obra)
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
+      ivaPct: presupuesto.masIva === false ? 0 : (parseFloat(presupuesto.ivaPct) >= 0 ? parseFloat(presupuesto.ivaPct) : 21),
       ...(String(presupuesto.direccionEnvio || "").trim() ? { ubicacion: String(presupuesto.direccionEnvio).trim() } : {}),
       ...(presupuesto.ubicacionMaps ? { ubicacionMaps: presupuesto.ubicacionMaps } : {}),
       fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
@@ -7683,6 +7684,7 @@ export default function App() {
             onUpsert={upsertIngreso}
             onDelete={deleteIngreso}
             onVincular={vincularIngresoAProyecto}
+            onCambiarIvaObra={(pid, v) => updateProyectoInline(pid, { ivaPct: v })}
             onJustificantes={actualizarJustificantesIngreso}
             onRegistrarIngreso={irARegistrarIngreso}
             onJustificantesIngreso={actualizarJustificantesIngreso}
@@ -8614,6 +8616,16 @@ function RiesgoClienteBadge({ cliente, proyectos, ingresos }) {
   return <Badge className={cls}>{pct.toFixed(0)}%{pct >= 100 ? " ⚠" : ""}</Badge>;
 }
 
+// IVA DE CADA OBRA: 21 %, 10 % o 0 %. Lo dice la obra (ivaPct); si no, su presupuesto (sin «+ IVA» = 0); si no, 21 %.
+// El importe de la obra se guarda SIN IVA: lo que hay que cobrar es importe × (1 + IVA).
+const IVAS_OBRA = [21, 10, 0];
+const ivaObraPct = (p, presupuestos = []) => {
+  if (!p) return 21;
+  if (p.ivaPct !== undefined && p.ivaPct !== null && p.ivaPct !== "" && !isNaN(parseFloat(p.ivaPct))) return parseFloat(p.ivaPct);
+  const pre = toArray(presupuestos).find((x) => x && (x.proyectoCreadoId === p.id || (p.presupuestoNumero && String(x.numero) === String(p.presupuestoNumero))));
+  if (pre) return pre.masIva === false ? 0 : (parseFloat(pre.ivaPct) >= 0 ? parseFloat(pre.ivaPct) : 21);
+  return 21;
+};
 // UBICACIÓN (Google Maps): se pega el enlace o las coordenadas, o se coge la del móvil con el GPS. Se guarda como enlace de Maps.
 const urlMapsDe = (v) => { const t = String(v || "").trim(); if (!t) return ""; if (/^https?:\/\//i.test(t)) return t; const m = t.match(/(-?\d{1,2}[.,]\d+)\s*[,; ]\s*(-?\d{1,3}[.,]\d+)/); return m ? `https://www.google.com/maps?q=${m[1].replace(",", ".")},${m[2].replace(",", ".")}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t)}`; };
 function CampoUbicacion({ valor, onChange, direccion = "" }) {
@@ -9084,7 +9096,7 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
   const cobradoPorProy = useMemo(() => { const m = new Map(); toArray(ingresos).forEach((i) => { if (i && i.proyectoId) m.set(i.proyectoId, (m.get(i.proyectoId) || 0) + (parseFloat(i.importe) || 0)); }); return m; }, [ingresos]);
   // IMPORTE DE LA OBRA: el del proyecto; si está a 0, el de su presupuesto (proyectos creados sin copiar el importe)
   const importeObra = (p) => { const i0 = parseFloat(p.importePresupuesto) || 0; if (i0) return i0; const pre = toArray(presupuestosTodos).find((x) => x && (x.proyectoCreadoId === p.id || (p.presupuestoId && x.id === p.presupuestoId))) || (p.presupuestoNumero ? toArray(presupuestosTodos).find((x) => x && String(x.numero) === String(p.presupuestoNumero)) : null); return (pre && parseFloat(pre.importe)) || 0; };
-  const cobroDe = (p) => { const imp = importeObra(p); const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
+  const cobroDe = (p) => { const imp = Math.round(importeObra(p) * (1 + ivaObraPct(p, presupuestosTodos) / 100) * 100) / 100; const cob = cobradoPorProy.get(p.id) || 0; return { imp, cob, debe: Math.round((imp - cob) * 100) / 100 }; };
   const sumaCobros = (lista) => lista.reduce((a, p) => { const c = cobroDe(p); return { imp: a.imp + c.imp, cob: a.cob + c.cob, debe: a.debe + Math.max(0, c.debe), n: a.n + 1 }; }, { imp: 0, cob: 0, debe: 0, n: 0 });
   const filasLista = useMemo(() => {
     const base = soloDup ? filtered.filter(esDup) : filtered;
@@ -9468,7 +9480,7 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
                     })()}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : p.estadoLogistica ? p.estadoLogistica : <span className="text-[11px] font-semibold text-rose-600" title="Falta elegir la salida (reparto, recogida o instalación): ábrelo y elige">⚠ Sin salida</span>)}</td>
-                  <td className="px-4 py-3 text-right font-mono-num">{money(importeObra(p))}{!(parseFloat(p.importePresupuesto) || 0) && importeObra(p) ? <div className="text-[10px] text-amber-700" title="El proyecto tiene el importe a 0: sale el de su presupuesto. Ponlo en el proyecto (Editar).">(del presupuesto)</div> : null}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
+                  <td className="px-4 py-3 text-right font-mono-num">{money(importeObra(p))}{!(parseFloat(p.importePresupuesto) || 0) && importeObra(p) ? <div className="text-[10px] text-amber-700" title="El proyecto tiene el importe a 0: sale el de su presupuesto. Ponlo en el proyecto (Editar).">(del presupuesto)</div> : null}{(() => { const c = cobroDe(p); if (!c.imp && !c.cob) return null; return <div className="text-[11px] leading-tight mt-0.5 whitespace-nowrap"><span className="text-slate-500">con IVA {ivaObraPct(p, presupuestosTodos)} %: {money(c.imp)}</span><br /><span className="text-slate-500">cobrado {money(c.cob)}</span><br />{c.debe > 0.009 ? <span className="font-bold text-rose-600">debe {money(c.debe)}</span> : <span className="font-bold text-emerald-700">✓ pagado</span>}</div>; })()}</td>
                   <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : (["Entregado", "Cancelado"].includes(p.estadoTrabajo) ? "—" : <span className="text-[11px] font-semibold text-rose-600" title="Pon una fecha prevista (luego se puede cambiar)">⚠ Sin fecha</span>)}</td>
                   <td className="px-4 py-3">
                     {diff === null ? <span className="text-slate-300">—</span> : diff === 0 ? (
@@ -9499,7 +9511,7 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
             const fila = (titulo, x, cls) => (
               <tr className={cls}>
                 <td colSpan={9} className="px-4 py-2 text-right font-semibold">{titulo} <span className="font-normal text-slate-500">({x.n} obra{x.n === 1 ? "" : "s"})</span></td>
-                <td className="px-4 py-2 text-right font-mono-num whitespace-nowrap"><div className="font-bold">{money(x.imp)}</div><div className="text-[11px] text-slate-600">cobrado {money(x.cob)}</div><div className={`text-[11px] font-bold ${x.debe > 0.009 ? "text-rose-600" : "text-emerald-700"}`}>debe {money(x.debe)}</div></td>
+                <td className="px-4 py-2 text-right font-mono-num whitespace-nowrap"><div className="font-bold">{money(x.imp)} <span className="text-[10px] font-normal text-slate-500">con IVA</span></div><div className="text-[11px] text-slate-600">cobrado {money(x.cob)}</div><div className={`text-[11px] font-bold ${x.debe > 0.009 ? "text-rose-600" : "text-emerald-700"}`}>debe {money(x.debe)}</div></td>
                 <td colSpan={3} />
               </tr>);
             return (
@@ -38552,7 +38564,11 @@ function PresupuestosPresentacion({ presupuestos }) {
   );
 }
 
-function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
+function SelectorIvaObra({ valor, onCambiar }) {
+  if (!onCambiar) return <span className="text-[11px] text-slate-500">IVA {valor} %</span>;
+  return <select value={String(valor)} onChange={(e) => onCambiar(parseFloat(e.target.value))} onClick={(e) => e.stopPropagation()} title="IVA de esta obra" className="text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white">{IVAS_OBRA.map((v) => <option key={v} value={String(v)}>IVA {v} %</option>)}</select>;
+}
+function IngresosModulo({ onCambiarIvaObra = null, ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(false);
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
@@ -38560,16 +38576,18 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
 
   const [verPendCobro, setVerPendCobro] = useEstadoLocal("crm_entradas_pendCobro", false); const [qPendCobro, setQPendCobro] = useState("");
   const [verEntradas, setVerEntradas] = useEstadoLocal("crm_entradas_lista", true);
+  const [porClienteCobro, setPorClienteCobro] = useEstadoLocal("crm_entradas_porCliente", true);
   const proyectosConSaldo = useMemo(() => {
     return proyectos
       .map((p) => {
-        const importePresupuesto = parseFloat(p.importePresupuesto) || 0;
+        const importePresupuesto = parseFloat(p.importePresupuesto) || 0; // SIN IVA
+        const iva = ivaObraPct(p, presupuestos); const conIva = Math.round(importePresupuesto * (1 + iva / 100) * 100) / 100;
         const recibido = ingresos.filter((i) => i.proyectoId === p.id).reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
-        return { proyecto: p, importePresupuesto, recibido, pendiente: importePresupuesto - recibido };
+        return { proyecto: p, importePresupuesto, iva, conIva, recibido, pendiente: conIva - recibido };
       })
       .filter((r) => r.importePresupuesto > 0 && r.pendiente > 0.01)
       .sort((a, b) => b.pendiente - a.pendiente);
-  }, [proyectos, ingresos]);
+  }, [proyectos, ingresos, presupuestos]);
   const totalPendienteProyectos = proyectosConSaldo.reduce((s, r) => s + r.pendiente, 0);
 
   const filtered = useMemo(() => {
@@ -38584,6 +38602,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
     const editing = ingresos.find((i) => i.id === editId) || null;
     return (
       <IngresoForm
+        onCambiarIvaObra={onCambiarIvaObra}
         initial={editing || prefill}
         clientes={clientes}
         proyectos={proyectos}
@@ -38644,14 +38663,32 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
             <span className="ml-auto text-sm font-bold text-amber-700">{money(totalPendienteProyectos)} pendiente</span>
           </button>
           {verPendCobro && (<div className="px-4 pb-4">
-          <TextInput value={qPendCobro} onChange={(e) => setQPendCobro(e.target.value)} placeholder="🔎 Buscar por cliente, nº de obra o presupuesto" className="mb-2 max-w-md" />
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <TextInput value={qPendCobro} onChange={(e) => setQPendCobro(e.target.value)} placeholder="🔎 Buscar por cliente, nº de obra o presupuesto" className="max-w-md" />
+            <label className="flex items-center gap-1.5 text-sm font-semibold text-slate-700"><input type="checkbox" checked={!!porClienteCobro} onChange={(e) => setPorClienteCobro(e.target.checked)} /> Agrupar por cliente</label>
+          </div>
+          {porClienteCobro ? (() => {
+            const q = String(qPendCobro || "").trim().toLowerCase();
+            const g = new Map(); proyectosConSaldo.forEach((r) => { const cn = (clientes.find((c) => c.id === r.proyecto.clienteId) || {}).nombre || "Sin cliente"; if (q && !`${cn} ${r.proyecto.numero} ${r.proyecto.nombre} ${r.proyecto.presupuestoNumero || ""}`.toLowerCase().includes(q)) return; if (!g.has(cn)) g.set(cn, []); g.get(cn).push(r); });
+            return <div className="space-y-1">{[...g.entries()].sort((a, b) => b[1].reduce((t, r) => t + r.pendiente, 0) - a[1].reduce((t, r) => t + r.pendiente, 0)).map(([cn, rs]) => (
+              <details key={cn} className="border border-slate-200 rounded-md bg-white">
+                <summary className="cursor-pointer px-3 py-2 flex flex-wrap items-center gap-2 text-sm"><b className="text-slate-800">{cn}</b><span className="text-slate-500">({rs.length} obra{rs.length === 1 ? "" : "s"})</span><span className="ml-auto text-xs">sin IVA {money(rs.reduce((t, r) => t + r.importePresupuesto, 0))} · con IVA {money(rs.reduce((t, r) => t + r.conIva, 0))} · <span className="text-emerald-700">cobrado {money(rs.reduce((t, r) => t + r.recibido, 0))}</span> · <b className="text-amber-700">falta {money(rs.reduce((t, r) => t + r.pendiente, 0))}</b></span></summary>
+                <div className="divide-y divide-slate-100">{rs.map((r) => (
+                  <div key={r.proyecto.id} className="px-3 py-1.5 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium text-slate-800">#{r.proyecto.numero} — {String(r.proyecto.nombre || "").slice(0, 50)}</span>
+                    <span className="ml-auto text-xs font-mono-num">sin IVA {money(r.importePresupuesto)} · <SelectorIvaObra valor={r.iva} onCambiar={onCambiarIvaObra ? (v) => onCambiarIvaObra(r.proyecto.id, v) : null} /> {money(r.conIva)} · <span className="text-emerald-700">cobrado {money(r.recibido)}</span> · <b className="text-amber-700">falta {money(r.pendiente)}</b></span>
+                    <button onClick={() => onRegistrarIngreso(r.proyecto, cn, r.pendiente)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-2.5 py-1 rounded-md">Registrar</button>
+                  </div>))}</div>
+              </details>))}</div>;
+          })() : (<>
           <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
                   <th className="px-4 py-2.5 font-semibold">Proyecto</th>
                   <th className="px-4 py-2.5 font-semibold">Cliente</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Presupuesto</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Obra sin IVA</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">IVA · con IVA</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Recibido</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Pendiente</th>
                   <th className="px-4 py-2.5 font-semibold"></th>
@@ -38663,6 +38700,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                     <td className="px-4 py-2.5 font-medium text-slate-800">#{r.proyecto.numero} — {String(r.proyecto.nombre || "").length > 55 ? String(r.proyecto.nombre).slice(0, 55).trim() + "…" : r.proyecto.nombre}</td>
                     <td className="px-4 py-2.5 text-slate-600">{(clientes.find((c) => c.id === r.proyecto.clienteId) || {}).nombre || "—"}</td>
                     <td className="px-4 py-2.5 text-right font-mono-num text-slate-500">{money(r.importePresupuesto)}</td>
+                    <td className="px-4 py-2.5 text-right whitespace-nowrap"><SelectorIvaObra valor={r.iva} onCambiar={onCambiarIvaObra ? (v) => onCambiarIvaObra(r.proyecto.id, v) : null} /> <span className="font-mono-num text-slate-700">{money(r.conIva)}</span></td>
                     <td className="px-4 py-2.5 text-right font-mono-num text-emerald-600">{money(r.recibido)}</td>
                     <td className="px-4 py-2.5 text-right font-mono-num font-bold text-amber-700">{money(r.pendiente)}</td>
                     <td className="px-4 py-2.5 text-right">
@@ -38679,7 +38717,8 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-slate-400 mt-1.5">Total pendiente de cobrar en proyectos: <span className="font-semibold text-slate-600">{money(totalPendienteProyectos)}</span></p>
+          </>)}
+          <p className="text-xs text-slate-400 mt-1.5">Total pendiente de cobrar en proyectos (con IVA): <span className="font-semibold text-slate-600">{money(totalPendienteProyectos)}</span></p>
           </div>)}
         </div>
       )}
@@ -38705,7 +38744,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
               <th className="px-4 py-3 font-semibold">Forma de pago</th>
               <th className="px-4 py-3 font-semibold">Proyecto</th>
-              <th className="px-4 py-3 font-semibold text-right" title="Importe del proyecto (o del presupuesto si aún no hay proyecto) · cobrado hasta ahora · lo que falta">Obra: importe · cobrado · falta</th>
+              <th className="px-4 py-3 font-semibold text-right" title="Importe de la obra sin IVA y con su IVA (21, 10 o 0 %) · cobrado hasta ahora · lo que falta">Obra: importe · IVA · cobrado · falta</th>
               <th className="px-4 py-3 font-semibold">Justificante</th>
               <th className="px-4 py-3 font-semibold"></th>
             </tr>
@@ -38732,8 +38771,9 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                     )}
                   </td>
                   <td className="px-4 py-3 text-right font-mono-num whitespace-nowrap">{(() => { const pre = !proyecto && i.presupuestoId ? toArray(presupuestos).find((x) => x && x.id === i.presupuestoId) : null; const preDeProy = proyecto && !(parseFloat(proyecto.importePresupuesto) || 0) ? toArray(presupuestos).find((x) => x && (x.proyectoCreadoId === proyecto.id || (proyecto.presupuestoNumero && String(x.numero) === String(proyecto.presupuestoNumero)))) : null; const imp = proyecto ? ((parseFloat(proyecto.importePresupuesto) || 0) || (preDeProy && parseFloat(preDeProy.importe)) || 0) : pre ? (parseFloat(pre.importe) || 0) : 0; if (!proyecto && !pre) return <span className="text-slate-300">—</span>;
-                    const cob = toArray(ingresos).filter((x) => x && (proyecto ? x.proyectoId === proyecto.id : (!x.proyectoId && x.presupuestoId === pre.id))).reduce((t, x) => t + (parseFloat(x.importe) || 0), 0); const falta = Math.round((imp - cob) * 100) / 100;
-                    return <div className="text-xs leading-tight"><div className="font-bold text-slate-800">{imp ? money(imp) : "sin importe"}</div><div className="text-emerald-700">cobrado {money(cob)}</div><div className={falta > 0.01 ? "text-rose-700 font-semibold" : "text-emerald-700 font-semibold"}>{!imp ? "" : falta > 0.01 ? `falta ${money(falta)}` : falta < -0.01 ? `${money(-falta)} de más` : "✓ pagado"}</div></div>; })()}</td>
+                    const ivaE = proyecto ? ivaObraPct(proyecto, presupuestos) : (pre && pre.masIva === false ? 0 : (pre && parseFloat(pre.ivaPct) >= 0 ? parseFloat(pre.ivaPct) : 21)); const impC = Math.round(imp * (1 + ivaE / 100) * 100) / 100;
+                    const cob = toArray(ingresos).filter((x) => x && (proyecto ? x.proyectoId === proyecto.id : (!x.proyectoId && x.presupuestoId === pre.id))).reduce((t, x) => t + (parseFloat(x.importe) || 0), 0); const falta = Math.round((impC - cob) * 100) / 100;
+                    return <div className="text-xs leading-tight"><div className="text-slate-500">{imp ? `sin IVA ${money(imp)}` : "sin importe"}</div>{imp ? <div className="font-bold text-slate-800">{proyecto ? <SelectorIvaObra valor={ivaE} onCambiar={onCambiarIvaObra ? (v) => onCambiarIvaObra(proyecto.id, v) : null} /> : <span className="text-[11px] text-slate-500">IVA {ivaE} %</span>} {money(impC)}</div> : null}<div className="text-emerald-700">cobrado {money(cob)}</div><div className={falta > 0.01 ? "text-rose-700 font-semibold" : "text-emerald-700 font-semibold"}>{!imp ? "" : falta > 0.01 ? `falta ${money(falta)}` : falta < -0.01 ? `${money(-falta)} de más` : "✓ pagado"}</div></div>; })()}</td>
                   <td className="px-4 py-3 min-w-[180px]">
                     <JustificantesIngreso compacto justificantes={i.justificantes} onChange={onJustificantes ? (next) => onJustificantes(i.id, next) : null} />
                   </td>
@@ -38893,7 +38933,7 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
   );
 }
 
-function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel, onSave }) {
+function IngresoForm({ onCambiarIvaObra = null, initial, clientes, proyectos, presupuestos = [], onCancel, onSave }) {
   const [f, setF] = useState(
     initial || {
       id: null, fecha: new Date().toISOString().slice(0, 10), clienteNombre: "", importe: "",
@@ -38990,6 +39030,12 @@ function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel
               {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
             </Select>
           )}
+          {modo === "pro" && f.proyectoId && (() => { const pS = proyectos.find((x) => x.id === f.proyectoId); if (!pS) return null; const iv = ivaObraPct(pS, presupuestos); const sinI = parseFloat(pS.importePresupuesto) || 0; return (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5">
+              <span className="font-semibold text-slate-700">IVA de esta obra:</span>
+              {IVAS_OBRA.map((v) => <button key={v} type="button" onClick={() => onCambiarIvaObra && onCambiarIvaObra(pS.id, v)} disabled={!onCambiarIvaObra} className={`px-2.5 py-1 rounded-md text-xs font-bold border-2 ${iv === v ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-700 border-slate-300"}`}>{v} %</button>)}
+              {sinI ? <span className="text-xs text-slate-600">obra {money(sinI)} sin IVA → <b>{money(Math.round(sinI * (1 + iv / 100) * 100) / 100)}</b> con IVA</span> : null}
+            </div>); })()}
           <p className="text-xs text-slate-400 mt-1">{modo === "pre" ? "📄 Queda apuntada a ese presupuesto. Cuando se cree su proyecto, pasa sola a él y se resta de lo pendiente de cobrar." : "Se resta de lo pendiente de cobrar de ese proyecto."}</p>
           </>); })()}
         </Field>
