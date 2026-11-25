@@ -31985,6 +31985,18 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
+// COMENTARIO DEBAJO DE UNA FOTO: se escribe y se guarda al salir del recuadro (o con el botón)
+function ComentarioFoto({ valor, onGuardar }) {
+  const [txt, setTxt] = useState(valor || ""); const [editando, setEditando] = useState(false);
+  useEffect(() => { if (!editando) setTxt(valor || ""); }, [valor, editando]);
+  const guardar = () => { setEditando(false); if (String(txt).trim() !== String(valor || "").trim()) onGuardar(String(txt).trim()); };
+  return (
+    <div className="mt-1.5">
+      <textarea value={txt} rows={2} onFocus={() => setEditando(true)} onChange={(e) => setTxt(e.target.value)} onBlur={guardar} placeholder="Escribe un comentario…" className="w-full text-xs border border-slate-200 rounded px-1.5 py-1 resize-y focus:outline-none focus:ring-1 focus:ring-[#2E8B57]" />
+      {editando && String(txt).trim() !== String(valor || "").trim() && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={guardar} className="text-[11px] font-bold text-white bg-[#2E8B57] rounded px-2 py-0.5">Guardar</button>}
+    </div>
+  );
+}
 function IncidenciaDetail({ onHacerProyecto = null, onHacerPresupuesto = null, onFechaGarantia = null, incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onMandarMontadores, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
@@ -32206,6 +32218,7 @@ function IncidenciaDetail({ onHacerProyecto = null, onHacerPresupuesto = null, o
                       <span className="text-[10px] text-slate-400">{fmtDate(a.fecha?.slice(0, 10))}</span>
                       <button onClick={() => eliminarArchivo(a.id)} className="text-slate-300 hover:text-rose-500"><X size={12} /></button>
                     </div>
+                    <ComentarioFoto valor={a.comentario || ""} onGuardar={(txt) => onInlineUpdate(incidencia.id, { archivos: archivos.map((x) => (x.id === a.id ? { ...x, comentario: txt } : x)) })} />
                   </div>
                 </div>
               ))}
