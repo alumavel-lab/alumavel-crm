@@ -33635,10 +33635,23 @@ function ventanasDeLineasEdmo(paginas) {
       const ancho = nEdmo(m[2]), alto = nEdmo(m[3]);
       let breve = principal.replace(/\s*No se incluye el montaje\.?/i, " (sin montaje)").replace(/de dimensiones\s*[\d.]+\s*mm\.?\s*de ancho\s*x\s*[\d.]+\s*mm\.?\s*de alto\.?/i, `de ${ancho} x ${alto} mm.`).replace(/\s+\./g, ".").replace(/\s{2,}/g, " ").trim();
       if (extras) breve += ` Incluye: ${extras}.`;
-      out.push({ mod: m[1].toUpperCase(), uds, precio, total, color, ancho, alto, descripcion: `${m[1].toUpperCase()} · ${breve}`, pagina: ip, yArriba: l.y + 14, yAbajo: numL ? numL.y - 14 : (blk.length ? blk[blk.length - 1].y - 10 : l.y - 120), xTexto: l.x });
+      out.push({ mod: m[1].toUpperCase(), uds, precio, total, color, ancho, alto, descripcion: `${m[1].toUpperCase()} · ${breve}`, pagina: ip, yArriba: l.y + 14, yAbajo: numL ? numL.y - 14 : (blk.length ? blk[blk.length - 1].y - 10 : l.y - 120), xTexto: l.x, _i: i, _numY: numL ? numL.y : null });
+    });
+    // LÍNEAS SIN DIBUJO (montaje, transporte, extras…): una tabla «Importe /Ud · Unidades · TOTAL» que no es de ninguna ventana.
+    // Su texto es lo que va justo encima, desde el bloque anterior. Salen como línea normal, sin dibujo.
+    const usadas = new Set(out.filter((v) => v.pagina === ip && v._numY != null).map((v) => v._numY));
+    L.forEach((l, i) => {
+      if (!/Importe\s*\/\s*Ud/i.test(l.t)) return;
+      const numL = L.slice(i + 1, i + 3).find((x) => /\d,\d{2}\s*€.*\d,\d{2}\s*€/.test(x.t)); if (!numL || usadas.has(numL.y)) return;
+      let k = i - 1; const txt = [];
+      while (k >= 0 && !/Importe\s*\/\s*Ud|\d,\d{2}\s*€.*\d,\d{2}\s*€|interior de la instancia|Referencia:|N[uú]mero:\s*[\d.]+\s*Versi|Mod:\s*\S+.*Medidas:/i.test(L[k].t)) { if (!/^Descripci[oó]n:?$/i.test(L[k].t)) txt.unshift(L[k].t); k--; }
+      const nm = numL.t.match(/(\d[\d.]*,\d{2})\s*€\s*(\d+(?:[.,]\d+)?)\s*(\d[\d.]*,\d{2})\s*€/); if (!nm) return;
+      const desc = txt.join(" ").replace(/^Descripci[oó]n:\s*/i, "").replace(/\s+/g, " ").trim() || "Partida del presupuesto";
+      out.push({ mod: "", uds: nEdmo(nm[2]) || 1, precio: nEdmo(nm[1]), total: nEdmo(nm[3]), descripcion: desc, pagina: ip, sinDibujo: true, _ordenY: l.y });
     });
   });
-  return out;
+  // en el orden del presupuesto (página y altura)
+  return out.sort((a, b) => (a.pagina - b.pagina) || ((b._ordenY != null ? b._ordenY : b.yArriba) - (a._ordenY != null ? a._ordenY : a.yArriba)));
 }
 async function leerPresupuestoEdmo(bytes) {
   const lib = await cargarPdfJs();
@@ -33654,6 +33667,7 @@ async function leerPresupuestoEdmo(bytes) {
   // recortar los dibujos (una vez por página)
   const lienzos = {};
   for (const v of ventanas) {
+    if (v.sinDibujo) { v.dibujo = ""; continue; }
     try {
       const { pg } = paginas[v.pagina]; const vp1 = pg.getViewport({ scale: 1 }); const esc = 2;
       if (!lienzos[v.pagina]) { const vp = pg.getViewport({ scale: esc }); const cv = document.createElement("canvas"); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height); await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise; lienzos[v.pagina] = cv; }
