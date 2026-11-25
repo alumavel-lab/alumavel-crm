@@ -2365,9 +2365,12 @@ export default function App() {
   const hacerProyectoDeIncidencia = (inc) => {
     if (!inc) return null;
     const prO = inc.proyectoId ? proyectos.find((x) => x.id === inc.proyectoId) : null;
-    const clienteId = (prO && prO.clienteId) || "";
-    const cl = clienteId ? clientes.find((c) => c.id === clienteId) : null;
-    if (!cl) { window.alert("Falta el CLIENTE: la obra de esta incidencia no tiene cliente. Pónselo antes en la obra."); return null; }
+    // cliente: el de la obra; si la incidencia no tiene obra, el cliente con ese nombre (si no existe, se da de alta)
+    let cl = prO && prO.clienteId ? clientes.find((c) => c.id === prO.clienteId) : null;
+    if (!cl && inc.clienteNombre) cl = clientes.find((c) => (c.nombre || "").trim().toLowerCase() === String(inc.clienteNombre).trim().toLowerCase()) || null;
+    if (!cl && inc.clienteNombre && window.confirm(`El cliente «${inc.clienteNombre}» no está dado de alta. ¿Darlo de alta ahora?`)) { const idN = crearClienteRapido(String(inc.clienteNombre).trim(), 0, inc.telefono || ""); if (idN) cl = { id: typeof idN === "string" ? idN : idN.id, nombre: String(inc.clienteNombre).trim() }; }
+    if (!cl) { window.alert("Falta el CLIENTE: pon el cliente en la incidencia (o en su obra) y vuelve a pulsar."); return null; }
+    const clienteId = cl.id;
     const direccion = String(inc.direccion || (prO && prO.ubicacion) || "").trim();
     if (!direccion) { window.alert("Falta la DIRECCIÓN de la incidencia (es obligatoria para el montaje). Pulsa «Editar» y ponla."); return null; }
     if (inc.proyectoCreadoId && proyectos.some((x) => x.id === inc.proyectoCreadoId)) { const ya = proyectos.find((x) => x.id === inc.proyectoCreadoId); if (!window.confirm(`Esta incidencia ya se pasó a la obra #${ya.numero}. ¿Crear OTRA obra igualmente?`)) return null; }
@@ -3637,10 +3640,11 @@ export default function App() {
     }
     saveIncidencias(next);
     // ASIGNADA A ALGUIEN (nueva o cambiada): se le crea una tarea para que la vea en Tareas
-    if (data.responsableActualId && (!antes || antes.responsableActualId !== data.responsableActualId)) {
+    // ASIGNADA A UNO O VARIOS (nuevos o cambiados): a cada uno se le crea una tarea para que la vea en Tareas
+    { const ahora = toArray(data.responsablesIds).length ? toArray(data.responsablesIds) : (data.responsableActualId ? [data.responsableActualId] : []);
+      const antesL = antes ? (toArray(antes.responsablesIds).length ? toArray(antes.responsablesIds) : (antes.responsableActualId ? [antes.responsableActualId] : [])) : [];
       const pr = proyectos.find((x) => x.id === data.proyectoId);
-      try { crearTarea({ titulo: `Incidencia #${numero || ""}${pr ? ` — #${pr.numero} ${pr.nombre || ""}` : ""}`.trim(), descripcion: `${data.especificaciones || ""}${data.observaciones ? `\n${data.observaciones}` : ""}`, asignadoA: data.responsableActualId, asignadoANombre: data.responsableActual || "", fechaLimite: data.fechaEntregaPrevista || "" }); } catch (e) { /* la incidencia ya está guardada */ }
-    }
+      ahora.filter((uid1) => uid1 && !antesL.includes(uid1)).forEach((uid1) => { try { crearTarea({ titulo: `Incidencia #${numero || ""}${pr ? ` — #${pr.numero} ${pr.nombre || ""}` : ""}`.trim(), descripcion: `${data.especificaciones || ""}${data.observaciones ? `\n${data.observaciones}` : ""}`, asignadoA: uid1, asignadoANombre: ((toArray(usuarios).find((u) => u.id === uid1) || {}).nombre) || "", fechaLimite: data.fechaEntregaPrevista || "" }) } catch (e) { /* la incidencia ya está guardada */ } }); }
     // nueva: se abre su ficha para subir las fotos
     if (nuevaId) { setIncidenciaDetailId(nuevaId); setIncidenciaView("detail"); } else setIncidenciaView("list");
   };
@@ -31589,7 +31593,7 @@ function IncidenciasModulo({ onHacerProyecto = null, onHacerPresupuesto = null, 
       <IncidenciaDetail onFechaGarantia={onFechaGarantia}
         incidencia={incidencia}
         proyecto={proyecto(incidencia.proyectoId)}
-        cliente={clientes.find((c) => c.id === proyecto(incidencia.proyectoId)?.clienteId)}
+        cliente={clientes.find((c) => c.id === proyecto(incidencia.proyectoId)?.clienteId) || (incidencia.clienteNombre ? (clientes.find((c) => (c.nombre || "").trim().toLowerCase() === String(incidencia.clienteNombre).trim().toLowerCase()) || { nombre: incidencia.clienteNombre, movil: incidencia.telefono || "" }) : undefined)}
         pedidos={pedidos.filter((pd) => pd.proyectoId === incidencia.proyectoId)}
         proveedores={proveedores}
         openPedido={openPedido}
@@ -31687,8 +31691,8 @@ function IncidenciasModulo({ onHacerProyecto = null, onHacerPresupuesto = null, 
               return (
                 <tr key={i.id} onClick={() => { setDetailId(i.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{i.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{p ? `#${p.numero} — ${p.nombre}` : "Proyecto eliminado"}</td>
-                  <td className="px-4 py-3 text-slate-600">{clienteNombre(i.proyectoId) || "—"}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{p ? `#${p.numero} — ${p.nombre}` : i.proyectoId ? "Proyecto eliminado" : <span className="text-slate-500 italic">Sin proyecto</span>}</td>
+                  <td className="px-4 py-3 text-slate-600">{clienteNombre(i.proyectoId) || i.clienteNombre || "—"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(i.fecha)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -31779,7 +31783,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   };
   const [f, setF] = useState(
     initial || {
-      id: null, proyectoId: proyectos[0]?.id || "", fecha: new Date().toISOString().slice(0, 10),
+      id: null, proyectoId: "", clienteNombre: "", telefono: "", fecha: new Date().toISOString().slice(0, 10),
       especificaciones: "", observaciones: "", responsableInicial: "", comercialAsociado: "",
       responsableActual: "", estadoTrabajo: "Pendiente revisión", estadoIncidencia: "Pendiente revisión",
       fechaEntregaPrevista: "", fechaEntregado: "",
@@ -31792,8 +31796,8 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
 
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!f.proyectoId) {
-      setErrorMsg("Falta seleccionar el proyecto asociado (es obligatorio).");
+    if (!f.proyectoId && !String(f.clienteNombre || "").trim()) {
+      setErrorMsg("Sin proyecto, hace falta al menos el nombre del CLIENTE.");
       return;
     }
     if (!f.especificaciones.trim()) {
@@ -31821,12 +31825,19 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       )}
 
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
-        <Field label="Proyecto asociado" required>
-          <Select value={f.proyectoId} onChange={set("proyectoId")} required>
+        <Field label="Proyecto asociado (opcional)">
+          <Select value={f.proyectoId || ""} onChange={set("proyectoId")}>
+            <option value="">— Sin proyecto (cliente sin obra en el CRM) —</option>
             {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
         </Field>
 
+        {!proyectoSel && (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Cliente" required><TextInput value={f.clienteNombre || ""} onChange={set("clienteNombre")} placeholder="Nombre del cliente" list="clientes-incidencia" /><datalist id="clientes-incidencia">{toArray(clientes).map((c) => <option key={c.id} value={c.nombre} />)}</datalist></Field>
+            <Field label="Teléfono"><TextInput value={f.telefono || ""} onChange={set("telefono")} placeholder="Móvil del cliente" /></Field>
+          </div>
+        )}
         {proyectoSel && (
           <div className="grid grid-cols-3 gap-4 text-sm bg-slate-50 border border-slate-200 rounded-md p-3">
             <InfoRow icon={<Users size={13} />} label="Cliente" value={clienteSel?.nombre || "—"} />
@@ -31840,11 +31851,19 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
         <div className="grid grid-cols-3 gap-4">
           <Field label="Fecha"><TextInput type="date" value={f.fecha} onChange={set("fecha")} /></Field>
           <Field label="Responsable inicial del proyecto"><TextInput value={f.responsableInicial} onChange={set("responsableInicial")} /></Field>
-          <Field label="Asignada a (responsable actual)">
-            <Select value={f.responsableActualId || ""} onChange={(e) => { const u = toArray(usuarios).find((x) => x.id === e.target.value); setF({ ...f, responsableActualId: e.target.value, responsableActual: u ? `${u.nombre || ""} ${u.apellidos || ""}`.trim() : (e.target.value ? f.responsableActual : "") }); }}>
-              <option value="">{f.responsableActual && !f.responsableActualId ? `${f.responsableActual} (escrito a mano)` : "Sin asignar (la ven todos los montadores)"}</option>
-              {opcionesAsignarIncidencia(usuarios)}
-            </Select>
+          <Field label="Asignada a (puedes poner varios)">
+            {(() => {
+              const ids = toArray(f.responsablesIds).length ? toArray(f.responsablesIds).filter(Boolean) : (f.responsableActualId ? [f.responsableActualId] : []);
+              const nom = (id) => { const u = toArray(usuarios).find((x) => x.id === id); return u ? `${u.nombre || ""} ${u.apellidos || ""}`.trim() : id; };
+              const poner = (lista) => setF({ ...f, responsablesIds: lista, responsableActualId: lista[0] || "", responsableActual: lista.map(nom).join(", ") });
+              return (<div className="space-y-1">
+                {ids.length > 0 && <div className="flex flex-wrap gap-1">{ids.map((id) => <span key={id} className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded bg-emerald-100 text-emerald-900">{nom(id)}<button type="button" onClick={() => poner(ids.filter((x) => x !== id))} className="text-emerald-700 hover:text-rose-600">✕</button></span>)}</div>}
+                <Select value="" onChange={(e) => { const v = e.target.value; if (v && !ids.includes(v)) poner([...ids, v]); }}>
+                  <option value="">{ids.length ? "+ Añadir otro responsable…" : (f.responsableActual && !f.responsableActualId ? `${f.responsableActual} (escrito a mano)` : "Sin asignar (la ven todos los montadores)")}</option>
+                  {opcionesAsignarIncidencia(usuarios)}
+                </Select>
+              </div>);
+            })()}
           </Field>
         </div>
         <Field label="Comercial asociado"><TextInput value={f.comercialAsociado} onChange={set("comercialAsociado")} /></Field>
@@ -32005,7 +32024,7 @@ function IncidenciaDetail({ onHacerProyecto = null, onHacerPresupuesto = null, o
             <span className="font-mono-num text-sm text-[#2E8B57] font-bold">Incidencia #{incidencia.numero}</span>
           </div>
           <h1 className="font-display text-2xl font-extrabold text-slate-900 mt-0.5">
-            {proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Proyecto eliminado"}
+            {proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : incidencia.proyectoId ? "Proyecto eliminado" : `Sin proyecto · ${incidencia.clienteNombre || "cliente"}`}
           </h1>
           <p className="text-sm text-slate-500 mt-1">{cliente?.nombre || "—"} · {fmtDate(incidencia.fecha)}</p>
         </div>
