@@ -8915,6 +8915,9 @@ function faseObra(p, pedidos, uxExpedientes = []) {
 function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
   const [qExp, setQExp] = useState(""); const [qPres, setQPres] = useState(""); // buscadores aparte: nº de expediente y nº de presupuesto
+  // PESTAÑAS: Uxcar (obras del portal o con expediente de Uxcar) / Alumavel (las propias) / Todas
+  const [pestanaObra, setPestanaObra] = useEstadoLocal("crm_proyectos_pestana", "todas");
+  const esObraUxcar = (p) => !!p && (p.origen === "portalUxcar" || !!p.uxcarExpedienteId || toArray(uxExpedientes).some((e) => e && e.proyectoId === p.id) || /uxcar/i.test(`${clienteDeProyecto(p) || ""}`));
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
   const [ciudadFiltro, setCiudadFiltro] = useState("");
@@ -8960,6 +8963,8 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
       // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
+      if (pestanaObra === "uxcar" && !esObraUxcar(p)) return false;
+      if (pestanaObra === "alumavel" && esObraUxcar(p)) return false;
       if (!estadoTrabajo && !q && !qExp.trim() && !qPres.trim() && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
@@ -8989,7 +8994,7 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
       const qd = q.replace(/[^\d]/g, "");
       return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
-  }, [proyectos, q, qExp, qPres, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
+  }, [proyectos, q, qExp, qPres, pestanaObra, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra, uxExpedientes]);
   const [dupAbierto, setDupAbierto] = useState(""); // nombre del grupo de duplicados abierto para elegir cuál se queda
   const [dupQuedar, setDupQuedar] = useState("");
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
@@ -9153,6 +9158,10 @@ function ProyectosModulo({ presupuestosTodos = [], currentUser, onRecibirPedido,
           </div>
         );
       })()}
+      <div className="flex flex-wrap gap-1 mb-3 border-b border-slate-200">
+        {[["uxcar", "Uxcar"], ["alumavel", "Alumavel"], ["todas", "Todas"]].map(([k, t]) => { const n = proyectos.filter((p) => p && p.estadoTrabajo !== "Cancelado" && (k === "todas" || (k === "uxcar") === esObraUxcar(p))).length; return (
+          <button key={k} type="button" onClick={() => setPestanaObra(k)} className={`px-4 py-2 text-sm font-bold border-b-2 -mb-px ${pestanaObra === k ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{t} <span className="text-xs font-normal text-slate-400">({n})</span></button>); })}
+      </div>
       <div className="flex flex-wrap gap-3 mb-4">
         <div className="relative flex-1 min-w-[220px] max-w-sm">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
