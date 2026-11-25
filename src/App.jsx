@@ -41265,10 +41265,13 @@ function PresupuestoDetail({ ingresosPresu = [], puedeEliminar, onRecrearProyect
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-2">Documentos guardados ({presupuesto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {presupuesto.documentos.map((d) => (
-                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
+                <span key={d.id} className="inline-flex items-center gap-1">
+                <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
                   <FileText size={14} className="text-slate-400" /> {d.nombre}
                   {fechaDoc(d) && <span className="text-[11px] font-normal text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
                 </a>
+                {onGuardarTelefono && <button type="button" title="Borrar este documento del presupuesto" onClick={() => { if (window.confirm(`¿Borrar «${d.nombre}» de este presupuesto?`)) onGuardarTelefono(presupuesto.telefono || "", { documentos: toArray(presupuesto.documentos).filter((x) => x.id !== d.id) }); }} className="text-slate-300 hover:text-rose-600 p-0.5"><X size={14} /></button>}
+                </span>
               ))}
             </div>
           </div>
