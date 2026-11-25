@@ -2263,6 +2263,7 @@ export default function App() {
       fechaLimite: data.fechaLimite || fechaLimitePorDefecto(),
       salaId: data.salaId || null,
       salaNombre: data.salaNombre || "",
+      ...(data.ref ? { ref: data.ref } : {}), // a qué va la tarea (obra, incidencia, presupuesto, pedido, lead): al pincharla te lleva
       estado: "Pendiente",
       fechaCreacion: Date.now(),
       fechaCompletada: null,
@@ -2372,7 +2373,7 @@ export default function App() {
     if (!cl) { window.alert("Falta el CLIENTE: pon el cliente en la incidencia (o en su obra) y vuelve a pulsar."); return null; }
     const clienteId = cl.id;
     const direccion = String(inc.direccion || (prO && prO.ubicacion) || "").trim();
-    if (!direccion) { window.alert("Falta la DIRECCIÓN de la incidencia (es obligatoria para el montaje). Pulsa «Editar» y ponla."); return null; }
+    if (!direccion && !inc.ubicacionMaps) { window.alert("Falta la DIRECCIÓN o la ubicación de Maps de la incidencia (para el montaje). Pulsa «Editar» y pon una de las dos."); return null; }
     if (inc.proyectoCreadoId && proyectos.some((x) => x.id === inc.proyectoCreadoId)) { const ya = proyectos.find((x) => x.id === inc.proyectoCreadoId); if (!window.confirm(`Esta incidencia ya se pasó a la obra #${ya.numero}. ¿Crear OTRA obra igualmente?`)) return null; }
     const imp = window.prompt(`Crear la obra de la incidencia #${inc.numero} para ${cl.nombre} (ya aceptada, con montaje).\n\nImporte SIN IVA (déjalo vacío si aún no lo sabes):`, "");
     if (imp === null) return null;
@@ -2381,7 +2382,7 @@ export default function App() {
     const np = {
       id: uid(), numero: nextNumeroProyecto(),
       nombre: `Reparación incidencia #${inc.numero || ""} · ${cl.nombre}`,
-      clienteId, ubicacion: direccion, importePresupuesto: importe,
+      clienteId, ubicacion: direccion || "Ver ubicación en Maps", ...(inc.ubicacionMaps ? { ubicacionMaps: inc.ubicacionMaps } : {}), importePresupuesto: importe,
       especificaciones: `${inc.especificaciones || ""}${inc.observaciones ? `\n${inc.observaciones}` : ""}${prO ? `\n(Obra original: #${prO.numero} ${prO.nombre || ""})` : ""}`.trim(),
       fechaAceptado: hoy, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
       llevaInstalacion: true, gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
@@ -3030,7 +3031,7 @@ export default function App() {
     }
     if (acc && acc.tarea && acc.tareaPara) {
       const u = usuarios.find((x) => x.id === acc.tareaPara);
-      crearTarea({ titulo: `Obra #${proyecto.numero}: ${llamada.motivo || "llamada del cliente"}`, descripcion: `${llamada.contacto || ""}${llamada.telefono ? ` (${llamada.telefono})` : ""}\n${llamada.notas || ""}`, asignadoA: acc.tareaPara, asignadoANombre: u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "", fechaLimite: acc.tareaFecha || "" });
+      crearTarea({ ref: { tipo: "proyecto", id: proyecto.id }, titulo: `Obra #${proyecto.numero}: ${llamada.motivo || "llamada del cliente"}`, descripcion: `${llamada.contacto || ""}${llamada.telefono ? ` (${llamada.telefono})` : ""}\n${llamada.notas || ""}`, asignadoA: acc.tareaPara, asignadoANombre: u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "", fechaLimite: acc.tareaFecha || "" });
     }
     if (nuevoEstado) moverEstadoProyecto(proyecto.id, nuevoEstado, extra);
     else { updateProyectoInline(proyecto.id, extra); showToast("Llamada guardada"); }
@@ -3644,7 +3645,7 @@ export default function App() {
     { const ahora = toArray(data.responsablesIds).length ? toArray(data.responsablesIds) : (data.responsableActualId ? [data.responsableActualId] : []);
       const antesL = antes ? (toArray(antes.responsablesIds).length ? toArray(antes.responsablesIds) : (antes.responsableActualId ? [antes.responsableActualId] : [])) : [];
       const pr = proyectos.find((x) => x.id === data.proyectoId);
-      ahora.filter((uid1) => uid1 && !antesL.includes(uid1)).forEach((uid1) => { try { crearTarea({ titulo: `Incidencia #${numero || ""}${pr ? ` — #${pr.numero} ${pr.nombre || ""}` : ""}`.trim(), descripcion: `${data.especificaciones || ""}${data.observaciones ? `\n${data.observaciones}` : ""}`, asignadoA: uid1, asignadoANombre: ((toArray(usuarios).find((u) => u.id === uid1) || {}).nombre) || "", fechaLimite: data.fechaEntregaPrevista || "" }) } catch (e) { /* la incidencia ya está guardada */ } }); }
+      ahora.filter((uid1) => uid1 && !antesL.includes(uid1)).forEach((uid1) => { try { crearTarea({ ref: { tipo: "incidencia", id: data.id || nuevaId }, titulo: `Incidencia #${numero || ""}${pr ? ` — #${pr.numero} ${pr.nombre || ""}` : ""}`.trim(), descripcion: `${data.especificaciones || ""}${data.observaciones ? `\n${data.observaciones}` : ""}`, asignadoA: uid1, asignadoANombre: ((toArray(usuarios).find((u) => u.id === uid1) || {}).nombre) || "", fechaLimite: data.fechaEntregaPrevista || "" }) } catch (e) { /* la incidencia ya está guardada */ } }); }
     // nueva: se abre su ficha para subir las fotos
     if (nuevaId) { setIncidenciaDetailId(nuevaId); setIncidenciaView("detail"); } else setIncidenciaView("list");
   };
@@ -3715,7 +3716,7 @@ export default function App() {
   const addLlamadaLead = (leadId, llamada, nuevoEstado, proximaAccionFecha) => {
     if (llamada.asignadoA) {
       const ld = leads.find((l) => l.id === leadId);
-      crearTarea({ titulo: `Lead ${ld ? ld.nombre : ""}: ${llamada.resultadoLabel || "llamada"}`, descripcion: `${ld && ld.telefono ? `${ld.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
+      crearTarea({ ...(ld ? { ref: { tipo: "lead", id: ld.id } } : {}), titulo: `Lead ${ld ? ld.nombre : ""}: ${llamada.resultadoLabel || "llamada"}`, descripcion: `${ld && ld.telefono ? `${ld.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
     }
     const next = leads.map((l) => (l.id === leadId ? {
       ...l,
@@ -3826,6 +3827,26 @@ export default function App() {
     setSolicitudPedidoView("form");
     setPedidoTabPrincipal("solicitudes");
     setModulo("pedidos");
+  };
+  // TAREA → lo que sea: por su enlace (ref / automática) o, en las antiguas, por el título («Obra #4427», «Incidencia #5», «Presupuesto 7135», «pedido #1043»)
+  const destinoTarea = (t) => {
+    if (!t) return null;
+    if (t.ref && t.ref.tipo && t.ref.id) return t.ref;
+    if (t.automatica && t.automatica.refId) return { tipo: t.automatica.tipo === "pres" ? "presupuesto" : t.automatica.tipo === "ped" ? "pedido" : t.automatica.tipo, id: t.automatica.refId };
+    const txt = `${t.titulo || ""} ${t.descripcion || ""}`;
+    let m = txt.match(/incidencia\s*#\s*(\d+)/i); if (m) { const x = incidencias.find((i) => String(i.numero) === m[1]); if (x) return { tipo: "incidencia", id: x.id }; }
+    m = txt.match(/pedido\s*#\s*(\d+)/i); if (m) { const x = pedidos.find((i) => String(i.numero) === m[1]); if (x) return { tipo: "pedido", id: x.id }; }
+    m = txt.match(/presupuesto\s*(\d[\d.\-]*)/i); if (m) { const x = presupuestos.find((i) => String(i.numero) === m[1] || String(i.numero).replace(/\D/g, "") === m[1].replace(/\D/g, "")); if (x) return { tipo: "presupuesto", id: x.id }; }
+    m = txt.match(/(?:obra|proyecto)\s*#\s*(\d+)/i) || txt.match(/#\s*(\d{3,5})\b/); if (m) { const x = proyectos.find((i) => String(i.numero) === m[1]); if (x) return { tipo: "proyecto", id: x.id }; }
+    return null;
+  };
+  const abrirDestinoTarea = (d) => {
+    if (!d) return;
+    if (d.tipo === "proyecto") openProyectoFromCalendar(d.id);
+    else if (d.tipo === "incidencia") { setModulo("incidencias"); setIncidenciaDetailId(d.id); setIncidenciaView("detail"); }
+    else if (d.tipo === "pedido") openPedidoFromCalendar(d.id);
+    else if (d.tipo === "presupuesto") { setModulo("presupuestos"); setPresupuestoDetailId(d.id); setPresupuestoView("detail"); }
+    else if (d.tipo === "lead") { setModulo("leads"); setLeadDetailId(d.id); setLeadView("detail"); }
   };
   const openIncidenciaFromCalendar = (id) => { setModulo("incidencias"); setIncidenciaDetailId(id); setIncidenciaView("detail"); };
   const cambiarFechaProyecto = (id, campo, nuevaFecha) => {
@@ -4383,7 +4404,7 @@ export default function App() {
   const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
     if (llamada.asignadoA) {
       const pr = presupuestos.find((p) => p.id === presupuestoId);
-      crearTarea({ titulo: `Presupuesto ${pr ? pr.numero : ""}${pr && pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""}: llamada`, descripcion: `${pr && pr.telefono ? `${pr.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
+      crearTarea({ ...(pr ? { ref: { tipo: "presupuesto", id: pr.id } } : {}), titulo: `Presupuesto ${pr ? pr.numero : ""}${pr && pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""}: llamada`, descripcion: `${pr && pr.telefono ? `${pr.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
     }
     const hoy = new Date().toISOString().slice(0, 10);
     const enSieteDias = new Date();
@@ -7604,6 +7625,7 @@ export default function App() {
         )}
         {modulo === "tareas" && (
           <TareasModulo
+            destinoTarea={destinoTarea} onAbrirDestino={abrirDestinoTarea}
             tareas={tareas}
             usuarios={usuarios}
             currentUser={currentUser}
@@ -31386,7 +31408,7 @@ function TareasAutoConfig({ cfg, usuarios, onGuardar, tareas = [] }) {
   );
 }
 
-function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
+function TareasModulo({ destinoTarea = null, onAbrirDestino = null, tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete, onNueva, filtroInicial, cfgAuto, onGuardarCfgAuto }) {
   const [filtro, setFiltro] = useState(filtroInicial === "equipo" && toArray(currentUser && currentUser.revisaTareasDe).length > 0 ? "equipo" : "asignadas");
   useEffect(() => { tareasFiltroInicial.actual = null; }, []);
 
@@ -31438,7 +31460,9 @@ function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirma
         {lista.map((t) => (
           <div key={t.id} className={`bg-white border rounded-lg p-4 ${tareaVencida(t) ? "border-rose-300" : "border-slate-200"}`}>
             <div className="flex items-start justify-between gap-3 mb-1.5">
-              <h3 className="font-semibold text-slate-800 text-sm">{t.titulo}</h3>
+              {(() => { const d = destinoTarea ? destinoTarea(t) : null; const et = d ? ({ proyecto: "la obra", incidencia: "la incidencia", presupuesto: "el presupuesto", pedido: "el pedido", lead: "el lead" })[d.tipo] || "" : ""; return d && onAbrirDestino
+                ? <button type="button" onClick={() => onAbrirDestino(d)} title={`Abrir ${et}`} className="font-semibold text-sm text-left text-sky-800 hover:underline">{t.titulo} <span className="text-xs font-bold text-sky-600 whitespace-nowrap">→ abrir {et}</span></button>
+                : <h3 className="font-semibold text-slate-800 text-sm">{t.titulo}</h3>; })()}
               {badgeEstado(t)}
             </div>
             {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
@@ -31841,7 +31865,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       setErrorMsg("Falta el campo Especificaciones de la incidencia (es obligatorio).");
       return;
     }
-    { const pS = proyectos.find((x) => x.id === f.proyectoId); if (!String(f.direccion || (pS && pS.ubicacion) || "").trim()) { setErrorMsg("Falta la DIRECCIÓN de la incidencia (es obligatoria)."); return; } }
+    { const pS = proyectos.find((x) => x.id === f.proyectoId); if (!String(f.direccion || (pS && pS.ubicacion) || "").trim() && !String(f.ubicacionMaps || "").trim()) { setErrorMsg("Falta la DIRECCIÓN o la UBICACIÓN de Maps de la incidencia (una de las dos es obligatoria)."); return; } }
     setErrorMsg("");
     onSave(adjuntos.length ? { ...f, archivos: [...adjuntos, ...toArray(f.archivos)] } : f);
   };
@@ -31905,7 +31929,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
         </div>
         <Field label="Comercial asociado"><TextInput value={f.comercialAsociado} onChange={set("comercialAsociado")} /></Field>
 
-        <Field label="Dirección de la incidencia (dónde hay que ir)" required>
+        <Field label="Dirección de la incidencia (o pon la ubicación de Maps de abajo)">
           <TextInput value={f.direccion != null ? f.direccion : ((proyectos.find((x) => x.id === f.proyectoId) || {}).ubicacion || "")} onChange={(e) => setF({ ...f, direccion: e.target.value })} placeholder="Calle, número, piso, población" />
         </Field>
         <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.direccion} /></Field>
