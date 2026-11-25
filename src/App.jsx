@@ -1048,6 +1048,7 @@ export default function App() {
   // facturas view state
   const [facturaView, setFacturaView] = useState("list");
   const [facturaEditId, setFacturaEditId] = useState(null);
+  const [facturaPrefill, setFacturaPrefill] = useState(null); // al facturar desde una entrada de dinero
   const [facturaDetailId, setFacturaDetailId] = useState(null);
 
   // presupuestos view state
@@ -7540,6 +7541,9 @@ export default function App() {
         )}
         {modulo === "facturas" && (
           <FacturasModulo
+            presupuestosTodos={presupuestos}
+            prefill={facturaPrefill}
+            onClearPrefill={() => setFacturaPrefill(null)}
             facturas={facturas}
             clientes={clientes}
             proyectos={proyectos}
@@ -7685,6 +7689,7 @@ export default function App() {
             onDelete={deleteIngreso}
             onVincular={vincularIngresoAProyecto}
             onCambiarIvaObra={(pid, v) => updateProyectoInline(pid, { ivaPct: v })}
+            onFacturar={(p) => { setFacturaPrefill({ clienteId: p.clienteId || "", autoProyectos: [p.id] }); setFacturaEditId(null); setFacturaView("form"); setModulo("facturas"); }}
             onJustificantes={actualizarJustificantesIngreso}
             onRegistrarIngreso={irARegistrarIngreso}
             onJustificantesIngreso={actualizarJustificantesIngreso}
@@ -33471,7 +33476,7 @@ function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescart
   );
 }
 
-function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin, onEmitirPendiente, onDescartarPendiente, onJuntarProformas }) {
+function FacturasModulo({ prefill = null, onClearPrefill = null, presupuestosTodos = [], facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin, onEmitirPendiente, onDescartarPendiente, onJuntarProformas }) {
   const [q, setQ] = useState("");
   const [tipo, setTipo] = useState("");
   const [estado, setEstado] = useState("");
@@ -33492,8 +33497,10 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
     const editing = facturas.find((f) => f.id === editId) || null;
     return (
       <FacturaForm
+        presupuestosTodos={presupuestosTodos}
         facturasTodas={facturas}
-        initial={editing}
+        initial={editing || (!editId && prefill) || null}
+        onPrefillUsado={onClearPrefill}
         clientes={clientes}
         proyectos={proyectos}
         nextNumero={nextNumero}
@@ -33791,7 +33798,7 @@ function RetencionesFacturas({ facturas, clientes, proyectos, onUpsert }) {
     </div>
   );
 }
-function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSave, facturasTodas = [] }) {
+function FacturaForm({ onPrefillUsado = null, initial, clientes, proyectos, nextNumero, onCancel, onSave, facturasTodas = [], presupuestosTodos = [] }) {
   const [clienteId, setClienteId] = useState(initial?.clienteId || clientes[0]?.id || "");
   const [tipo, setTipo] = useState(initial?.tipo || "Definitiva");
   const [fecha, setFecha] = useState(initial?.fecha || new Date().toISOString().slice(0, 10));
@@ -33813,10 +33820,20 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
   const trabajosCliente = proyectos.filter((p) => p.clienteId === clienteId);
   const calc = calcFactura({ lineas, ivaPct, retencion, pagoCuenta });
   // PDF DEL PRESUPUESTO de las obras marcadas (el firmado si lo hay)
-  const pdfsPresupuesto = proyectosIds.map((pid) => proyectos.find((x) => x.id === pid)).filter(Boolean).map((p) => {
-    const docs = toArray(p.documentos).filter((d) => d && d.url && /presupuesto|ppto/i.test(d.nombre || "") && !/listado|dibujos|mosquit|hoja de corte|an[aá]lisis/i.test(d.nombre || ""));
-    return { p, doc: docs.find((d) => /firmad|aceptad/i.test(d.nombre || "")) || docs[0] || null };
-  });
+  // el PDF del presupuesto de una obra: en sus documentos o en los de su presupuesto (el original de Edmo primero; si no, el firmado)
+  const pdfPresupuestoDe = (p) => {
+    if (!p) return null;
+    const esPdfPres = (d) => d && d.url && !/listado|dibujos|mosquit|hoja de corte|an[aá]lisis|carga de material|mano de obra|pedido|albar/i.test(d.nombre || "") && (/\.pdf($|\?)/i.test(d.nombre || "") || /pdf/i.test(d.tipo || "") || /presupuesto|ppto/i.test(d.nombre || ""));
+    const pre = toArray(presupuestosTodos).find((x) => x && (x.proyectoCreadoId === p.id || (p.presupuestoId && x.id === p.presupuestoId))) || (p.presupuestoNumero ? toArray(presupuestosTodos).find((x) => x && String(x.numero) === String(p.presupuestoNumero)) : null);
+    const cands = [
+      ...toArray(pre && pre.documentos).filter(esPdfPres).filter((d) => !/firmad/i.test(d.nombre || "")),
+      ...toArray(p.documentos).filter(esPdfPres).filter((d) => /presupuesto|ppto/i.test(d.nombre || "") && !/firmad/i.test(d.nombre || "")),
+      ...(pre && pre.firma && pre.firma.pdfUrl ? [{ url: pre.firma.pdfUrl, nombre: `Presupuesto ${pre.numero} firmado` }] : []),
+      ...toArray(p.documentos).filter(esPdfPres).filter((d) => /firmad/i.test(d.nombre || "")),
+    ];
+    return cands[0] || null;
+  };
+  const pdfsPresupuesto = proyectosIds.map((pid) => proyectos.find((x) => x.id === pid)).filter(Boolean).map((p) => ({ p, doc: pdfPresupuestoDe(p) }));
   // Lee el presupuesto de Edmo: una línea por ventana (descripción breve + precio) con su dibujo
   const leerPresupuesto = async (fuente) => {
     setErrorMsg(""); setLeyendoPres("Leyendo el presupuesto…");
@@ -33834,7 +33851,7 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
       setLineas((ls) => [...ls.filter((l) => (String(l.descripcion || "").trim() || parseFloat(l.precio)) && !(fuente.proyectoId && l.proyectoId === fuente.proyectoId && !l.dibujoUrl)), ...nuevas]);
       if (!tituloFactura && r.numero) setTituloFactura(`Presupuesto ${r.numero}`);
       setLeyendoPres(`✓ ${nuevas.length} ventanas leídas${nuevas.some((x) => !x.dibujoUrl) ? " (alguna sin dibujo)" : ""}. Revisa las líneas.`);
-    } catch (e) { setLeyendoPres(""); setErrorMsg(`No se pudo leer el presupuesto: ${(e && e.message) || e}`); }
+    } catch (e) { setLeyendoPres(""); setErrorMsg(`No se pudo leer el presupuesto: ${(e && e.message) || e}${fuente.alFallar ? ". He puesto una línea con la obra: cámbiala a mano." : ""}`); if (fuente.alFallar) fuente.alFallar(); }
   };
   const numDup = String(numero || "").trim() && toArray(facturasTodas).some((x) => x && x.id !== initial?.id && String(x.numero).trim() === String(numero).trim());
 
@@ -33842,12 +33859,23 @@ function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSav
     const p = proyectos.find((x) => x.id === pid);
     setProyectosIds((ids) => (ids.includes(pid) ? ids.filter((x) => x !== pid) : [...ids, pid]));
     if (!proyectosIds.includes(pid) && p) {
-      // al marcar una obra se añade su línea (1 · nombre · importe sin IVA); luego se cambia lo que haga falta
-      setLineas((ls) => [...ls.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)), { id: uid(), uds: 1, descripcion: p.nombre || "", precio: parseFloat(p.importePresupuesto) || 0, proyectoId: pid }]);
       if (p.ivaPct !== undefined && p.ivaPct !== null && p.ivaPct !== "") setIvaPct(parseFloat(p.ivaPct));
+      // AL MARCAR LA OBRA: si tiene su presupuesto en PDF, se lee solo (una línea por ventana con su dibujo); si no, una línea con la obra
+      const doc = pdfPresupuestoDe(p);
+      if (doc) leerPresupuesto({ url: doc.url, proyectoId: pid, alFallar: () => setLineas((ls) => [...ls.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)), { id: uid(), uds: 1, descripcion: p.nombre || "", precio: parseFloat(p.importePresupuesto) || 0, proyectoId: pid }]) });
+      else setLineas((ls) => [...ls.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)), { id: uid(), uds: 1, descripcion: p.nombre || "", precio: parseFloat(p.importePresupuesto) || 0, proyectoId: pid }]);
+    } else if (proyectosIds.includes(pid)) {
+      // al desmarcarla se quitan sus líneas
+      setLineas((ls) => { const r = ls.filter((l) => l.proyectoId !== pid); return r.length ? r : [{ id: uid(), uds: 1, descripcion: "", precio: "" }]; });
     }
   };
   const upL = (id, patch) => setLineas((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  // VIENE DE UNA ENTRADA DE DINERO dada por buena: marca su obra y lee sola su presupuesto
+  useEffect(() => {
+    const auto = toArray(initial && initial.autoProyectos);
+    if (!initial?.id && auto.length) auto.forEach((pid) => { if (proyectos.some((x) => x.id === pid)) toggleProyecto(pid); });
+    if (auto.length && onPrefillUsado) onPrefillUsado();
+  }, []);
 
   const datos = () => ({ id: initial?.id || null, numero: String(numero || "").trim(), clienteId, tipo, fecha, proyectosIds, observaciones, tituloFactura,
     lineas: lineas.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)).map((l) => ({ ...l, uds: parseFloat(l.uds) || 0, precio: parseFloat(l.precio) || 0 })),
@@ -38804,7 +38832,7 @@ function SelectorIvaObra({ valor, onCambiar }) {
   if (!onCambiar) return <span className="text-[11px] text-slate-500">IVA {valor} %</span>;
   return <select value={String(valor)} onChange={(e) => onCambiar(parseFloat(e.target.value))} onClick={(e) => e.stopPropagation()} title="IVA de esta obra" className="text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white">{IVAS_OBRA.map((v) => <option key={v} value={String(v)}>IVA {v} %</option>)}</select>;
 }
-function IngresosModulo({ onCambiarIvaObra = null, ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
+function IngresosModulo({ onFacturar = null, onCambiarIvaObra = null, ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(false);
   const sinProyecto = ingresos.filter((i) => !i.proyectoId && !i.presupuestoId); // las apuntadas a un presupuesto ya están vinculadas (pasan solas a su obra)
@@ -39014,7 +39042,7 @@ function IngresosModulo({ onCambiarIvaObra = null, ingresos, clientes, proyectos
                   <td className="px-4 py-3 text-slate-500">{i.formaPago || "—"}</td>
                   <td className="px-4 py-3">
                     {proyecto ? (
-                      <span className="inline-flex flex-wrap items-center gap-1"><span title={`#${proyecto.numero} — ${proyecto.nombre}`}><Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {String(proyecto.nombre || "").length > 40 ? String(proyecto.nombre).slice(0, 40).trim() + "…" : proyecto.nombre}</Badge></span><button type="button" onClick={() => { if (window.confirm(`¿Desvincular esta entrada de ${money(i.importe)} de la obra #${proyecto.numero}?\n\nLuego la vinculas a la obra o presupuesto correcto con «Vincular a…».`)) onUpsert({ ...i, proyectoId: null, presupuestoId: null, vinculado: false }); }} className="text-[11px] font-semibold underline text-slate-500 hover:text-rose-600">cambiar</button></span>
+                      <span className="inline-flex flex-wrap items-center gap-1"><span title={`#${proyecto.numero} — ${proyecto.nombre}`}><Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">#{proyecto.numero} — {String(proyecto.nombre || "").length > 40 ? String(proyecto.nombre).slice(0, 40).trim() + "…" : proyecto.nombre}</Badge></span><button type="button" onClick={() => { if (window.confirm(`¿Desvincular esta entrada de ${money(i.importe)} de la obra #${proyecto.numero}?\n\nLuego la vinculas a la obra o presupuesto correcto con «Vincular a…».`)) onUpsert({ ...i, proyectoId: null, presupuestoId: null, vinculado: false }); }} className="text-[11px] font-semibold underline text-slate-500 hover:text-rose-600">cambiar</button>{onFacturar && <button type="button" onClick={() => onFacturar(proyecto, i)} title="Entrada ya dada por buena: hacer la factura de esta obra (lee sola su presupuesto)" className="rounded-md bg-violet-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-violet-700">🧾 Facturar</button>}</span>
                     ) : i.presupuestoId ? (() => { const pre = toArray(presupuestos).find((x) => x && x.id === i.presupuestoId); return (
                       <div className="space-y-1">
                         <Badge className="bg-amber-50 text-amber-800 ring-amber-300">Presupuesto {pre ? pre.numero : "?"}{pre && (pre.referencia || pre.descripcion) ? ` — ${String(pre.referencia || pre.descripcion).slice(0, 40)}` : ""} · sin proyecto todavía</Badge>
