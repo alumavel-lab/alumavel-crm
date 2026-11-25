@@ -660,7 +660,7 @@ const pendientesDeFacturar = (proyectos, facturas) => (proyectos || []).filter((
 });
 
 const estadoFacturaCalc = (factura) => {
-  const total = parseFloat(factura.total) || 0;
+  const total = factura.aPagar != null ? (parseFloat(factura.aPagar) || 0) : (parseFloat(factura.total) || 0);
   const pagado = (factura.pagos || []).reduce((s, p) => s + (parseFloat(p.importe) || 0), 0);
   if (pagado <= 0) return "Pendiente";
   if (pagado < total) return "Parcial";
@@ -3996,7 +3996,7 @@ export default function App() {
       next = facturas.map((f) => (f.id === data.id ? { ...f, ...data } : f));
       showToast("Factura actualizada");
     } else {
-      next = [{ ...data, id: uid(), numero: nextNumeroFactura(), pagos: [] }, ...facturas];
+      next = [{ ...data, id: uid(), numero: String(data.numero || "").trim() || nextNumeroFactura(), pagos: [] }, ...facturas];
       showToast("Factura emitida");
     }
     saveFacturas(next);
@@ -33492,6 +33492,7 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
     const editing = facturas.find((f) => f.id === editId) || null;
     return (
       <FacturaForm
+        facturasTodas={facturas}
         initial={editing}
         clientes={clientes}
         proyectos={proyectos}
@@ -33534,6 +33535,7 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
       />
 
       {onJuntarProformas && <JuntarProformas facturas={facturas} clientes={clientes} onJuntar={onJuntarProformas} />}
+      <RetencionesFacturas facturas={facturas} clientes={clientes} proyectos={proyectos} onUpsert={onUpsert} />
       {onEmitirPendiente && <PendientesFacturar proyectos={proyectos} facturas={facturas} clientes={clientes} onEmitir={onEmitirPendiente} onDescartar={onDescartarPendiente} />}
       {clientes.length === 0 && (
         <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
@@ -33606,114 +33608,230 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
   );
 }
 
-function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSave }) {
+// FACTURA CON EL FORMATO DE SIEMPRE (el Excel de oficina): líneas (unidades, descripción, precio), título, retención 5 %, pago a cuenta, IVA.
+// TOTAL BRUTO = suma de líneas · BASE = bruto − retención · IVA = base × IVA % · SUBTOTAL = base + IVA · A PAGAR = subtotal − pago a cuenta
+const calcFactura = (f) => {
+  const bruto = Math.round(toArray(f && f.lineas).reduce((t, l) => t + (parseFloat(l && l.uds) || 0) * (parseFloat(l && l.precio) || 0), 0) * 100) / 100;
+  const ret = f && f.retencion ? Math.round(bruto * 0.05 * 100) / 100 : 0;
+  const base = Math.round((bruto - ret) * 100) / 100;
+  const ivaPct = f && f.ivaPct !== undefined && f.ivaPct !== "" ? parseFloat(f.ivaPct) || 0 : 21;
+  const iva = Math.round(base * ivaPct / 100 * 100) / 100;
+  const subtotal = Math.round((base + iva) * 100) / 100;
+  const cuenta = Math.round((parseFloat(f && f.pagoCuenta) || 0) * 100) / 100;
+  return { bruto, ret, base, ivaPct, iva, subtotal, cuenta, aPagar: Math.round((subtotal - cuenta) * 100) / 100 };
+};
+function imprimirFacturaFormato(fac, cliente) {
+  const e = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const m = (n) => `${(Math.round((parseFloat(n) || 0) * 100) / 100).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  const c = calcFactura(fac); const cl = cliente || {};
+  const pobl = [cl.cp, cl.pueblo].filter(Boolean).join(" ");
+  const prov = cl.provincia === "Otra ciudad..." ? cl.provinciaManual : cl.provincia;
+  const lineas = toArray(fac.lineas).filter((l) => l && (String(l.descripcion || "").trim() || parseFloat(l.precio)));
+  const filas = [
+    `<tr class="vacia"><td></td><td></td><td></td><td></td></tr>`,
+    fac.tituloFactura ? `<tr class="titulo"><td></td><td><b>${e(fac.tituloFactura)}</b></td><td></td><td></td></tr>` : "",
+    ...lineas.map((l) => `<tr><td class="c">${e(l.uds)}</td><td>${e(l.descripcion).replace(/\n/g, "<br>")}</td><td class="r">${m(l.precio)}</td><td class="r">${m((parseFloat(l.uds) || 0) * (parseFloat(l.precio) || 0))}</td></tr>`),
+    ...Array.from({ length: Math.max(0, 8 - lineas.length) }, () => `<tr class="vacia"><td></td><td></td><td></td><td></td></tr>`),
+    `<tr><td></td><td class="banco">DATOS BANCARIOS. -SANTANDER - ES25 0049 2632 7222 1404 8201</td><td></td><td></td></tr>`,
+  ].join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Factura ${e(fac.numero)}</title><style>
+  @page{size:A4;margin:12mm} body{font-family:Calibri,Arial,sans-serif;font-size:11px;color:#111;margin:0}
+  .barra{background:#5B3F7E;color:#fff;text-align:center;font-weight:bold;font-size:20px;padding:5px;border:2px solid #222}
+  .cab{display:flex;justify-content:space-between;align-items:flex-start;margin-top:14px} .logo{width:120px}
+  .cli{border:1.5px solid #222;padding:4px 8px;width:390px} .cli td{padding:1px 6px 1px 0;font-size:11px}
+  .emp{margin-top:14px;line-height:1.45} .numf{display:flex;justify-content:space-between;margin:18px 0 8px}
+  .numf span b{display:inline-block;min-width:90px;text-align:center;border-bottom:1px solid #222;font-weight:normal}
+  table.l{width:100%;border-collapse:collapse} table.l th{background:#E8E3F0;border:1.5px solid #222;font-weight:normal;padding:2px}
+  table.l td{border:1px solid #222;padding:8px 6px;vertical-align:middle} table.l td.c{text-align:center} table.l td.r{text-align:right;white-space:nowrap}
+  tr.vacia td{height:24px} tr.titulo td{text-align:center;height:30px} .banco{color:#C00;font-weight:bold;text-align:center}
+  table.t{width:100%;border-collapse:collapse;margin-top:14px} table.t th,table.t td{border:1.5px solid #222;text-align:center;padding:2px 4px;font-size:11px}
+  table.t th{background:#E8E3F0;font-weight:normal} .neg{font-weight:bold} .pie{margin-top:40px;font-size:10px}
+  </style></head><body>
+  <div class="barra">FACTURA</div>
+  <div class="cab"><img class="logo" src="${LOGO_ALUMAVEL}" alt="Alumavel" />
+    <table class="cli"><tr><td>NOMBRE:</td><td>${e(cl.nombre || fac.clienteNombre || "")}</td></tr><tr><td>DIRECCIÓN:</td><td>${e(cl.direccionFiscal || cl.direccion || "")}</td></tr><tr><td>POBLACION:</td><td>${e(pobl)}</td></tr><tr><td>PROVINCIA:</td><td>${e(prov || "")}</td></tr><tr><td>CIF/NIF/NIE:</td><td>${e(cl.cif || "")}</td></tr></table></div>
+  <div class="emp">Nombre: CERRAMIENTOS ALUMAVEL S.L.U.<br>NIF: B04816856<br>Dirección: C/ La Industria, parcela 35<br>Pol. Industrial Veléz-Rubio 04820 Almería<br>Teléfono: 674847297 / 950411333</div>
+  <div class="numf"><span>NºFactura: <b>${e(fac.numero || "")}</b></span><span>Fecha: <b>${e(fac.fecha ? fac.fecha.split("-").reverse().join("/") : "")}</b></span></div>
+  <table class="l"><thead><tr><th style="width:70px">UNIDADES</th><th style="text-align:left">DESCRIPCIÓN</th><th style="width:90px">PRECIO</th><th style="width:90px">IMPORTE</th></tr></thead><tbody>${filas}</tbody></table>
+  <table class="t"><tr><th>TOTAL BRUTO</th><th>RETENCIONES 5%</th><th class="neg">Pago a Cuenta</th><th class="neg">BASE IMPONIBLE</th><th>IVA ${c.ivaPct} %</th><th>SUBTOTAL</th><th class="neg">A PAGAR</th></tr>
+  <tr><td>${m(c.bruto)}</td><td>${m(c.ret)}</td><td class="neg">${m(c.cuenta)}</td><td>${m(c.base)}</td><td>${m(c.iva)}</td><td>${m(c.subtotal)}</td><td class="neg">${m(c.aPagar)}</td></tr></table>
+  ${fac.observaciones ? `<div style="margin-top:10px;white-space:pre-wrap">${e(fac.observaciones)}</div>` : ""}
+  <div class="pie">Inscrita en el R.Mercantil de Almeria, Tomo 1712, Libro 0, Folio 1, Inscripción 1ª, Hoja AL-44396,<br>C.I.F. B-04816856</div>
+  </body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (er) { /* nada */ } }, 500); return; }
+  try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `factura_${fac.numero || "nueva"}.html`; a.click(); } catch (er) { alert("No se pudo abrir la factura para imprimir."); }
+}
+// RETENCIONES (5 %): todas juntas. Cada una se cobra 2 AÑOS después del FIN DE OBRA. El fin de obra sale de la obra (entregada o terminada)
+// o se pone a mano; con él sale el día de cobro. Se marca «cobrada» cuando se cobre.
+const sumarAnos = (f, n) => { if (!f) return ""; const d = new Date(String(f).slice(0, 10) + "T12:00:00"); if (isNaN(d)) return ""; d.setFullYear(d.getFullYear() + n); return d.toLocaleDateString("sv-SE"); };
+function RetencionesFacturas({ facturas, clientes, proyectos, onUpsert }) {
+  const [abierto, setAbierto] = useEstadoLocal("crm_retenciones_abierto", false);
+  const [verCobradas, setVerCobradas] = useState(false);
+  const hoyR = new Date().toLocaleDateString("sv-SE");
+  const filas = toArray(facturas).filter((f) => f && f.retencion && !f.anulada).map((f) => {
+    const c = calcFactura(f); const obras = toArray(f.proyectosIds).map((pid) => proyectos.find((x) => x.id === pid)).filter(Boolean);
+    const finAuto = obras.map((p) => String(p.fechaEntregado || p.fechaTerminadoFabrica || "").slice(0, 10)).filter(Boolean).sort().pop() || "";
+    const fin = f.retencionFinObra || finAuto; const cobro = sumarAnos(fin, 2);
+    return { f, imp: c.ret, obras, fin, finAuto, cobro, cli: (clientes.find((x) => x.id === f.clienteId) || {}).nombre || "—" };
+  }).filter((r) => r.imp > 0).sort((a, b) => (a.cobro || "9999").localeCompare(b.cobro || "9999"));
+  const vivas = filas.filter((r) => !r.f.retencionCobrada);
+  const lista = verCobradas ? filas : vivas;
+  const total = vivas.reduce((t, r) => t + r.imp, 0);
+  const vencidas = vivas.filter((r) => r.cobro && r.cobro <= hoyR);
+  if (!filas.length) return null;
+  return (
+    <div className="mb-4 bg-white border border-slate-200 rounded-lg">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full flex flex-wrap items-center gap-2 px-4 py-3 text-left">
+        <span className="font-display font-bold text-slate-800">{abierto ? "▼" : "▶"} Retenciones 5 % (se cobran 2 años después del fin de obra)</span>
+        <span className="text-sm text-slate-500">({vivas.length} sin cobrar)</span>
+        {vencidas.length > 0 && <span className="text-xs font-bold text-white bg-rose-600 rounded px-2 py-0.5">{vencidas.length} ya se pueden cobrar</span>}
+        <span className="ml-auto text-sm font-bold text-[#5B3F7E]">{money(total)} retenido</span>
+      </button>
+      {abierto && (
+        <div className="px-4 pb-4 overflow-x-auto">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 mb-2"><input type="checkbox" checked={verCobradas} onChange={(e) => setVerCobradas(e.target.checked)} /> Ver también las ya cobradas</label>
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase text-slate-500 border-b border-slate-200"><th className="p-1.5">Factura</th><th className="p-1.5">Cliente</th><th className="p-1.5">Obra</th><th className="p-1.5 text-right">Retención</th><th className="p-1.5">Fin de obra</th><th className="p-1.5">Día de cobro</th><th className="p-1.5"></th></tr></thead>
+            <tbody>
+              {lista.map((r) => (
+                <tr key={r.f.id} className={`border-b border-slate-100 ${r.f.retencionCobrada ? "opacity-50" : r.cobro && r.cobro <= hoyR ? "bg-rose-50" : ""}`}>
+                  <td className="p-1.5 font-mono-num">{r.f.numero} <span className="text-[11px] text-slate-400">{fmtDate(r.f.fecha)}</span></td>
+                  <td className="p-1.5">{r.cli}</td>
+                  <td className="p-1.5 text-xs">{r.obras.length ? r.obras.map((p) => `#${p.numero} ${String(p.nombre || "").slice(0, 30)}`).join(" · ") : "—"}</td>
+                  <td className="p-1.5 text-right font-mono-num font-bold">{money(r.imp)}</td>
+                  <td className="p-1.5"><input type="date" value={r.fin} onChange={(e) => onUpsert({ ...r.f, retencionFinObra: e.target.value })} className="border border-slate-300 rounded px-1 py-0.5 text-xs" />{!r.f.retencionFinObra && r.finAuto ? <div className="text-[10px] text-slate-400">de la obra</div> : null}{!r.fin ? <div className="text-[10px] font-semibold text-amber-700">pon el fin de obra</div> : null}</td>
+                  <td className={`p-1.5 font-semibold ${r.cobro && r.cobro <= hoyR && !r.f.retencionCobrada ? "text-rose-700" : "text-slate-700"}`}>{r.cobro ? fmtDate(r.cobro) : "—"}{r.cobro && r.cobro <= hoyR && !r.f.retencionCobrada ? " · ¡ya!" : ""}</td>
+                  <td className="p-1.5 text-right whitespace-nowrap">{r.f.retencionCobrada
+                    ? <button type="button" onClick={() => onUpsert({ ...r.f, retencionCobrada: "" })} className="text-xs underline text-slate-500">cobrada el {fmtDate(r.f.retencionCobrada)} · deshacer</button>
+                    : <button type="button" onClick={() => { if (window.confirm(`¿Retención de la factura ${r.f.numero} (${money(r.imp)}) COBRADA hoy?`)) onUpsert({ ...r.f, retencionCobrada: hoyR }); }} className="text-xs font-bold text-white bg-[#2E8B57] rounded px-2 py-1">✓ Cobrada</button>}</td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+function FacturaForm({ initial, clientes, proyectos, nextNumero, onCancel, onSave, facturasTodas = [] }) {
   const [clienteId, setClienteId] = useState(initial?.clienteId || clientes[0]?.id || "");
   const [tipo, setTipo] = useState(initial?.tipo || "Definitiva");
   const [fecha, setFecha] = useState(initial?.fecha || new Date().toISOString().slice(0, 10));
+  const [numero, setNumero] = useState(initial?.numero || (nextNumero ? nextNumero() : ""));
   const [proyectosIds, setProyectosIds] = useState(initial?.proyectosIds || []);
   const [observaciones, setObservaciones] = useState(initial?.observaciones || "");
+  const [tituloFactura, setTituloFactura] = useState(initial?.tituloFactura || "");
+  const [lineas, setLineas] = useState(() => {
+    if (toArray(initial?.lineas).length) return toArray(initial.lineas);
+    if (initial && toArray(initial.proyectosIds).length) return toArray(initial.proyectosIds).map((pid) => { const p = proyectos.find((x) => x.id === pid); const imp = initial.importesPorProyecto && initial.importesPorProyecto[pid] != null ? initial.importesPorProyecto[pid] : (p ? p.importePresupuesto : 0); return { id: uid(), uds: 1, descripcion: p ? p.nombre || "" : "", precio: parseFloat(imp) || 0 }; });
+    return [{ id: uid(), uds: 1, descripcion: "", precio: "" }];
+  });
+  const [ivaPct, setIvaPct] = useState(initial?.ivaPct !== undefined ? initial.ivaPct : 21);
+  const [retencion, setRetencion] = useState(!!initial?.retencion);
+  const [pagoCuenta, setPagoCuenta] = useState(initial?.pagoCuenta || "");
   const [errorMsg, setErrorMsg] = useState("");
 
   const trabajosCliente = proyectos.filter((p) => p.clienteId === clienteId);
-  const total = proyectosIds.reduce((s, pid) => s + (proyectos.find((p) => p.id === pid)?.importePresupuesto || 0), 0);
+  const calc = calcFactura({ lineas, ivaPct, retencion, pagoCuenta });
+  const numDup = String(numero || "").trim() && toArray(facturasTodas).some((x) => x && x.id !== initial?.id && String(x.numero).trim() === String(numero).trim());
 
   const toggleProyecto = (pid) => {
+    const p = proyectos.find((x) => x.id === pid);
     setProyectosIds((ids) => (ids.includes(pid) ? ids.filter((x) => x !== pid) : [...ids, pid]));
+    if (!proyectosIds.includes(pid) && p) {
+      // al marcar una obra se añade su línea (1 · nombre · importe sin IVA); luego se cambia lo que haga falta
+      setLineas((ls) => [...ls.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)), { id: uid(), uds: 1, descripcion: p.nombre || "", precio: parseFloat(p.importePresupuesto) || 0, proyectoId: pid }]);
+      if (p.ivaPct !== undefined && p.ivaPct !== null && p.ivaPct !== "") setIvaPct(parseFloat(p.ivaPct));
+    }
   };
+  const upL = (id, patch) => setLineas((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
 
-  const exportarFacturaExcel = (numeroFactura) => {
-    const clienteNombre = clientes.find((c) => c.id === clienteId)?.nombre || "";
-    const filaFactura = [{
-      "Nº Factura": numeroFactura, Cliente: clienteNombre, Tipo: tipo, Fecha: fecha,
-      Total: total, Observaciones: observaciones || "",
-    }];
-    const filasTrabajos = proyectosIds.map((pid) => {
-      const p = proyectos.find((pr) => pr.id === pid);
-      return { "Nº Proyecto": p?.numero || "", Proyecto: p?.nombre || "", Importe: p?.importePresupuesto || 0 };
-    });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filaFactura), "Factura");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasTrabajos), "Trabajos");
-    XLSX.writeFile(wb, `factura_${numeroFactura || "nueva"}_${fecha}.xlsx`);
-  };
-
-  const submit = (e) => {
+  const datos = () => ({ id: initial?.id || null, numero: String(numero || "").trim(), clienteId, tipo, fecha, proyectosIds, observaciones, tituloFactura,
+    lineas: lineas.filter((l) => String(l.descripcion || "").trim() || parseFloat(l.precio)).map((l) => ({ ...l, uds: parseFloat(l.uds) || 0, precio: parseFloat(l.precio) || 0 })),
+    ivaPct: parseFloat(ivaPct) || 0, retencion, pagoCuenta: parseFloat(pagoCuenta) || 0,
+    total: calc.bruto, totalConIva: calc.subtotal, aPagar: calc.aPagar });
+  const submit = (e, imprimir = false) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!clienteId) {
-      setErrorMsg("Falta seleccionar un cliente.");
-      return;
-    }
-    if (proyectosIds.length === 0) {
-      setErrorMsg("Selecciona al menos un trabajo para facturar (marca la casilla de un proyecto en la lista de abajo).");
-      return;
-    }
+    if (!clienteId) { setErrorMsg("Falta seleccionar un cliente."); return; }
+    if (!String(numero || "").trim()) { setErrorMsg("Falta el nº de factura."); return; }
+    if (numDup && !window.confirm(`Ya hay otra factura con el nº ${numero}. ¿Guardarla igualmente con el mismo número?`)) return;
+    if (!calc.bruto) { setErrorMsg("La factura no tiene importe: pon al menos una línea con precio (o marca una obra abajo)."); return; }
     setErrorMsg("");
-    const numeroFactura = initial?.numero || nextNumero();
-    onSave({ id: initial?.id || null, clienteId, tipo, fecha, proyectosIds, total, observaciones });
-    try {
-      exportarFacturaExcel(numeroFactura);
-    } catch (err) {
-      console.error("Error exportando factura a Excel:", err);
-    }
+    const d = datos();
+    onSave(d);
+    if (imprimir) imprimirFacturaFormato(d, clientes.find((c) => c.id === clienteId));
   };
-
+  const inp = "border border-slate-300 rounded px-2 py-1 text-sm w-full";
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-4 lg:p-8 max-w-5xl">
       <button onClick={onCancel} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
-      <div className="flex items-center gap-3 mb-6">
-        <h1 className="font-display text-2xl font-extrabold text-slate-900">{initial ? `Editar factura ${initial.numero}` : "Emitir factura"}</h1>
-        {!initial && <Badge className="bg-slate-100 text-slate-500 ring-slate-200 font-mono-num">Nº {nextNumero()} (automático)</Badge>}
-      </div>
-
-      {errorMsg && (
-        <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
-          ⚠ {errorMsg}
-        </div>
-      )}
+      <h1 className="font-display text-2xl font-extrabold text-slate-900 mb-6">{initial?.id ? `Editar factura ${initial.numero}` : "Emitir factura"}</h1>
+      {errorMsg && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorMsg}</div>}
 
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Field label="Nº de factura" required>
+            <TextInput value={numero} onChange={(e) => setNumero(e.target.value)} placeholder="ej. 338" />
+            <span className={`text-[11px] ${numDup ? "font-bold text-rose-700" : "text-slate-400"}`}>{numDup ? "⚠ Ese número ya existe" : "Puedes cambiarlo: las siguientes siguen desde el mayor"}</span>
+          </Field>
           <Field label="Cliente" required>
             <Select value={clienteId} onChange={(e) => { setClienteId(e.target.value); setProyectosIds([]); }} required>
               {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
             </Select>
           </Field>
-          <Field label="Tipo">
-            <Select value={tipo} onChange={(e) => setTipo(e.target.value)}>
-              {TIPO_FACTURA.map((t) => <option key={t}>{t}</option>)}
-            </Select>
-          </Field>
+          <Field label="Tipo"><Select value={tipo} onChange={(e) => setTipo(e.target.value)}>{TIPO_FACTURA.map((t) => <option key={t}>{t}</option>)}</Select></Field>
           <Field label="Fecha"><TextInput type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
         </div>
+        {(() => { const cl = clientes.find((c) => c.id === clienteId); return cl && (!cl.cif || !(cl.direccionFiscal || cl.direccion)) ? <div className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-300 rounded px-3 py-2">⚠ A este cliente le falta {[!cl.cif ? "el CIF/NIF" : "", !(cl.direccionFiscal || cl.direccion) ? "la dirección" : ""].filter(Boolean).join(" y ")}: en la factura saldrá en blanco. Ponlo en Clientes → Editar.</div> : null; })()}
 
         <div>
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Trabajos a facturar (del cliente seleccionado)</span>
-          {trabajosCliente.length === 0 ? (
-            <p className="text-sm text-slate-400">Este cliente no tiene proyectos disponibles.</p>
-          ) : (
-            <div className="border border-slate-200 rounded-md divide-y divide-slate-100 max-h-64 overflow-y-auto">
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Obras del cliente (al marcar una, se añade su línea)</span>
+          {trabajosCliente.length === 0 ? <p className="text-sm text-slate-400">Este cliente no tiene proyectos. Puedes facturar escribiendo las líneas abajo.</p> : (
+            <div className="border border-slate-200 rounded-md divide-y divide-slate-100 max-h-48 overflow-y-auto">
               {trabajosCliente.map((p) => (
-                <label key={p.id} className="flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-slate-50 cursor-pointer">
-                  <input type="checkbox" checked={proyectosIds.includes(p.id)} onChange={() => toggleProyecto(p.id)} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
-                  <span className="font-mono-num text-slate-400">#{p.numero}</span>
-                  <span className="flex-1 text-slate-700">{p.nombre}</span>
-                  <span className="font-mono-num text-slate-600">{money(p.importePresupuesto)}</span>
-                </label>
-              ))}
-            </div>
-          )}
-          <div className="flex justify-end mt-2 text-sm">
-            <span className="font-mono-num text-slate-500">Total factura: <span className="font-bold text-slate-800 text-base">{money(total)}</span></span>
+                <label key={p.id} className="flex items-center gap-3 px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer">
+                  <input type="checkbox" checked={proyectosIds.includes(p.id)} onChange={() => toggleProyecto(p.id)} />
+                  <span className="font-mono-num text-slate-400">#{p.numero}</span><span className="flex-1 text-slate-700">{p.nombre}</span><span className="font-mono-num text-slate-600">{money(p.importePresupuesto)}</span>
+                </label>))}
+            </div>)}
+        </div>
+
+        <Field label="Título (sale en negrita encima de las líneas, opcional)"><TextInput value={tituloFactura} onChange={(e) => setTituloFactura(e.target.value)} placeholder="ej. Pvc Lote 1" /></Field>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase text-slate-500"><th className="w-20 p-1">Unidades</th><th className="p-1">Descripción</th><th className="w-28 p-1 text-right">Precio</th><th className="w-28 p-1 text-right">Importe</th><th className="w-8"></th></tr></thead>
+            <tbody>
+              {lineas.map((l) => (
+                <tr key={l.id} className="align-top">
+                  <td className="p-1"><input type="number" step="any" value={l.uds} onChange={(e) => upL(l.id, { uds: e.target.value })} className={inp} /></td>
+                  <td className="p-1"><textarea rows={2} value={l.descripcion} onChange={(e) => upL(l.id, { descripcion: e.target.value })} className={inp} placeholder="Ventana interior Pvc S8000 en color Blanco de 1000 mm de ancho x 1200 mm de alto. Cristal…" /></td>
+                  <td className="p-1"><input type="number" step="0.01" value={l.precio} onChange={(e) => upL(l.id, { precio: e.target.value })} className={inp + " text-right"} /></td>
+                  <td className="p-1 text-right font-mono-num pt-2">{money((parseFloat(l.uds) || 0) * (parseFloat(l.precio) || 0))}</td>
+                  <td className="p-1"><button type="button" onClick={() => setLineas((ls) => ls.filter((x) => x.id !== l.id))} className="text-slate-300 hover:text-rose-600 pt-1"><X size={15} /></button></td>
+                </tr>))}
+            </tbody>
+          </table>
+          <button type="button" onClick={() => setLineas((ls) => [...ls, { id: uid(), uds: 1, descripcion: "", precio: "" }])} className="mt-1 text-sm font-semibold text-[#2E8B57] hover:underline">+ Añadir línea</button>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-4 bg-slate-50 border border-slate-200 rounded-md p-3 text-sm">
+          <label className="flex flex-col gap-0.5"><span className="text-[11px] font-semibold uppercase text-slate-500">IVA</span><Select value={String(ivaPct)} onChange={(e) => setIvaPct(parseFloat(e.target.value))}>{[21, 10, 0].map((v) => <option key={v} value={String(v)}>{v} %</option>)}</Select></label>
+          <label className="flex items-center gap-1.5 font-semibold text-slate-700 pb-2"><input type="checkbox" checked={retencion} onChange={(e) => setRetencion(e.target.checked)} /> Retención 5 %</label>
+          <label className="flex flex-col gap-0.5"><span className="text-[11px] font-semibold uppercase text-slate-500">Pago a cuenta (€)</span><input type="number" step="0.01" value={pagoCuenta} onChange={(e) => setPagoCuenta(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 w-32 text-right" /></label>
+          <div className="ml-auto text-right text-xs leading-5 font-mono-num">
+            <div>Total bruto {money(calc.bruto)}{calc.ret ? ` · retención −${money(calc.ret)}` : ""}</div>
+            <div>Base {money(calc.base)} · IVA {calc.ivaPct} % {money(calc.iva)} · Subtotal {money(calc.subtotal)}{calc.cuenta ? ` · a cuenta −${money(calc.cuenta)}` : ""}</div>
+            <div className="text-base font-extrabold text-slate-900">A PAGAR {money(calc.aPagar)}</div>
           </div>
         </div>
 
-        <Field label="Observaciones">
-          <TextArea rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Cualquier nota sobre esta factura (opcional)" />
-        </Field>
+        <Field label="Observaciones (salen debajo de los totales)"><TextArea rows={2} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Opcional" /></Field>
 
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
-          <span className="text-xs text-slate-400 mr-auto">Al guardar, se descargará también un Excel con los datos de esta factura.</span>
+          <button type="button" onClick={() => imprimirFacturaFormato(datos(), clientes.find((c) => c.id === clienteId))} className="mr-auto px-4 py-2.5 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">👁 Vista previa</button>
           <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          <button type="button" onClick={(e) => submit(e, true)} className="px-4 py-2.5 rounded-md text-sm font-semibold border-2 border-[#2E8B57] text-[#2E8B57]">Guardar e imprimir</button>
           <button type="submit" onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md"><Save size={15} /> Guardar factura</button>
         </div>
       </form>
@@ -33725,7 +33843,8 @@ function FacturaDetail({ factura, cliente, proyectos, onBack, onEdit, onDelete, 
   const trabajos = proyectos.filter((p) => (factura.proyectosIds || []).includes(p.id));
   const pagos = factura.pagos || [];
   const totalPagado = pagos.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0);
-  const saldo = (parseFloat(factura.total) || 0) - totalPagado;
+  const totalCobrar = factura.aPagar != null ? (parseFloat(factura.aPagar) || 0) : (parseFloat(factura.total) || 0); // con el formato nuevo: lo de «A PAGAR»
+  const saldo = totalCobrar - totalPagado;
   const estado = estadoFacturaCalc(factura);
 
   const exportarFacturaDetalleExcel = (fac, cli, trabajosLista) => {
@@ -33764,6 +33883,7 @@ function FacturaDetail({ factura, cliente, proyectos, onBack, onEdit, onDelete, 
         </div>
         <div className="flex gap-2 shrink-0">
           <button onClick={() => exportarFacturaDetalleExcel(factura, cliente, trabajos)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><FileSpreadsheet size={14} /> Exportar a Excel</button>
+          <button type="button" onClick={() => imprimirFacturaFormato(factura, cliente)} className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#5B3F7E] px-3.5 py-2 rounded-md hover:opacity-90">🖨 Imprimir / PDF</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
             <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
@@ -33772,7 +33892,7 @@ function FacturaDetail({ factura, cliente, proyectos, onBack, onEdit, onDelete, 
       </div>
 
       <div className="grid grid-cols-4 gap-3 my-6">
-        <Kpi label="Total factura" value={money(factura.total)} />
+        <Kpi label={factura.aPagar != null ? "A pagar" : "Total factura"} value={money(totalCobrar)} />
         <Kpi label="Total pagado" value={money(totalPagado)} tone="good" />
         <Kpi label="Saldo pendiente" value={money(Math.max(saldo, 0))} tone={saldo > 0 ? "bad" : "neutral"} />
         <div className="bg-white border border-slate-200 rounded-lg px-4 py-3 flex flex-col justify-center">
