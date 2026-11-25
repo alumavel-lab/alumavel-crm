@@ -38571,7 +38571,7 @@ function SelectorIvaObra({ valor, onCambiar }) {
 function IngresosModulo({ onCambiarIvaObra = null, ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(false);
-  const sinProyecto = ingresos.filter((i) => !i.proyectoId);
+  const sinProyecto = ingresos.filter((i) => !i.proyectoId && !i.presupuestoId); // las apuntadas a un presupuesto ya están vinculadas (pasan solas a su obra)
   const totalSinProyecto = sinProyecto.reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
 
   const [verPendCobro, setVerPendCobro] = useEstadoLocal("crm_entradas_pendCobro", false); const [qPendCobro, setQPendCobro] = useState("");
@@ -38647,9 +38647,26 @@ function IngresosModulo({ onCambiarIvaObra = null, ingresos, clientes, proyectos
               <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900 border-b border-amber-200">
                 Cada entrada te propone primero los proyectos del mismo cliente y los que tienen pendiente parecido al importe. <strong>Es solo una sugerencia: comprueba que es la obra correcta antes de pulsar Asignar.</strong>
               </div>
-              {sinProyecto.map((i) => (
-                <AsignarEntradaFila key={i.id} ingreso={i} proyectos={proyectos} clientes={clientes} saldos={proyectosConSaldo} onAsignar={(pid) => onVincular(i.id, pid)} onEditar={() => { setEditId(i.id); setView("form"); }} />
-              ))}
+              {/* AGRUPADAS POR CLIENTE: el dinero de cada cliente junto, y debajo sus entradas para asignar cada una a su obra */}
+              {(() => {
+                const g = new Map(); sinProyecto.forEach((i) => { const k = String(i.clienteNombre || "Sin cliente").trim(); if (!g.has(k)) g.set(k, []); g.get(k).push(i); });
+                return [...g.entries()].sort((a, b) => b[1].reduce((t, i) => t + (parseFloat(i.importe) || 0), 0) - a[1].reduce((t, i) => t + (parseFloat(i.importe) || 0), 0)).map(([cn, xs]) => {
+                  const cl = clientes.find((c) => (c.nombre || "").trim().toLowerCase() === cn.toLowerCase());
+                  const obrasCli = cl ? proyectosConSaldo.filter((r) => r.proyecto.clienteId === cl.id) : [];
+                  return (
+                    <details key={cn} open className="border-b border-amber-200 last:border-0">
+                      <summary className="cursor-pointer px-4 py-2 bg-amber-50/50 flex flex-wrap items-center gap-2 text-sm">
+                        <b className="text-slate-800">{cn}</b>
+                        <span className="text-slate-500">{xs.length} entrada{xs.length === 1 ? "" : "s"}</span>
+                        <span className="font-bold text-emerald-700">{money(xs.reduce((t, i) => t + (parseFloat(i.importe) || 0), 0))} sin vincular</span>
+                        {obrasCli.length > 0 && <span className="ml-auto text-xs text-slate-600">Sus obras pendientes: {obrasCli.map((r) => `#${r.proyecto.numero} (falta ${money(r.pendiente)})`).join(" · ")}</span>}
+                        {cl && !obrasCli.length && <span className="ml-auto text-xs text-amber-700">Este cliente no tiene obras con dinero pendiente</span>}
+                        {!cl && <span className="ml-auto text-xs text-rose-700">No hay ningún cliente con este nombre en el CRM</span>}
+                      </summary>
+                      {xs.map((i) => <AsignarEntradaFila key={i.id} ingreso={i} proyectos={proyectos} clientes={clientes} saldos={proyectosConSaldo} onAsignar={(pid) => onVincular(i.id, pid)} onEditar={() => { setEditId(i.id); setView("form"); }} />)}
+                    </details>);
+                });
+              })()}
             </div>
           )}
         </div>
