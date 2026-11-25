@@ -38558,6 +38558,8 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
   const totalSinProyecto = sinProyecto.reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
 
+  const [verPendCobro, setVerPendCobro] = useEstadoLocal("crm_entradas_pendCobro", false); const [qPendCobro, setQPendCobro] = useState("");
+  const [verEntradas, setVerEntradas] = useEstadoLocal("crm_entradas_lista", true);
   const proyectosConSaldo = useMemo(() => {
     return proyectos
       .map((p) => {
@@ -38635,13 +38637,20 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
       )}
 
       {proyectosConSaldo.length > 0 && (
-        <div className="mb-6">
-          <h2 className="font-display font-bold text-slate-800 mb-2">Proyectos con dinero pendiente de cobrar</h2>
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+        <div className="mb-6 bg-white border border-slate-200 rounded-lg">
+          <button type="button" onClick={() => setVerPendCobro(!verPendCobro)} className="w-full flex flex-wrap items-center gap-2 px-4 py-3 text-left">
+            <span className="font-display font-bold text-slate-800">{verPendCobro ? "▼" : "▶"} Proyectos con dinero pendiente de cobrar</span>
+            <span className="text-sm text-slate-500">({proyectosConSaldo.length} obras)</span>
+            <span className="ml-auto text-sm font-bold text-amber-700">{money(totalPendienteProyectos)} pendiente</span>
+          </button>
+          {verPendCobro && (<div className="px-4 pb-4">
+          <TextInput value={qPendCobro} onChange={(e) => setQPendCobro(e.target.value)} placeholder="🔎 Buscar por cliente, nº de obra o presupuesto" className="mb-2 max-w-md" />
+          <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
                   <th className="px-4 py-2.5 font-semibold">Proyecto</th>
+                  <th className="px-4 py-2.5 font-semibold">Cliente</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Presupuesto</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Recibido</th>
                   <th className="px-4 py-2.5 font-semibold text-right">Pendiente</th>
@@ -38649,9 +38658,10 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
                 </tr>
               </thead>
               <tbody>
-                {proyectosConSaldo.map((r) => (
+                {proyectosConSaldo.filter((r) => { const q = String(qPendCobro || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); if (!q) return true; const t = `${r.proyecto.numero} ${r.proyecto.nombre || ""} ${r.proyecto.presupuestoNumero || ""} ${presupuestoDeObra(r.proyecto) || ""} ${(clientes.find((c) => c.id === r.proyecto.clienteId) || {}).nombre || ""}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); return t.includes(q) || (q.replace(/\D/g, "").length >= 3 && t.replace(/(\d)\.(?=\d)/g, "$1").includes(q.replace(/\D/g, ""))); }).map((r) => (
                   <tr key={r.proyecto.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">#{r.proyecto.numero} — {r.proyecto.nombre}</td>
+                    <td className="px-4 py-2.5 font-medium text-slate-800">#{r.proyecto.numero} — {String(r.proyecto.nombre || "").length > 55 ? String(r.proyecto.nombre).slice(0, 55).trim() + "…" : r.proyecto.nombre}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{(clientes.find((c) => c.id === r.proyecto.clienteId) || {}).nombre || "—"}</td>
                     <td className="px-4 py-2.5 text-right font-mono-num text-slate-500">{money(r.importePresupuesto)}</td>
                     <td className="px-4 py-2.5 text-right font-mono-num text-emerald-600">{money(r.recibido)}</td>
                     <td className="px-4 py-2.5 text-right font-mono-num font-bold text-amber-700">{money(r.pendiente)}</td>
@@ -38670,9 +38680,16 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
             </table>
           </div>
           <p className="text-xs text-slate-400 mt-1.5">Total pendiente de cobrar en proyectos: <span className="font-semibold text-slate-600">{money(totalPendienteProyectos)}</span></p>
+          </div>)}
         </div>
       )}
 
+      <button type="button" onClick={() => setVerEntradas(!verEntradas)} className="w-full flex flex-wrap items-center gap-2 px-4 py-3 mb-2 text-left bg-white border border-slate-200 rounded-lg">
+        <span className="font-display font-bold text-slate-800">{verEntradas ? "▼" : "▶"} Entradas de dinero</span>
+        <span className="text-sm text-slate-500">({filtered.length})</span>
+        <span className="ml-auto text-sm font-bold text-emerald-700">{money(filtered.reduce((t, i) => t + (parseFloat(i.importe) || 0), 0))} entrado</span>
+      </button>
+      {verEntradas && (<>
       <div className="relative mb-4 max-w-sm">
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cliente o concepto..." className={inputCls + " pl-9"} />
@@ -38733,6 +38750,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view
           </tbody>
         </table>
       </div>
+      </>)}
     </div>
   );
 }
