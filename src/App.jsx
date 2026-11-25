@@ -1711,6 +1711,22 @@ export default function App() {
   };
 
   const saveClientes = (next) => { setClientes(next); persist("clientes", next); };
+  // EL CLIENTE APRENDE: al guardar un presupuesto, incidencia u obra con teléfono, dirección o ubicación que su ficha de cliente no tiene,
+  // se copian a la ficha (solo lo que le falte; nunca pisa lo que ya tiene)
+  const completarCliente = (porId, porNombre, datos) => {
+    try {
+      const nom = String(porNombre || "").trim().toLowerCase();
+      const c = toArray(clientes).find((x) => x && ((porId && x.id === porId) || (nom && String(x.nombre || "").trim().toLowerCase() === nom)));
+      if (!c) return;
+      const patch = {};
+      if (datos.telefono && !c.movil && !c.telefono) patch.movil = String(datos.telefono).trim();
+      if (datos.email && !c.email) patch.email = String(datos.email).trim();
+      if (datos.direccion && !c.direccion) patch.direccion = String(datos.direccion).trim();
+      if (datos.ubicacionMaps && !c.ubicacionMaps) patch.ubicacionMaps = String(datos.ubicacionMaps).trim();
+      if (!Object.keys(patch).length) return;
+      saveClientes(toArray(clientes).map((x) => (x.id === c.id ? { ...x, ...patch } : x)));
+    } catch (e) { /* nada */ }
+  };
 
   const importarContactosMasivo = (nuevosClientes) => {
     saveClientes([...nuevosClientes, ...clientes]);
@@ -2045,6 +2061,8 @@ export default function App() {
     setPresupuestoPrefill({
       clienteNombre: medicion.clienteNombre,
       direccionEnvio: medicion.direccion || "",
+      ...(medicion.telefono ? { telefono: medicion.telefono } : {}),
+      ...(medicion.ubicacionMaps ? { ubicacionMaps: medicion.ubicacionMaps } : {}),
       descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || "(Todavía no se han registrado elementos medidos en esta medición.)"}`,
       techos,
     });
@@ -2353,6 +2371,7 @@ export default function App() {
       clienteNombre: (cl && cl.nombre) || obj.clienteNombre || "",
       telefono: obj.telefono || (cl && (cl.movil || cl.telefono)) || "",
       direccionEnvio: obj.direccion || (pr && pr.ubicacion) || (cl && cl.direccion) || "",
+      ubicacionMaps: obj.ubicacionMaps || (pr && pr.ubicacionMaps) || (cl && cl.ubicacionMaps) || "",
       descripcion: desc,
       comentarios: `Creado desde ${esInst ? "la instalación" : `la incidencia #${obj.numero || ""}`}. Revisa los datos y pon el importe antes de guardar.`,
       extra: { ...(pr ? { proyectoId: pr.id } : {}), ...(esInst ? { origenInstalacionId: obj.id } : { origenIncidenciaId: obj.id }) },
@@ -2463,6 +2482,7 @@ export default function App() {
   };
 
   const upsertProyecto = (data) => {
+    completarCliente(data && data.clienteId, "", { direccion: data && data.ubicacion, ubicacionMaps: data && data.ubicacionMaps });
     let next;
     if (data.id) {
       const anterior = proyectos.find((p) => p.id === data.id);
@@ -3629,6 +3649,7 @@ export default function App() {
   };
 
   const upsertIncidencia = (data) => {
+    { const prI = data && data.proyectoId ? proyectos.find((x) => x.id === data.proyectoId) : null; completarCliente(prI && prI.clienteId, data && data.clienteNombre, { telefono: data && data.telefono, direccion: data && data.direccion, ubicacionMaps: data && data.ubicacionMaps }); }
     let next; let nuevaId = null; let numero = data.numero;
     const antes = data.id ? incidencias.find((i) => i.id === data.id) : null;
     if (data.id) {
@@ -4114,6 +4135,7 @@ export default function App() {
     showToast(lista.size === 1 ? `Presupuesto marcado como ${estado.toLowerCase()}` : `${lista.size} presupuestos marcados como ${estado.toLowerCase()}`);
   };
   const upsertPresupuesto = (data) => {
+    completarCliente("", data && data.clienteNombre, { telefono: data && data.telefono, email: data && data.email, direccion: data && data.direccionEnvio, ubicacionMaps: data && data.ubicacionMaps });
     let next;
     let idParaAbrir = null;
     if (data.id) {
@@ -4341,6 +4363,8 @@ export default function App() {
       presupuestoNumero: String(presupuesto.numero || ""), // el nº del presupuesto pasa a la obra (es obligatorio en la ficha de la obra)
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
+      ...(String(presupuesto.direccionEnvio || "").trim() ? { ubicacion: String(presupuesto.direccionEnvio).trim() } : {}),
+      ...(presupuesto.ubicacionMaps ? { ubicacionMaps: presupuesto.ubicacionMaps } : {}),
       fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
       estadoPresupuesto: "Presupuesto aceptado",
       estadoTrabajo: "Pendiente de aceptación",
@@ -9504,6 +9528,12 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
+  // CLIENTE ELEGIDO: su dirección y ubicación de Maps pasan solas a la obra (solo si están vacías)
+  useEffect(() => {
+    const c = toArray(clientes).find((x) => x && x.id === f.clienteId); if (!c) return;
+    setF((prev) => { const n = { ...prev, ubicacion: String(prev.ubicacion || "").trim() ? prev.ubicacion : [c.direccion, c.pueblo].filter(Boolean).join(", "), ubicacionMaps: String(prev.ubicacionMaps || "").trim() ? prev.ubicacionMaps : (c.ubicacionMaps || "") };
+      return n.ubicacion === (prev.ubicacion || "") && n.ubicacionMaps === (prev.ubicacionMaps || "") ? prev : n; });
+  }, [f.clienteId, clientes]);
 
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
@@ -31857,6 +31887,19 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   const [errorMsg, setErrorMsg] = useState("");
   const proyectoSel = proyectos.find((p) => p.id === f.proyectoId);
   const clienteSel = proyectoSel ? clientes.find((c) => c.id === proyectoSel.clienteId) : null;
+  // CLIENTE ESCRITO (sin proyecto) o el de la obra elegida: su teléfono, dirección y ubicación pasan solos a la incidencia (solo lo que esté vacío)
+  useEffect(() => {
+    const c = clienteSel || (String(f.clienteNombre || "").trim() ? clientes.find((x) => String(x.nombre || "").trim().toLowerCase() === String(f.clienteNombre).trim().toLowerCase()) : null);
+    if (!c && !proyectoSel) return;
+    setF((prev) => {
+      const dir = (proyectoSel && proyectoSel.ubicacion) || (c ? [c.direccion, c.pueblo].filter(Boolean).join(", ") : "");
+      const n = { ...prev,
+        telefono: String(prev.telefono || "").trim() ? prev.telefono : ((c && (c.movil || c.telefono)) || ""),
+        direccion: String(prev.direccion || "").trim() ? prev.direccion : dir,
+        ubicacionMaps: String(prev.ubicacionMaps || "").trim() ? prev.ubicacionMaps : ((proyectoSel && proyectoSel.ubicacionMaps) || (c && c.ubicacionMaps) || "") };
+      return ["telefono", "direccion", "ubicacionMaps"].every((k) => String(n[k] || "") === String(prev[k] || "")) ? prev : n;
+    });
+  }, [f.proyectoId, f.clienteNombre, clientes]);
 
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
@@ -34687,6 +34730,7 @@ function PresupuestosModulo({ ingresos = [], onCambiarEstadoRapido, onRecrearPro
       techos: prefill.techos || [],
       persianas: prefill.persianas || [],
       ventanas: prefill.ventanas || [],
+      ubicacionMaps: prefill.ubicacionMaps || "",
       ...(prefill.extra || {}),
     });
     setEditId(null);
@@ -40121,7 +40165,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
     setF((prev) => {
       const nuevoTel = String(prev.telefono || "").trim() ? prev.telefono : tel;
       const nuevoEmail = String(prev.email || "").trim() ? prev.email : (c.email || "");
-      return nuevoTel === prev.telefono && nuevoEmail === (prev.email || "") ? prev : { ...prev, telefono: nuevoTel, email: nuevoEmail };
+      // y también la dirección, la zona y la ubicación de Maps del cliente (solo si están vacías)
+      const dirC = [c.direccion, c.pueblo].filter(Boolean).join(", ");
+      const n = { ...prev, telefono: nuevoTel, email: nuevoEmail,
+        direccionEnvio: String(prev.direccionEnvio || "").trim() ? prev.direccionEnvio : dirC,
+        zona: String(prev.zona || "").trim() ? prev.zona : (c.pueblo || ""),
+        ubicacionMaps: String(prev.ubicacionMaps || "").trim() ? prev.ubicacionMaps : (c.ubicacionMaps || "") };
+      return ["telefono", "email", "direccionEnvio", "zona", "ubicacionMaps"].every((k) => String(n[k] || "") === String(prev[k] || "")) ? prev : n;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [f.clienteNombre, clientes]);
