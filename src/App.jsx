@@ -8568,6 +8568,29 @@ function RiesgoClienteBadge({ cliente, proyectos, ingresos }) {
   return <Badge className={cls}>{pct.toFixed(0)}%{pct >= 100 ? " ⚠" : ""}</Badge>;
 }
 
+// UBICACIÓN (Google Maps): se pega el enlace o las coordenadas, o se coge la del móvil con el GPS. Se guarda como enlace de Maps.
+const urlMapsDe = (v) => { const t = String(v || "").trim(); if (!t) return ""; if (/^https?:\/\//i.test(t)) return t; const m = t.match(/(-?\d{1,2}[.,]\d+)\s*[,; ]\s*(-?\d{1,3}[.,]\d+)/); return m ? `https://www.google.com/maps?q=${m[1].replace(",", ".")},${m[2].replace(",", ".")}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t)}`; };
+function CampoUbicacion({ valor, onChange, direccion = "" }) {
+  const [buscando, setBuscando] = useState(false); const [err, setErr] = useState("");
+  const miUbicacion = () => {
+    setErr(""); if (!navigator.geolocation) { setErr("Este dispositivo no da la ubicación."); return; }
+    setBuscando(true);
+    navigator.geolocation.getCurrentPosition((pos) => { setBuscando(false); onChange(`https://www.google.com/maps?q=${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`); },
+      (e) => { setBuscando(false); setErr(e && e.code === 1 ? "No has dado permiso de ubicación al navegador." : "No he podido coger la ubicación."); }, { enableHighAccuracy: true, timeout: 20000 });
+  };
+  const url = urlMapsDe(valor);
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-2">
+        <input value={valor || ""} onChange={(e) => onChange(e.target.value)} placeholder="Pega el enlace de Google Maps o las coordenadas" className={inputCls + " flex-1 min-w-[14rem]"} />
+        <button type="button" onClick={miUbicacion} disabled={buscando} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-sky-400 bg-sky-50 text-sky-800 disabled:opacity-50">{buscando ? "Buscando…" : "📍 Usar mi ubicación"}</button>
+        {url ? <a href={url} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 bg-white text-slate-700">🗺 Abrir en Maps</a> : direccion ? <a href={urlMapsDe(direccion)} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md text-sm border border-slate-300 bg-white text-slate-500">🗺 Buscar la dirección</a> : null}
+        {valor ? <button type="button" onClick={() => onChange("")} className="text-xs underline text-slate-500">quitar</button> : null}
+      </div>
+      {err && <div className="text-xs font-semibold text-rose-700">{err}</div>}
+    </div>
+  );
+}
 function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPrefill }) {
   const [f, setF] = useState(
     initial || (prefill ? {
@@ -8674,6 +8697,7 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
           <Field label="Dirección de entrega">
             <TextInput value={f.direccion} onChange={set("direccion")} placeholder="Dónde se entrega el material" />
           </Field>
+          <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.direccion} /></Field>
           <Field label="Dirección fiscal">
             <TextInput value={f.direccionFiscal} onChange={set("direccionFiscal")} placeholder="Para facturación (si es distinta)" />
           </Field>
@@ -8814,6 +8838,7 @@ function ClienteDetail({ cliente, trabajos, ingresos, onBack, onEdit, onDelete, 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
           <InfoRow icon={<MapPin size={14} />} label="Dirección de entrega" value={[cliente.direccion, cliente.pueblo, cliente.provincia === "Otra ciudad..." ? cliente.provinciaManual : cliente.provincia, cliente.cp].filter(Boolean).join(", ") || "—"} />
+          {cliente.ubicacionMaps ? <InfoRow icon={<MapPin size={14} />} label="📍 Ubicación" value={<a href={urlMapsDe(cliente.ubicacionMaps)} target="_blank" rel="noreferrer" className="text-sky-700 underline font-semibold">Ver en Google Maps</a>} /> : null}
           {cliente.direccionFiscal && <InfoRow icon={<MapPin size={14} />} label="Dirección fiscal" value={cliente.direccionFiscal} />}
           <InfoRow icon={<Mail size={14} />} label="Email" value={cliente.email || "—"} />
           <InfoRow icon={<Phone size={14} />} label="Móvil" value={cliente.movil || "—"} />
@@ -9541,6 +9566,7 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
           <Field label="Ubicación / obra">
             <TextInput value={f.ubicacion} onChange={set("ubicacion")} />
           </Field>
+          <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.ubicacion} /></Field>
           <Field label="Importe presupuesto (€)">
             <TextInput type="number" step="0.01" min="0" value={f.importePresupuesto} onChange={set("importePresupuesto")} />
           </Field>
@@ -11645,6 +11671,7 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Hash size={14} />} label="Tipo" value={proyecto.tipoVenta} />
             <InfoRow icon={<MapPin size={14} />} label="Ubicación" value={proyecto.ubicacion || "—"} />
+            {proyecto.ubicacionMaps ? <InfoRow icon={<MapPin size={14} />} label="📍 Ubicación" value={<a href={urlMapsDe(proyecto.ubicacionMaps)} target="_blank" rel="noreferrer" className="text-sky-700 underline font-semibold">Ver en Google Maps</a>} /> : null}
             <InfoRow icon={<FileText size={14} />} label="Fecha solicitud" value={fmtDate(proyecto.fechaSolicitud)} />
             <InfoRow icon={<CheckCircle2 size={14} />} label="Presupuesto aceptado el" value={proyecto.fechaAceptado ? fmtDate(proyecto.fechaAceptado) : "—"} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista" value={fmtDate(proyecto.fechaEntregaPrevista)} />
@@ -30985,6 +31012,7 @@ function MedicionForm({ initial, onCancel, onSave }) {
         <Field label="Dirección">
           <TextInput value={f.direccion} onChange={set("direccion")} placeholder="Dirección donde se mide" />
         </Field>
+          <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.direccion} /></Field>
         <Field label="Fecha" required>
           <TextInput type="date" value={f.fecha} onChange={set("fecha")} />
         </Field>
@@ -31008,7 +31036,7 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
       <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
         <div>
           <h1 className="font-display text-2xl font-extrabold text-slate-900">{medicion.clienteNombre}</h1>
-          <p className="text-sm text-slate-500 mt-1">{medicion.direccion || "Sin dirección"} · {medicion.fecha || "—"}</p>
+          <p className="text-sm text-slate-500 mt-1">{medicion.direccion || "Sin dirección"} · {medicion.fecha || "—"}{medicion.ubicacionMaps ? <> · <a href={urlMapsDe(medicion.ubicacionMaps)} target="_blank" rel="noreferrer" className="text-sky-700 underline font-semibold">📍 Ver en Maps</a></> : null}</p>
           {medicion.notas && <p className="text-sm text-slate-500 mt-1">{medicion.notas}</p>}
         </div>
         <div className="flex gap-2">
@@ -31880,6 +31908,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
         <Field label="Dirección de la incidencia (dónde hay que ir)" required>
           <TextInput value={f.direccion != null ? f.direccion : ((proyectos.find((x) => x.id === f.proyectoId) || {}).ubicacion || "")} onChange={(e) => setF({ ...f, direccion: e.target.value })} placeholder="Calle, número, piso, población" />
         </Field>
+        <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.direccion} /></Field>
 
         <Field label="Especificaciones de la incidencia" required>
           <TextArea rows={3} value={f.especificaciones} onChange={set("especificaciones")} required />
@@ -32088,7 +32117,7 @@ function IncidenciaDetail({ onHacerProyecto = null, onHacerPresupuesto = null, o
           {proyecto && <div className="mb-4"><AvisoGarantia proyecto={proyecto} fecha={incidencia.fecha} onFecha={onFechaGarantia ? (v) => onFechaGarantia(proyecto.id, v) : null} /></div>}
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Euro size={14} />} label="Importe presupuesto" value={money(proyecto?.importePresupuesto)} />
-            <InfoRow icon={<MapPin size={14} />} label="Dirección" value={incidencia.direccion || proyecto?.ubicacion || "—"} />
+            <InfoRow icon={<MapPin size={14} />} label="Dirección" value={<>{incidencia.direccion || proyecto?.ubicacion || "—"}{(incidencia.ubicacionMaps || proyecto?.ubicacionMaps) ? <> · <a href={urlMapsDe(incidencia.ubicacionMaps || proyecto?.ubicacionMaps)} target="_blank" rel="noreferrer" className="text-sky-700 underline font-semibold">📍 Ver en Maps</a></> : null}</>} />
             <InfoRow icon={<Users size={14} />} label="Responsable inicial" value={incidencia.responsableInicial || "—"} />
             <InfoRow icon={<Users size={14} />} label="Asignada a" value={incidencia.responsableActual || "Sin asignar (la ven todos los montadores)"} />
             <InfoRow icon={<Users size={14} />} label="Comercial asociado" value={incidencia.comercialAsociado || "—"} />
@@ -40247,6 +40276,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           <Field label="Zona">
             <TextInput value={f.zona} onChange={set("zona")} placeholder="Ej: Almería, Granada..." />
           </Field>
+          <Field label="📍 Ubicación (Google Maps)"><CampoUbicacion valor={f.ubicacionMaps} onChange={(v) => setF((prev) => ({ ...prev, ubicacionMaps: v }))} direccion={f.direccionEnvio || f.zona} /></Field>
           <Field label="Vincular a obra existente (opcional)">
             <Select value={f.proyectoId} onChange={set("proyectoId")}>
               <option value="">Ninguna — presupuesto independiente</option>
@@ -41077,6 +41107,7 @@ function PresupuestoDetail({ ingresosPresu = [], puedeEliminar, onRecrearProyect
           <InfoRow icon={<Phone size={14} />} label="Teléfono" value={presupuesto.telefono || "—"} />
           <InfoRow icon={<Mail size={14} />} label="Email" value={presupuesto.email || "—"} />
           <InfoRow icon={<MapPin size={14} />} label="Zona" value={presupuesto.zona || "—"} />
+          {presupuesto.ubicacionMaps ? <InfoRow icon={<MapPin size={14} />} label="📍 Ubicación" value={<a href={urlMapsDe(presupuesto.ubicacionMaps)} target="_blank" rel="noreferrer" className="text-sky-700 underline font-semibold">Ver en Google Maps</a>} /> : null}
           {presupuesto.referencia ? <InfoRow icon={<FileText size={14} />} label="Referencia" value={presupuesto.referencia} /> : null}
           <InfoRow icon={<FileText size={14} />} label="Descripción / Obra" value={presupuesto.descripcion || "—"} />
           {presupuesto.fechaRespuesta && <InfoRow icon={<CalendarDays size={14} />} label="Fecha respuesta" value={`${fmtDate(presupuesto.fechaRespuesta)} (${diasResp}d)`} />}
