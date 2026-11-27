@@ -968,6 +968,7 @@ export default function App() {
   const [proveedores, setProveedores] = useState([]);
   const [materiales, setMateriales] = useState([]);
   const [pedidos, setPedidos] = useState([]);
+  PEDIDOS_TODOS.lista = pedidos; // para numerar los pedidos del día por proveedor al mandarlos
   const [incidencias, setIncidencias] = useState([]);
   const [articulos, setArticulos] = useState([]);
   const [facturas, setFacturas] = useState([]);
@@ -3427,7 +3428,7 @@ export default function App() {
       if (!llegada) aviso = " — ponle la fecha de llegada (Editar)";
       const sinHacer = !p.estado || p.estado === "En espera" || p.estado === "Pendiente";
       return {
-        ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString(),
+        ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString(), ordenDiaProveedor: ordenDiaProveedor(p, pedidos) || null,
         ...(sinHacer ? { estado: "Realizado", fechaCompra: hoy } : {}),
         ...(!p.fechaCompra ? { fechaCompra: hoy } : {}),
         fechaEntregaPrevista: llegada,
@@ -10458,9 +10459,22 @@ const lineasDocsPedido = (pedido) => {
   const docs = toArray(pedido && pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
   return docs.map((d) => `📄 ${enlaceCortoDocPedido(pedido, d)}`).join("\n");
 };
+// NUMERACIÓN DEL DÍA POR PROVEEDOR: si a un proveedor se le mandan 5 pedidos el mismo día, van «Nº 1 de hoy», «Nº 2 de hoy»…
+// así no se le mezclan. App mantiene aquí la lista completa de pedidos (los componentes de envío solo ven los de su obra).
+const PEDIDOS_TODOS = { lista: [] };
+const diaLocal = (iso) => { if (!iso) return ""; const d = new Date(iso); if (isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const ordenDiaProveedor = (pedido, todos = PEDIDOS_TODOS.lista) => {
+  if (!pedido) return 0;
+  const hoy = diaLocal(new Date().toISOString());
+  if (pedido.ordenDiaProveedor && diaLocal(pedido.fechaEnvioConfirmado) === hoy) return pedido.ordenDiaProveedor; // ya numerado hoy: se mantiene
+  if (!pedido.proveedorId) return 0;
+  const yaHoy = toArray(todos).filter((x) => x && x.id !== pedido.id && x.proveedorId === pedido.proveedorId && x.envioConfirmado && diaLocal(x.fechaEnvioConfirmado) === hoy);
+  return Math.max(yaHoy.length, ...yaHoy.map((x) => parseInt(x.ordenDiaProveedor, 10) || 0)) + 1;
+};
+const cabeceraOrdenDia = (pedido) => { const n = ordenDiaProveedor(pedido); return n ? `🔢 PEDIDO Nº ${n} DE HOY (${fmtDate(diaLocal(new Date().toISOString()))})\n` : ""; };
 // Texto del pedido para mandarlo al proveedor (WhatsApp o email): corto, solo lo necesario
 const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
-  const cab = `Pedido ${pedido.numero} · ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}`;
+  const cab = `${cabeceraOrdenDia(pedido)}Pedido ${pedido.numero} · ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}`;
   if (pedido && pedido.soloDocumentoProveedor) {
     const docs = lineasDocsPedido(pedido);
     return `${cab}${docs ? `\n${docs}` : ""}${fecha ? `\n${fraseLlegadaCorta(fecha)}` : ""}`;
@@ -10593,7 +10607,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const telProv = String((prov && prov.movil) || "").replace(/[^\d+]/g, "");
         // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
         const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días:\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\nConfírmennos que lo han recibido, por favor. Gracias.`)}` : "";
-        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${ccMail()}subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
+        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${ccMail()}subject=${encodeURIComponent(`${ordenDiaProveedor(p) ? `[Nº ${ordenDiaProveedor(p)} de hoy] ` : ""}Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
           setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
         };
@@ -15544,8 +15558,8 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
     const refProyecto = proyecto ? ` — ${presupuestoDeObra(proyecto) ? `Ppto ${presupuestoDeObra(proyecto)} · ` : ""}Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
-    const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
+    const asunto = `${ordenDiaProveedor(pedido) ? `[Nº ${ordenDiaProveedor(pedido)} de hoy] ` : ""}Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
+    const cuerpo = `Buenos días,\n\n${cabeceraOrdenDia(pedido)}Les hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -15573,7 +15587,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
           return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
         }).join("\n");
-        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\n${cabeceraOrdenDia(pedido)}Les hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
       }
 
       const response = await fetch("/.netlify/functions/enviar-email", {
@@ -15581,7 +15595,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           destinatario: proveedor.email,
-          asunto: `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`,
+          asunto: `${ordenDiaProveedor(pedido) ? `[Nº ${ordenDiaProveedor(pedido)} de hoy] ` : ""}Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`,
           cuerpo,
           replyTo: currentUser?.email || "",
           cc: currentUser?.email || emailUsuarioActual || "",
@@ -15618,7 +15632,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     const enlacesDocs = lineasDocsPedido(pedido); // enlaces cortos, no la dirección larga de Firebase
     // los comentarios automáticos del CRM («… Al proveedor se le manda el documento original…») son internos: no se mandan
     const comProv = pedido.comentarios && !pedido.origenListado && !/Material que falta según|Al proveedor se le manda/i.test(pedido.comentarios) ? pedido.comentarios : "";
-    const texto = `Buenos días:\nPedido ${pedido.numero} · ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n${enlacesDocs}` : ""}\n${pedido.fechaEntregaPrevista ? fraseLlegadaCorta(pedido.fechaEntregaPrevista) : "Confírmennos la fecha de entrega, por favor."}${comProv ? `\nNota: ${comProv}` : ""}\nConfírmennos que lo han recibido. Gracias.`;
+    const texto = `Buenos días:\n${cabeceraOrdenDia(pedido)}Pedido ${pedido.numero} · ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n${enlacesDocs}` : ""}\n${pedido.fechaEntregaPrevista ? fraseLlegadaCorta(pedido.fechaEntregaPrevista) : "Confírmennos la fecha de entrega, por favor."}${comProv ? `\nNota: ${comProv}` : ""}\nConfírmennos que lo han recibido. Gracias.`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -15749,7 +15763,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       )}
       {pedido.envioConfirmado ? (
         <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold mb-6">
-          ✓ {pedido.envioMetodo === "email" ? "Enviado por email" : pedido.envioMetodo === "whatsapp" ? "Enviado por WhatsApp" : "Pedido realizado"} el {fmtDate(pedido.fechaEnvioConfirmado?.slice(0, 10))}.
+          ✓ {pedido.envioMetodo === "email" ? "Enviado por email" : pedido.envioMetodo === "whatsapp" ? "Enviado por WhatsApp" : "Pedido realizado"} el {fmtDate(pedido.fechaEnvioConfirmado?.slice(0, 10))}{pedido.ordenDiaProveedor ? ` (nº ${pedido.ordenDiaProveedor} de ese día a este proveedor)` : ""}.
         </div>
       ) : (
         <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-6 space-y-2">
