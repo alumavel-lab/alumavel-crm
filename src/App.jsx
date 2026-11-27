@@ -10445,11 +10445,25 @@ async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) 
 
 // Frase que va en todos los mensajes de pedido al proveedor: fecha prevista y petición de aviso.
 const fraseLlegadaProveedor = (fecha) => `Tenemos previsto que nos llegue el día ${fmtDate(fecha)}. Si por cualquier motivo no pueden entregarlo en la fecha indicada, les agradeceríamos que nos avisen con tiempo para poder organizarnos.`;
-// Texto del pedido para mandarlo al proveedor (WhatsApp o email)
+// Versión corta para WhatsApp (el proveedor se quejaba de mensajes larguísimos y pedidos perdidos)
+const fraseLlegadaCorta = (fecha) => `Entrega prevista: ${fmtDate(fecha)}. Si no puede ser ese día, avísennos con tiempo.`;
+// ENLACE CORTO a un documento del pedido (en vez de la dirección larguísima de Firebase): lo abre el servidor
+const enlaceCortoDocPedido = (pedido, d) => {
+  if (!pedido || !pedido.id || !d || typeof window === "undefined") return (d && d.url) || "";
+  const i = toArray(pedido.documentos).indexOf(d);
+  const ref = d.id || (i >= 0 ? `i${i}` : "");
+  return ref ? `${window.location.origin}/.netlify/functions/ver-documento?pe=${encodeURIComponent(pedido.id)}&d=${encodeURIComponent(ref)}` : d.url;
+};
+const lineasDocsPedido = (pedido) => {
+  const docs = toArray(pedido && pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
+  return docs.map((d) => `📄 ${enlaceCortoDocPedido(pedido, d)}`).join("\n");
+};
+// Texto del pedido para mandarlo al proveedor (WhatsApp o email): corto, solo lo necesario
 const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
+  const cab = `Pedido ${pedido.numero} · ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}`;
   if (pedido && pedido.soloDocumentoProveedor) {
-    const docs = toArray(pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
-    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
+    const docs = lineasDocsPedido(pedido);
+    return `${cab}${docs ? `\n${docs}` : ""}${fecha ? `\n${fraseLlegadaCorta(fecha)}` : ""}`;
   }
   const lineas = toArray(pedido.lineas).map((l) => {
     const mat = l.modo === "libre" ? null : toArray(materiales).find((m) => m.id === l.materialId);
@@ -10457,7 +10471,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
     const medidas = l.ancho || l.alto ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
     return `- ${nombre}${medidas}: ${l.cantidad} ud.`;
   }).join("\n");
-  return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
+  return `${cab}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaCorta(fecha)}` : ""}`;
 };
 
 // En la ficha de la obra (pestaña Pedidos): cada pedido con el estado de cada línea y DÓNDE está ahora el material
@@ -10578,7 +10592,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const sinPedir = !p.envioConfirmado && (p.estado === "En espera" || p.estado === "Pendiente" || !p.estado);
         const telProv = String((prov && prov.movil) || "").replace(/[^\d+]/g, "");
         // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
-        const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, confírmennos que han recibido el pedido.`)}` : "";
+        const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días:\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\nConfírmennos que lo han recibido, por favor. Gracias.`)}` : "";
         const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${ccMail()}subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
           setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
@@ -15601,8 +15615,10 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     }).join("\n");
     // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
     // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
-    const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
-    const texto = `Buenos días,\n\nPedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const enlacesDocs = lineasDocsPedido(pedido); // enlaces cortos, no la dirección larga de Firebase
+    // los comentarios automáticos del CRM («… Al proveedor se le manda el documento original…») son internos: no se mandan
+    const comProv = pedido.comentarios && !pedido.origenListado && !/Material que falta según|Al proveedor se le manda/i.test(pedido.comentarios) ? pedido.comentarios : "";
+    const texto = `Buenos días:\nPedido ${pedido.numero} · ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n${enlacesDocs}` : ""}\n${pedido.fechaEntregaPrevista ? fraseLlegadaCorta(pedido.fechaEntregaPrevista) : "Confírmennos la fecha de entrega, por favor."}${comProv ? `\nNota: ${comProv}` : ""}\nConfírmennos que lo han recibido. Gracias.`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };

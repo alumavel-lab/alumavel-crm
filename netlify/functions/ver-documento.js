@@ -30,19 +30,22 @@ const pagina = (texto) => ({
 
 export const handler = async (event) => {
   try {
-    const { p, d } = event.queryStringParameters || {};
-    if (!p || !d) return pagina("Enlace no válido.");
+    // p = presupuesto (enlace al cliente) · pe = pedido (enlace corto que va en el WhatsApp al proveedor)
+    const { p, pe, d } = event.queryStringParameters || {};
+    if ((!p && !pe) || !d) return pagina("Enlace no válido.");
     const token = await tokenRobot();
     const q = token ? `?auth=${encodeURIComponent(token)}` : "";
-    const r = await fetch(`${FIREBASE_DB_URL}/presupuestos.json${q}`);
+    const r = await fetch(`${FIREBASE_DB_URL}/${pe ? "pedidos" : "presupuestos"}.json${q}`);
     const lista = await r.json().catch(() => null);
-    const pres = lista && Object.values(lista).find((x) => x && x.id === p);
-    const doc = pres && Object.values(pres.documentos || {}).find((x) => x && x.id === d);
+    const reg = lista && Object.values(lista).find((x) => x && x.id === (pe || p));
+    const docs = reg ? Object.values(reg.documentos || {}) : [];
+    // documentos antiguos sin id: el enlace lleva su posición («i0», «i1»…)
+    const doc = docs.find((x) => x && x.id === d) || (/^i\d+$/.test(d) ? docs[parseInt(d.slice(1), 10)] : null);
     if (!doc || !String(doc.url || "").startsWith(STORAGE_PREFIX)) return pagina("No se ha encontrado este documento. Pídanos que se lo volvamos a enviar.");
     const f = await fetch(doc.url, { headers: token ? { Authorization: `Firebase ${token}` } : {} });
     if (!f.ok) return pagina("No se ha podido abrir el documento ahora mismo. Inténtelo de nuevo en unos minutos.");
     const buf = Buffer.from(await f.arrayBuffer());
-    const nombre = String(doc.nombre || "presupuesto.pdf").replace(/[^\w.\-]+/g, "_");
+    const nombre = String(doc.nombre || (pe ? "pedido.pdf" : "presupuesto.pdf")).replace(/[^\w.\-]+/g, "_");
     return {
       statusCode: 200,
       headers: { "Content-Type": f.headers.get("content-type") || "application/pdf", "Content-Disposition": `inline; filename="${nombre}"`, "Cache-Control": "private, max-age=300" },
