@@ -61181,6 +61181,7 @@ function imprimirAux(lista, cfg) {
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
     .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: ${ms}mm ${md}mm 0.8mm ${mi}mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
     .r1 { display: flex; justify-content: space-between; align-items: flex-start; gap: 2mm; white-space: nowrap; line-height: 1.05; }
     .pos { font-size: ${f(5)}; font-weight: 900; }
     .der { text-align: right; overflow: hidden; }
@@ -61206,7 +61207,16 @@ function imprimirAux(lista, cfg) {
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
-  imprimirSecuencia(lista.map(etiqueta), { sinAviso: true }, "las etiquetas");
+  const hs = lista.map(etiqueta);
+  // VARIAS DE GOLPE: todas en UNA sola impresión (una etiqueta por página), así solo se pulsa «Imprimir» una vez
+  // (antes salía la ventana de imprimir una vez por cada etiqueta)
+  if (hs.length > 1) {
+    const cuerpo = (h) => { const i = h.indexOf("<body>"), j = h.lastIndexOf("</body>"); return i >= 0 && j > i ? h.slice(i + 6, j) : ""; };
+    const junta = hs[0].slice(0, hs[0].indexOf("<body>") + 6) + hs.map(cuerpo).join("") + "</body></html>";
+    imprimirSecuencia([junta], { sinAviso: true }, `las ${hs.length} etiquetas`);
+    return;
+  }
+  imprimirSecuencia(hs, { sinAviso: true }, "las etiquetas");
 }
 
 // Carro de retales: carros R1, R2… con lados (A, B…) y niveles; cada sitio guarda varios recortes (mejor de la misma referencia)
